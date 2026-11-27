@@ -68,6 +68,26 @@ WAREHOUSES = {
     "frac0": ("warehouse_typmod",   "byhour_frac",  "id bigint, ts timestamp(0)"),
     "bkt2":  ("warehouse_typmod",   "byregion_bucket", "id bigint, region varchar(2)"),
     "th6":   ("warehouse_temporal", "byhour",       "id bigint, ts timestamp(6)"),
+    # decimals stored as Parquet INT32/INT64, declared int or bigint (#2086)
+    "dec9i":  ("warehouse_decimal", "dec9",        "id bigint, d int"),
+    "dec9b":  ("warehouse_decimal", "dec9",        "id bigint, d bigint"),
+    "dec18b": ("warehouse_decimal", "dec18",       "id bigint, d bigint"),
+    "dec9k":  ("warehouse_decimal", "dec9_bucket", "id bigint, d int"),
+    "dec9kb": ("warehouse_decimal", "dec9_bucket", "id bigint, d bigint"),
+    "dpfx":   ("warehouse_decimal", "pfx",         "id bigint, d_x bigint, d int"),
+    "boolt":  ("warehouse_decimal", "boolt",       "id bigint, b bool"),
+    "booli":  ("warehouse_decimal", "booli",       "id bigint, b bool"),
+    "dpfx2":  ("warehouse_decimal", "pfx2",        "id bigint, d bigint, d_x int"),
+    "booll":  ("warehouse_decimal", "booll",       "id bigint, b bool"),
+    "booli2": ("warehouse_decimal", "booli",       "id bigint, b smallint"),
+    "boolti": ("warehouse_decimal", "boolt",       "id bigint, b int"),
+    "boolts": ("warehouse_decimal", "boolt",       "id bigint, b smallint"),
+    "byint":  ("warehouse_decimal", "byint",       "k int"),
+    "byintt": ("warehouse_decimal", "byint",       "k text"),
+    "bib":    ("warehouse_decimal", "booli",       "id bigint, b bigint"),
+    "byb":    ("warehouse_decimal", "byint",       "k bigint"),
+    "byn":    ("warehouse_decimal", "byint",       "k name"),
+    "two":    ("warehouse_decimal", "two",         "k int, d numeric"),
 }
 
 
@@ -858,6 +878,268 @@ def test_a_timestamp_6_hour_partition_still_prunes(ice, expect):
         return
     expect.num(_pruned(conn, "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'"), 1,
                "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)")
+
+
+# ------------------------------------- a decimal declared int or bigint, and pruning (#2086)
+#
+# Spark stores a decimal of precision 18 or less as a Parquet INT32 or INT64 holding
+# the unscaled value, and the reader lets the foreign table declare it int or bigint.
+# Iceberg writes a decimal's bounds as big-endian bytes, where an integer's are
+# little-endian, and its bucket[N] hashes the decimal's bytes, not a long. So neither
+# the bounds nor the bucket of a decimal can be read as an integer's.
+# warehouse_decimal (fixtures/iceberg/gen_iceberg_decimal.py) holds the unscaled
+# values 10000000 (id 1) and 20000000 (id 2) in dec9 (decimal(9,2) as INT32), dec18
+# (decimal(18,2) as INT64) and dec9_bucket (bucket[8](d), one file per row).
+
+def _sqlstate(conn, sql):
+    """-> the SQLSTATE the query raises, or 'no error (<rows>)'."""
+    import psycopg
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return f"no error ({cur.fetchall()!r})"
+    except psycopg.Error as e:
+        return e.sqlstate
+
+
+def test_a_decimal_9_read_as_int_is_not_pruned_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "dec9i"):
+        return
+    expect.text(_one(conn, "SELECT string_agg(id||'|'||d, ',' ORDER BY id) FROM dec9i"),
+                "1|10000000,2|20000000",
+                "decimal: dec9 read as int returns both unscaled values (premise)")
+    fdw = _ids(conn, "dec9i", "d = 20000000") or "none"
+    expect.text(fdw, "2", "decimal: d = 20000000 on decimal(9,2) read as int returns id 2")
+    expect.text(fdw, _scan_ids(conn, meta["dec9i"], "id bigint, d int", "d = 20000000") or "none",
+                "decimal: d = 20000000 on decimal(9,2) read as int matches iceberg_scan")
+    expect.num(int(_one(conn, "SELECT count(*) FROM dec9i WHERE d > 15000000")), 1,
+               "decimal: count where d > 15000000 on decimal(9,2) read as int is 1")
+
+
+def test_a_decimal_18_read_as_bigint_is_not_pruned_on_its_bounds(ice, expect):
+    """The most serious case: the declaration is one the full scan accepts."""
+    conn, meta = ice
+    if not _need(expect, meta, "dec18b"):
+        return
+    expect.text(_ids(conn, "dec18b", "d = 20000000") or "none", "2",
+                "decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2")
+    expect.text(_ids(conn, "dec18b", "d >= 15000000") or "none", "2",
+                "decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2")
+
+
+def test_a_refused_decimal_declaration_is_refused_with_a_filter_too(ice, expect):
+    """bigint over an INT32 decimal is refused (42804). A filter must not turn the
+    refusal into an empty answer by pruning every file before one is opened."""
+    conn, meta = ice
+    if not _need(expect, meta, "dec9b"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM dec9b"), "42804",
+                "decimal: a full scan of decimal(9,2) read as bigint is refused (42804)")
+    expect.text(_sqlstate(conn, "SELECT * FROM dec9b WHERE d = 20000000"), "42804",
+                "decimal: a filtered scan of decimal(9,2) read as bigint is refused the same way, not empty")
+
+
+def test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "dec9k"):
+        return
+    expect.text(_ids(conn, "dec9k", "d = 10000000") or "none", "1",
+                "decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1")
+    expect.text(_ids(conn, "dec9k", "d = 20000000") or "none", "2",
+                "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2")
+
+
+# dec9kb reads the bucket source as bigint, which the reader refuses. The bucket map must
+# not hash 20000000 as a long and prune both files, which returned 0 rows and no error.
+
+def test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "dec9kb"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM dec9kb WHERE d = 20000000"), "42804",
+                "decimal: d = 20000000 on bucket[8](decimal) read as bigint is refused (42804), not empty")
+
+
+def test_the_long_column_beside_a_decimal_still_prunes(ice, expect):
+    """The fix stops pruning on a decimal's bounds, not min/max pruning as a whole."""
+    conn, meta = ice
+    if not _need(expect, meta, "dec9i"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM dec9i WHERE id = 5"), 1,
+               "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)")
+
+
+def test_the_field_type_lookup_matches_the_whole_field_name(ice, expect):
+    """pfx puts the long field d_x before the decimal d. A lookup that matched the
+    column name as a prefix would take d for a long and prune on its bounds."""
+    conn, meta = ice
+    if not _need(expect, meta, "dpfx"):
+        return
+    expect.text(_ids(conn, "dpfx", "d = 20000000") or "none", "2",
+                "decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2")
+
+
+def test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column(ice, expect):
+    """pfx2 puts the long field d before the decimal d_x. A lookup that compared only
+    the field name's length would take d_x for a long and prune on its bounds."""
+    conn, meta = ice
+    if not _need(expect, meta, "dpfx2"):
+        return
+    expect.text(_ids(conn, "dpfx2", "d_x = 20000000") or "none", "2",
+                "decimal: d_x = 20000000 on a decimal after a long field whose name prefixes it returns id 2")
+
+
+# ---------------------------------- a bool column prunes on bounds only over an Iceberg boolean
+#
+# boolt is an Iceberg boolean: ids 1, 2 with b false in one file, ids 3, 4 with b true
+# in another. booli is an Iceberg int (5 to 8) declared bool, which the reader refuses.
+# The tests use b > false and b < true: the planner folds b = true to a bare
+# "Filter: b", which never reaches the bounds check.
+
+def test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "boolt"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM boolt WHERE b > false"), 1,
+               "bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)")
+    expect.text(_ids(conn, "boolt", "b > false") or "none", "3,4",
+                "bool: b > false on an Iceberg boolean returns ids 3 and 4")
+
+
+def test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too(ice, expect):
+    """The bounds of an Iceberg int are not a boolean's. Reading them as one prunes
+    the file, and the refused declaration returns an empty answer instead."""
+    conn, meta = ice
+    if not _need(expect, meta, "booli"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM booli"), "42804",
+                "bool: a full scan of an Iceberg int declared bool is refused (42804)")
+    expect.text(_sqlstate(conn, "SELECT * FROM booli WHERE b < true"), "42804",
+                "bool: b < true on an Iceberg int declared bool is refused the same way, not empty")
+
+
+def test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "booll"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM booll WHERE b < true"), "42804",
+                "bool: b < true on an Iceberg long declared bool is refused (42804), not empty")
+
+
+# ------------------------------- an integer column prunes on bounds only over an Iceberg int or long
+#
+# booli2 reads the Iceberg int of booli as smallint. boolti reads the Iceberg boolean of
+# boolt as int, which the reader refuses.
+
+def test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "booli2"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM booli2 WHERE b > 8"), 1,
+               "int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)")
+    expect.text(_ids(conn, "booli2", "b = 8") or "none", "8",
+                "int: b = 8 on a smallint over an Iceberg int returns id 8")
+
+
+def test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "boolti"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM boolti"), "42804",
+                "int: a full scan of an Iceberg boolean declared int is refused (42804)")
+    expect.text(_sqlstate(conn, "SELECT * FROM boolti WHERE b = 5"), "42804",
+                "int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty")
+
+
+# boolts reads the same Iceberg boolean as smallint. The int2 arm must check the Iceberg
+# type too, or b = 5 prunes both files on the boolean's bounds and returns 0 rows.
+
+def test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "boolts"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM boolts WHERE b = 5"), "42804",
+                "int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty")
+
+
+# bib reads booli's Iceberg int as bigint. The int8 arm must accept an Iceberg int, not
+# only a long, or b > 8 loses the bounds pruning main has.
+
+def test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "bib"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM bib WHERE b > 8"), 1,
+               "int: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)")
+
+
+# ------------------------------------------------------- bucket pruning on an Iceberg int source
+#
+# byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files. Iceberg
+# hashes an int as an 8-byte long. k = 5 is in bucket 7 with k = 8. Bounds alone prune
+# only 3 files: the bucket 3 file holds k = 3 and 7, so its bounds contain 5.
+
+def test_bucket_pruning_works_on_an_iceberg_int_source(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byint"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM byint WHERE k = 5"), 4,
+               "bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)")
+    expect.text(_one(conn, "SELECT string_agg(k::text, ',' ORDER BY k) FROM byint WHERE k = 5")
+                or "none", "5",
+                "bucket: k = 5 on bucket[8] of an Iceberg int returns 5")
+
+
+# byb reads the same Iceberg int as bigint. The bucket gate must accept a bigint over an
+# Iceberg int, or k = 5 loses the bucket pruning main has.
+
+def test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byb"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM byb WHERE k = 5"), 4,
+               "bucket: k = 5 on a bigint over bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)")
+
+
+# byintt reads the same Iceberg int as text. The reader refuses a full scan (42804). The
+# bucket map must not hash 'a' as an int's bucket and prune every file, which returned 0
+# rows and no error.
+
+def test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byintt"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM byintt WHERE k = 'a'"), "42804",
+                "bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty")
+
+
+# byn reads the same Iceberg int as name, which the reader refuses. k = 'a'::text uses the
+# name = text operator, so the bucket map sees a text constant. The gate must refuse a name
+# column, or every file is pruned and the query returns 0 rows and no error.
+
+def test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byn"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM byn WHERE k = 'a'::text"), "42804",
+                "bucket: k = 'a' on a name column over an Iceberg int is refused (42804), not empty")
+
+
+# two: k int, d decimal(9,2), partitioned by bucket[2](d) then bucket[4](k), k = 1 to 16
+# with d = 1.00, written by pyiceberg into four files. The gate skips the decimal's bucket
+# field. The bucket map must still keep k's field: k = 5 prunes 3 files by bucket, but
+# only 1 by bounds.
+
+def test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "two"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM two WHERE k = 5"), 3,
+               "bucket: k = 5 after a gated bucket[2](decimal) field prunes 3 of 4 files (Files Pruned: 3)")
+    expect.text(_one(conn, "SELECT string_agg(k::text || ':' || d::text, ',' ORDER BY k) "
+                           "FROM two WHERE k = 5") or "none", "5:1.00",
+                "bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00")
 
 
 # ------------------------------------------------------------------- option validation

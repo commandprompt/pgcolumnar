@@ -170,6 +170,24 @@ def nmap(pgc_cluster, server_dir):
                                         f"FROM {scan('nmevolve')}")
         r["up nullfill"] = _survived(dsn, pgc_cluster, before)
 
+        # equality deletes over the id-less file (#2088)
+        before = _crashes(pgc_cluster)
+        r["eq long"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                 f"FROM {scan('nmeq')}")
+        r["eq reordered"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                     f"FROM {scan('nmeq', cols='AS t(amount int, id bigint, region text)')}")
+        r["eq 2col"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                 f"FROM {scan('nmeq2col')}")
+        r["eq 2files"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                   f"FROM {scan('nmeq2files')}")
+        r["eq 2unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmeq2unbound')}")
+        r["eq string"] = _one(dsn, f"SELECT string_agg(id || '|' || region, ',' ORDER BY id) "
+                                   f"FROM {scan('nmeqstr')}")
+        r["eq unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmequnbound')}")
+        r["eq amount"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                   f"FROM {scan('nmeqamt')}")
+        r["up eq"] = _survived(dsn, pgc_cluster, before)
+
         before = _crashes(pgc_cluster)
         _write_caps(mdir)
         r["cap at"] = _one(dsn, f"SELECT count(*) FROM {scan('nmcap_at')}")
@@ -294,6 +312,97 @@ def test_name_mapping_backend_up_after_null_fill(nmap, expect):
     if _declined(nmap, expect):
         return
     expect.text(nmap["up nullfill"], "1", "backend still up after the null-fill reads")
+
+
+def test_name_mapping_equality_delete_long(nmap, expect):
+    """#2088: the equality-delete probe binds the delete column through the name
+    mapping, as the data read does. Before the fix the scan was refused with a hint
+    asking for the mapping the table already has."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq long"], "1|eu|10,3|us|30,5|us|50",
+                "an equality delete on a long column applies to an id-less file")
+
+
+def test_name_mapping_equality_delete_reordered(nmap, expect):
+    """The same delete with the query's columns in another order. The probe binds
+    the delete columns through the mapping's field ids, not the query's: every
+    other arm lists the columns in mapping order, so the two id lists agree there
+    (a probe passed c->field_ids passes them all)."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq reordered"], "1|eu|10,3|us|30,5|us|50",
+                "an equality delete applies when the query lists the columns in another order")
+
+
+def test_name_mapping_equality_delete_two_columns(nmap, expect):
+    """A delete keyed on (id, region). Every other arm reads one delete column,
+    so a probe that drops the mapping whenever it reads more than one passes
+    them all."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq 2col"], "1|eu|10,3|us|30,4|us|40,5|us|50",
+                "an equality delete keyed on two columns applies to an id-less file")
+
+
+def test_name_mapping_equality_delete_two_files(nmap, expect):
+    """Two one-column delete files on one data file, id IN (2, 4) and
+    amount = 30: the probe reads both columns at once."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq 2files"], "1|eu|10,5|us|50",
+                "two equality-delete files on different columns both apply to an id-less file")
+
+
+def test_name_mapping_equality_two_column_unbound_is_refused(nmap, expect):
+    """A delete keyed on (id, amount) under a mapping with no name for amount is
+    refused, naming field id 3: reading amount as null would keep row 3."""
+    if _declined(nmap, expect):
+        return
+    text = nmap["eq 2unbound"][1]
+    expect.text("1" if "no Parquet column has field id 3" in text else f"0 ({text})", "1",
+                "a two-column equality delete with one column the mapping does not bind is refused, naming it")
+
+
+def test_name_mapping_equality_delete_string(nmap, expect):
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq string"], "3|us,4|us,5|us",
+                "an equality delete on a string column applies to an id-less file")
+
+
+def test_name_mapping_equality_unbound_is_refused(nmap, expect):
+    """A delete column the mapping does not bind stays refused: reading it as null
+    would keep the row the delete removes."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq unbound"][0], "22023",
+                "an equality column the mapping does not bind is still refused (22023)")
+
+
+def test_name_mapping_equality_unbound_names_the_id(nmap, expect):
+    if _declined(nmap, expect):
+        return
+    text = nmap["eq unbound"][1]
+    expect.text("1" if "no Parquet column has field id 3" in text else f"0 ({text})", "1",
+                "...and the refusal names the unbound field id")
+
+
+def test_name_mapping_equality_mapped_amount_applies(nmap, expect):
+    """The positive control for the unbound arm: the same amount = 30 delete
+    under the full mapping applies. So that refusal comes from the missing
+    mapping entry, not from a delete on amount, the last mapped column, being
+    refused (a probe passed nm_count - 1 refuses both)."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq amount"], "1|eu|10,2|eu|20,4|us|40,5|us|50",
+                "an equality delete on the column the unbound arm uses applies once the mapping binds it")
+
+
+def test_name_mapping_backend_up_after_equality_deletes(nmap, expect):
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["up eq"], "1", "backend still up after the equality-delete reads")
 
 
 def test_name_mapping_at_the_cap_is_accepted(nmap, expect):

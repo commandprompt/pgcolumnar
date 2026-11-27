@@ -1360,6 +1360,27 @@ ice_current_schema_fields(JsonbContainer *root, const char *path)
 }
 
 /*
+ * Refuse a schema field that carries a non-null "initial-default" (#2087).
+ * Format-version 3 lets a field added to an existing table name the value a
+ * reader must return for it in data files written before it existed. This
+ * reader does not apply that value: it would read those rows as null, and an
+ * equality delete would compare them as null. So refuse the field instead of
+ * returning wrong values. A null initial-default is the same as none.
+ */
+static void
+ice_refuse_initial_default(JsonbContainer *field, const char *name)
+{
+	JsonbValue *def = ice_field(field, "initial-default");
+
+	if (def != NULL && def->type != jbvNull)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("iceberg: field \"%s\" has an initial-default, which pgColumnar cannot apply",
+						name),
+				 errdetail("Rows in data files written before the field was added would read as null, not as the default.")));
+}
+
+/*
  * Build the field id to bind each output column to, by matching the output
  * column name to a field in the table's current schema. Returns a palloc'd array
  * of one id per non-dropped attribute, in attribute order; *nout is its length.
@@ -1427,6 +1448,7 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 									? pnstrdup(kind->val.string.val, kind->val.string.len)
 									: "nested")));
 				}
+				ice_refuse_initial_default(f->val.binary.data, nm);
 				fid = ice_schema_field_id(f->val.binary.data,
 										  fn->val.string.val, fn->val.string.len);
 				if (fid >= 0)
@@ -1510,6 +1532,69 @@ ice_field_timestamp_kind_differs(JsonbContainer *fieldsc, uint32 nf,
 		return src_tz != (typid == TIMESTAMPTZOID);
 	}
 	return false;
+}
+
+/*
+ * Whether the current-schema field named `nm` has the primitive type `want`
+ * exactly ("int", "long", "boolean", "string"). A nested field's type is an
+ * object, never a string, so it matches nothing.
+ */
+static bool
+ice_field_type_is(JsonbContainer *fieldsc, uint32 nf, const char *nm,
+				  const char *want)
+{
+	uint32		j;
+
+	for (j = 0; j < nf; j++)
+	{
+		JsonbValue *sf = getIthJsonbValueFromContainer(fieldsc, j);
+		JsonbValue *v;
+
+		if (sf == NULL || sf->type != jbvBinary)
+			continue;
+		v = ice_field(sf->val.binary.data, "name");
+		if (v == NULL || v->type != jbvString ||
+			(int) strlen(nm) != v->val.string.len ||
+			strncmp(nm, v->val.string.val, v->val.string.len) != 0)
+			continue;
+		v = ice_field(sf->val.binary.data, "type");
+		return v != NULL && v->type == jbvString &&
+			(int) strlen(want) == v->val.string.len &&
+			strncmp(want, v->val.string.val, v->val.string.len) == 0;
+	}
+	return false;
+}
+
+/*
+ * Whether the FDW may read the field's bounds or bucket the way it reads an
+ * integer, boolean or string column's (#2086). Iceberg writes an int, long or
+ * boolean bound as little-endian bytes, and hashes an int or long for bucket[N]
+ * as an 8-byte long. It writes a decimal's bound as the unscaled value in
+ * big-endian two's complement, and hashes those bytes. The reader lets an int or
+ * bigint column read a decimal stored as Parquet INT32 or INT64, so the
+ * PostgreSQL type alone cannot tell the two apart. `forBucket` asks about the
+ * bucket hash, which also covers a text column over an Iceberg string; without
+ * it, about the bounds of an int2, int4, int8 or bool column.
+ */
+static bool
+ice_field_prunes_as_column_type(JsonbContainer *fieldsc, uint32 nf,
+								const char *nm, Oid typid, bool forBucket)
+{
+	switch (typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+			return ice_field_type_is(fieldsc, nf, nm, "int") ||
+				ice_field_type_is(fieldsc, nf, nm, "long");
+		case BOOLOID:
+			return !forBucket && ice_field_type_is(fieldsc, nf, nm, "boolean");
+		case TEXTOID:
+		case VARCHAROID:
+			return forBucket && ice_field_type_is(fieldsc, nf, nm, "string");
+		default:
+			return false;
+	}
 }
 
 /*
@@ -1722,6 +1807,11 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 				continue;
 			if (ice_field_id_by_name(fieldsc, nf, NameStr(att->attname)) == srcid)
 			{
+				/* a decimal hashes its bytes, not the int the column reads */
+				if (!ice_field_prunes_as_column_type(fieldsc, nf,
+													 NameStr(att->attname),
+													 att->atttypid, true))
+					break;
 				pos[cnt] = (int) k;
 				attno[cnt] = a + 1;
 				nn[cnt] = N;
@@ -2079,8 +2169,11 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 
 /*
  * Return, for each column of `tupdesc`, the current-schema field id of the
- * column with that name (0 when the table has no such column), for FDW metrics
- * pruning that keys a data file's bounds by field id. palloc'd, length natts.
+ * column with that name, for FDW metrics pruning that keys a data file's bounds
+ * by field id. palloc'd, length natts. It is 0 when the table has no such
+ * column, and 0 when the field's bounds cannot be read as the column's type: an
+ * int column over a decimal stored as Parquet INT32 has big-endian bounds that
+ * would decode as wrong integers and prune a file that matches (#2086).
  */
 int *
 PgColumnarIcebergColumnFieldIds(const char *path,
@@ -2103,7 +2196,9 @@ PgColumnarIcebergColumnFieldIds(const char *path,
 		if (att->attisdropped)
 			continue;
 		fid = ice_field_id_by_name(fieldsc, nf, NameStr(att->attname));
-		if (fid > 0 && fid <= PG_INT32_MAX)
+		if (fid > 0 && fid <= PG_INT32_MAX &&
+			ice_field_prunes_as_column_type(fieldsc, nf, NameStr(att->attname),
+											att->atttypid, false))
 			out[a] = (int) fid;
 	}
 	return out;
@@ -2973,6 +3068,7 @@ ice_eq_col_type(JsonbContainer *root, int32 fid, const char *path,
 		*fname = (fn != NULL && fn->type == jbvString)
 			? pnstrdup(fn->val.string.val, fn->val.string.len)
 			: psprintf("field_%d", fid);
+		ice_refuse_initial_default(f->val.binary.data, *fname);
 		ft = ice_field(f->val.binary.data, "type");
 		if (ft == NULL || ft->type != jbvString)
 			ereport(ERROR,
@@ -3415,8 +3511,13 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	safe = ice_open_path(c->recorded_root, c->actual_root, d->file_path,
 						 "data-file", c->mdpath);
 	ts = tuplestore_begin_heap(false, false, work_mem);
-	(void) PgColumnarReadParquetByFieldId(safe, ptd, uids, nuni, ts, wslot,
-										  NULL, 0, c->cfg, c->caller);
+	/* bind through the table's name mapping, as the full read does, so an
+	 * id-less (imported) data file's delete columns resolve by name (#2088);
+	 * an id the file still lacks stays an error, never a null */
+	(void) PgColumnarReadParquetByFieldIdNMStrict(safe, ptd, uids, nuni,
+												  (const char *const *) c->nm_names,
+												  c->nm_ids, c->nm_count,
+												  ts, wslot, c->cfg, c->caller);
 	dv = (Datum *) palloc(nuni * sizeof(Datum));
 	dn = (bool *) palloc(nuni * sizeof(bool));
 	while (tuplestore_gettupleslot(ts, true, false, rslot))

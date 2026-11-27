@@ -628,6 +628,104 @@ true until the next version shipped.
   this, and `test/native_parquet_schema.sh` and
   `test_native_parquet_schema.py` now read `twolevel.parquet`, with one empty
   row, to pin it.
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  or `smallint` column over an Iceberg `boolean`, a `bigint` column over a
+  decimal partitioned by bucket, and a `text` column over an Iceberg `int`
+  partitioned by bucket. The FDW matches the Iceberg field by
+  its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
+  `test_export_sink.py`.
+- `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
+  single columnar table with a unique index or primary key (#2080). With 2 or
+  more workers the load either waited until cancelled or failed with 40P01
+  `deadlock detected`, even when every key in the file was distinct. Each worker
+  keeps its unique-key locks in a prepared transaction until every worker has
+  finished, so the workers waited on each other. The function now refuses that
+  load up front with SQLSTATE 0A000 and the hint
+  `Load it with workers => 1, or with COPY.` An exclusion constraint is refused
+  the same way. Each worker checks again once it holds its lock on the table, so
+  a unique index created after the first check, but before any worker has opened
+  the table, is refused too. One worker still loads such a table, and a
+  partitioned target with a primary key still loads with more than one worker.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`. Each refused table,
+  including the exclusion-constraint table and the table whose unique index
+  appeared late, is checked to stay empty. The tests also cover a deferrable
+  unique index, a partial unique index, a unique index after a non-unique one,
+  and a late unique index with 4 workers, where no loader may insert a row.
+  They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
+  default. They also cover a deferrable exclusion constraint, a gist exclusion
+  constraint, a unique index on an expression, a unique index on two columns,
+  and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
+  INSERT still gets 42501 first, a URL still gets the refusal for remote files
+  first, and `dedup => true` still gets the refusal and its hint.
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
+  table now refuse an Iceberg field that has an `initial-default` (#2087).
+  Format-version 3 lets a column added to a table name the value that older data
+  files must read for it. The reader ignored that value, so every row written
+  before the column existed read as null, even in a required column, with no
+  error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
+  A default of any JSON type is refused, including `""`, `false` and `0`.
+  The refusal covers an output column and every column an equality delete
+  compares, whatever its type, whether it is required, and whether the field
+  also has a `write-default`. A query that leaves
+  the field out still reads, except through a `pgcolumnar_iceberg` foreign
+  table: it refuses any scan when one of its columns has an `initial-default`.
+  A null `initial-default` counts as none, even when the field also has a
+  `write-default`, and so does a field that has only a `write-default`. The
+  refusal also applies in a metadata file whose `format-version` is below 3.
+  Reading the default is not supported yet.
+  docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`;
+  each refusal check matches the message that names the field (`field "qty"`,
+  or `field "k"` for the equality delete), so a message that names the wrong
+  field fails it.
+- `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
+  carries no Parquet field ids (#2088). Such a file comes from Iceberg
+  `add_files` or a Hive or Spark migration, and is read through the table's
+  `schema.name-mapping.default` property. The pass that finds the deleted rows
+  ignored that mapping, so once the table had an equality delete, the scan
+  failed with `the Parquet file carries no field ids` and a hint asking for the
+  mapping the table already had. That pass now binds the delete columns through
+  the mapping, as the data read does. A delete column the mapping does not bind
+  is still refused (22023), because reading it as null would keep rows the
+  delete removes. The same delete applies once the mapping binds that column,
+  so the refusal comes from the mapping alone. The delete also applies when the
+  query lists the columns in another order than the mapping, so the pass binds
+  through the mapping's field ids, not the query's. It applies to a delete
+  keyed on two columns and to two delete files on different columns, and a
+  two-column delete with one unbound column is refused too.
+  docs/sql-reference.md.
+  `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
 - `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
   294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
   microseconds since 1970-01-01, and that is the last value it holds. The
@@ -774,6 +872,10 @@ true until the next version shipped.
   refusal now names the target type with its precision and scale, for example
   `numeric(5,2)`, not `numeric`. A table-driven check imports one file of each
   of 19 Arrow types into each of 19 target types and pins every pairing.
+  Two more checks pin the same refusal for a field inside a struct: a struct
+  field of float64, or of decimal128(10,0), is refused for a composite field of
+  type `bigint`. With the type check skipped for struct fields only, the two
+  imported `(4609434218613702656)` and `(7),(0)` and every other check passed.
   docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
 - `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
   `virtual` (#2091). The setting was a free-form string, and the object-store

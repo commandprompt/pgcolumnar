@@ -366,7 +366,10 @@
 # the module map naming every source file and catalog, by collection over NO_CLUSTER.
 # guard_tests 894 -> 895 for test_coverage_report.py's derived guard that every job running run_coverage.py
 # fetches the release tags first (#2054), by collection over NO_CLUSTER.
-guard_tests 895
+# guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
+# that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
+# over NO_CLUSTER: 897 tests collected.
+guard_tests 897
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2135,32 +2138,150 @@ guard_tests 895
 # still exports (test_an_in_range_nested_timestamp_still_exports), and the refusal carries its DETAIL
 # (test_the_out_of_range_timestamp_error_gives_arrows_last_value), by collection over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it): 5490 tests collected.
-# cluster_tests 5570 -> 5574 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# cluster_tests 5570 -> 5575 for #2088's five tests in test_iceberg_name_mapping.py (an equality delete on a
+# long and on a string column applies to a name-mapped data file with no field ids, an equality column the
+# mapping does not bind is refused and the refusal names the field id, and the backend survives:
+# test_name_mapping_equality_* and test_name_mapping_backend_up_after_equality_deletes), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6275 tests collected,
+# less guard_tests 894, is 5381. That count was taken on the PR's first base, where this line read
+# 5376 -> 5381; restates since have shifted the line's numbers but not its collection.
+# cluster_tests 5575 -> 5576 for test_name_mapping_equality_mapped_amount_applies in
+# test_iceberg_name_mapping.py (#2088 review on b14589eb: the amount = 30 equality delete under the full
+# mapping applies, the positive control for the unbound refusal), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6299 tests collected,
+# cluster_tests 5576 -> 5577 for test_name_mapping_equality_delete_reordered in test_iceberg_name_mapping.py
+# (#2088 review on c47ee97a: the equality delete applies when the query lists the columns in another order
+# than the mapping), by collection on PG 18.6:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6380 tests collected,
+# less guard_tests 895.
+# cluster_tests 5577 -> 5580 for test_name_mapping_equality_delete_two_columns,
+# test_name_mapping_equality_delete_two_files and test_name_mapping_equality_two_column_unbound_is_refused in
+# test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
+# an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
+# cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
+# cluster_tests 5581 -> 5586 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
+# test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
+# test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
+# test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
+# collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
+# cluster_tests 5586 -> 5591 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
+# test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
+# test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
+# test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
+# test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
+# cluster_tests 5591 -> 5593 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
+# and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
+# by main's later growth.
+# cluster_tests 5593 -> 5595 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
+# and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5507 -> 5509 (5509 tests collected); the numbers here are shifted
+# by main's later growth, and the merge of main at 6b54a65a gives 5537 tests collected.
+# cluster_tests 5595 -> 5597 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
+# and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
+# of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+# cluster_tests 5597 -> 5603 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
+# loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
+# cluster_tests 5603 -> 5605 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
+# 98 on main, 106 on this branch.
+# cluster_tests 5605 -> 5607 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
+# collected for that file: 108.
+# cluster_tests 5607 -> 5610 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
+# one of 4 loaders, which a row trigger's sequence shows; collected for that file: 111.
+# cluster_tests 5610 -> 5613 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
+# default worker count; collected for that file: 114.
+# cluster_tests 5613 -> 5615 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
+# exclusion constraint and an expression unique index are refused with 2 workers; collected for that file: 116.
+# cluster_tests 5615 -> 5620 for the #2147 review of fa01775c, five tests in test_parallel_copy.py: a gist exclusion
+# constraint and a NULLS NOT DISTINCT unique index with an INCLUDE column are refused with 2 workers; a caller
+# without INSERT gets 42501, an s3:// URL gets the #1886 refusal, and dedup => true still gets the refusal and
+# its hint; collected for that file: 121. restate.py shifts the numbers in these #2080 lines at each merge of
+# main. By collection over the cluster files after the merge of main 199e4aa7: 5603 tests collected.
+# cluster_tests 5620 -> 5626 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
+# `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
+# cluster_tests 5626 -> 5631 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
+# FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
+# file, and no backend killed by a signal), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
+# cluster_tests 5631 -> 5637 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
+# after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
+# cluster_tests 5637 -> 5640 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
+# leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5507 tests collected.
+# cluster_tests 5640 -> 5644 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
+# exports in one session each return their row count and leave no temp file; a FATAL export after a failed
+# unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
+# cluster_tests 5644 -> 5649 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
+# 5597 at 2e3fea7a; #2152 adds 20 tests in all, listed here and below.
+# cluster_tests 5649 -> 5652 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# (test_the_field_type_lookup_matches_the_whole_field_name,
+# test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
+# test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too).
+# cluster_tests 5652 -> 5657 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
+# test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
+# test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
+# test_bucket_pruning_works_on_an_iceberg_int_source).
+# cluster_tests 5657 -> 5658 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
+# in test_iceberg_fdw.py, from the third #2152 review, counted by collection of the cluster files (all
+# test_*.py not in NO_CLUSTER).
+# cluster_tests 5658 -> 5660 for #2086's
+# test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too and
+# test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too in test_iceberg_fdw.py, from the
+# fourth #2152 review.
+# cluster_tests 5660 -> 5664 for #2086's test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int,
+# test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
+# test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
+# fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
+# cluster_tests 5664 -> 5668 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-# cluster_tests 5574 -> 5578 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# cluster_tests 5668 -> 5672 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5578 -> 5584 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# cluster_tests 5672 -> 5678 for six more #2079 tests in test_parquet_nested_import.py, from the second
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-# cluster_tests 5584 -> 5585 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# cluster_tests 5678 -> 5679 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-# cluster_tests 5585 -> 5589 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# cluster_tests 5679 -> 5683 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
 # #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
 # a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
-# cluster_tests 5589 -> 5591 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# cluster_tests 5683 -> 5685 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
 # #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
 # struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
-# cluster_tests 5591 -> 5595 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
+# cluster_tests 5685 -> 5689 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
 # #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
 # leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
-cluster_tests 5595
+cluster_tests 5689

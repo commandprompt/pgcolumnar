@@ -298,6 +298,19 @@ these constraints.
 - The target is a single columnar table or a RANGE-partitioned table with
   columnar partitions. The function rejects any other target, such as a heap
   table.
+- A single columnar table with a unique or exclusion index, including a primary
+  key, loads with one worker only. The function refuses more workers with
+  `0A000`. The workers would wait on each other's prepared transactions, so the
+  load would hang or fail with a deadlock error. Every kind of unique index
+  counts, even a partial index that no loaded row matches. That includes
+  deferrable indexes, indexes on expressions or on more than one column, and
+  indexes with INCLUDE columns or NULLS NOT DISTINCT. So does an exclusion
+  constraint of any index type, such as gist. So do invalid unique indexes, such
+  as the one a failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves behind: such an
+  index still checks every insert. A caller without INSERT on the table gets
+  `42501` first, and a URL gets the refusal for remote files first. A
+  partitioned target with such an index is not limited: each worker loads its
+  own partitions.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.
@@ -1433,6 +1446,15 @@ table at its current snapshot. It has these limits:
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet. The reader accepts the file format in
   any case, so `parquet` and `PARQUET` both read.
+- The reader does not apply a format-version-3 field's `initial-default`, the
+  value older data files must read for a column added later (#2087). It refuses
+  such a field with SQLSTATE 0A000 rather than read those rows as null. The
+  refusal applies when the field is an output column, or the column an
+  equality delete compares. A query that leaves the field out still reads. A
+  `pgcolumnar_iceberg` foreign table refuses any scan when one of its columns
+  has an `initial-default`. A null `initial-default` counts as none. The
+  reader refuses the field even when every data file carries it, and also in a
+  metadata file whose `format-version` is lower than 3.
 - The table metadata file may be plain JSON or gzip-compressed. Writers produce a
   gzip file when the table property `write.metadata.compression-codec` is `gzip`,
   and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects
