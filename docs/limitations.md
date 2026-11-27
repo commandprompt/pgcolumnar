@@ -318,7 +318,14 @@ these constraints.
   workers can wait on each other until the load is cancelled, or fail with a
   deadlock error. A disabled trigger does not count, and neither do the internal
   triggers of a foreign key. A trigger on UPDATE or DELETE only does not count
-  either. One worker still runs the trigger for every row.
+  either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
+  default `session_replication_role`. One worker still runs the trigger for every
+  row.
+- The function does not look inside CHECK constraints or column defaults. One
+  whose VOLATILE function writes to another table, such as a table with a primary
+  key, can make the workers wait on each other the same way, and the load ends at
+  `statement_timeout` or with a deadlock error. Load such a table with
+  `workers => 1`.
 - A `CREATE INDEX` that starts while the workers open the table waits until the
   load ends. It used to be able to hang the load.
 - For a partitioned target the file must be sorted ascending by the partition

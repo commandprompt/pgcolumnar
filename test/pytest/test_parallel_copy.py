@@ -221,7 +221,7 @@ class _Db:
             return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
         return f"no error ({row[0] if row else None})"
 
-    def unique_index_after_check(self, path, table="t_ur", workers=2, ddl=None):
+    def unique_index_after_check(self, path, table="t_ur", workers=2, ddl=None, reader=None):
         """-> remote_refusal() of a `workers`-worker parallel_copy into `table`
         (which must exist) that gains a unique index after the calling backend's
         check, with "worker N" for the worker number, which varies. `ddl` is a list
@@ -231,7 +231,8 @@ class _Db:
             with psycopg.connect(self.dsn, autocommit=True) as lk:
                 lk.execute("BEGIN")
                 lk.execute(f"LOCK TABLE {table} IN SHARE MODE")
-                load = threading.Thread(target=lambda: out.setdefault("got", self.remote_refusal(
+                read = reader or self.remote_refusal
+                load = threading.Thread(target=lambda: out.setdefault("got", read(
                     f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})",
                     timeout="20s")))
                 load.start()
@@ -247,10 +248,14 @@ class _Db:
             return query_error(_message(exc))
         return re.sub(r"worker \d+ failed", "worker N failed", out.get("got", "no result"))
 
-    def ddl_outcome(self, sql, timeout=None):
-        """-> "no error (<command tag>)" when `sql` ran, else remote_refusal()'s "SQLSTATE message | hint"."""
+    def ddl_outcome(self, sql, timeout=None, options=""):
+        """-> "no error (<command tag>)" when `sql` ran, else remote_refusal()'s "SQLSTATE message | hint".
+        `options` adds "-c name=value" settings."""
+        kw = _timeout(timeout)
+        if options:
+            kw["options"] = f"{kw.get('options', '')} {options}".strip()
         try:
-            with psycopg.connect(self.dsn, autocommit=True, **_timeout(timeout)) as conn:
+            with psycopg.connect(self.dsn, autocommit=True, **kw) as conn:
                 cur = conn.execute(sql)
         except psycopg.Error as exc:
             if not exc.sqlstate:
@@ -371,6 +376,108 @@ class _Db:
         except psycopg.Error as exc:
             return seen, query_error(_message(exc))
         return seen, out.get("got", out.get("err", "no result"))
+
+    def remote_detail(self, sql, timeout=None):
+        """-> "SQLSTATE | DETAIL" of the error `sql` raised, or "no error (...)"."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout(timeout)) as conn:
+                row = conn.execute(sql).fetchone()
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            return f"{exc.sqlstate} | {exc.diag.message_detail or ''}"
+        return f"no error ({row[0] if row else None})"
+
+    def _no_coordinator(self):
+        self._poll("SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'",
+                   lambda g: g == 0, tries=300)
+
+    def dedup_lock_probe(self, path, table):
+        """-> "error | time | rows | prepared": a dedup load under the caller's ACCESS
+        EXCLUSIVE lock on pgcolumnar.load_fingerprint and a 4 s statement_timeout. A
+        watchdog cancels the caller again at 12 s, so the old hang reads as an error."""
+        out = {}
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                dog = threading.Timer(12, lambda: self.value(f"SELECT pg_cancel_backend({pid})"))
+                dog.start()
+                conn.execute("BEGIN")
+                conn.execute("LOCK pgcolumnar.load_fingerprint IN ACCESS EXCLUSIVE MODE")
+                conn.execute("SET statement_timeout = '4s'")
+                t0 = time.monotonic()
+                try:
+                    conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)")
+                    out["err"] = "no error"
+                except psycopg.Error as exc:
+                    out["err"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+                took = time.monotonic() - t0
+                dog.cancel()
+                conn.execute("ROLLBACK")
+        except psycopg.Error as exc:
+            return query_error(_message(exc))
+        self._no_coordinator()
+        when = "under 10 s" if took < 10 else f"took {int(took * 1000)} ms"
+        return f"{out['err']} | {when} | {self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared"
+
+    def share_wait_probe(self, path, table):
+        """-> "error | time | prepared": another session holds SHARE on `table` for 8 s,
+        from its own thread so it lets go whatever the load does, while a load runs
+        under a 2 s statement_timeout."""
+        held = threading.Event()
+
+        def hold():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True) as lk:
+                    lk.execute("BEGIN")
+                    lk.execute(f"LOCK TABLE {table} IN SHARE MODE")
+                    held.set()
+                    lk.execute("SELECT pg_sleep(8)")
+                    lk.execute("COMMIT")
+            except psycopg.Error:
+                held.set()
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        t0 = time.monotonic()
+        got = self.remote_refusal(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2)", timeout="2s")
+        took = time.monotonic() - t0
+        holder.join()
+        when = "under 5 s" if took < 5 else f"took {int(took * 1000)} ms"
+        return f"{str(got).split(' | ')[0]} | {when} | {self.value(LEAK)} prepared"
+
+    def lost_one_of_three(self, path, table):
+        """-> "load | ddl | rows | leak": 3 workers held 4 s, the second terminated
+        before it opens `table`, then CREATE INDEX queues (#2219 review)."""
+        out = {}
+        self._hold(4000)
+        try:
+            load = threading.Thread(target=lambda: out.setdefault("load", self.remote_refusal(
+                f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 3)", timeout="15s")))
+            load.start()
+            victim = None
+            for _ in range(100):
+                held = self._loaders_on(table)
+                if (isinstance(held, str) and held.startswith("1 held")
+                        and self.value(f"SELECT count(*) FROM pg_stat_activity WHERE {LOADER}") == 3):
+                    victim = self.value(f"SELECT pid FROM pg_stat_activity WHERE {LOADER} AND pid NOT IN "
+                                        f"(SELECT pid FROM pg_locks WHERE relation = '{table}'::regclass "
+                                        "AND pid IS NOT NULL) ORDER BY pid LIMIT 1")
+                    if isinstance(victim, int):
+                        break
+                time.sleep(0.05)
+            self.value(f"SELECT pg_terminate_backend({victim})")
+            ddl = threading.Thread(target=lambda: out.setdefault("ddl", self.ddl_outcome(
+                f"CREATE INDEX {table}_id ON {table} (id)", timeout="15s")))
+            ddl.start()
+            load.join()
+            ddl.join()
+        finally:
+            self._hold(0)
+        got = re.sub(r"worker \d+ failed", "worker N failed", str(out.get("load", "no result")))
+        return (f"{got} | {out.get('ddl', 'no result')} | {self.value(f'SELECT count(*) FROM {table}')} | "
+                f"leak {self.value(LEAK)}")
 
     def copy_in(self, table, data):
         try:
@@ -1407,6 +1514,32 @@ def pcopy(pgc_cluster, server_dir):
         db.run("CREATE TABLE t_owntg (id int, txt text) USING pgcolumnar; "
                "CREATE TRIGGER t_owntg_k AFTER INSERT ON t_owntg FOR EACH ROW EXECUTE FUNCTION t_tg_row()")
         r["ownw order trigger"] = _self_lock_copy(db.dsn, "INSERT INTO t_owntg VALUES (-7, 'pre')", "t_owntg", f)
+        # ---- #2187, the review of #2219 ----
+        db.run("CREATE TABLE t_ddl (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_shw (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_tgl2 (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_tgalw (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgalw_k AFTER INSERT ON t_tgalw FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "ALTER TABLE t_tgalw ENABLE ALWAYS TRIGGER t_tgalw_k; "
+               "CREATE TABLE t_tgrep (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgrep_k AFTER INSERT ON t_tgrep FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "ALTER TABLE t_tgrep ENABLE REPLICA TRIGGER t_tgrep_k; "
+               "CREATE TABLE t_lost3 (id int, txt text) USING pgcolumnar")
+        r["dedup lock"] = db.dedup_lock_probe(f, "t_ddl")
+        r["share wait"] = db.share_wait_probe(f, "t_shw")
+        r["late trigger detail"] = db.unique_index_after_check(f, "t_tgl2", 2, ddl=[
+            "CREATE TRIGGER t_tgl2_k AFTER INSERT ON t_tgl2 FOR EACH ROW EXECUTE FUNCTION t_tg_row()"],
+            reader=db.remote_detail)
+        r["trigger always"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_tgalw'::regclass, '{f}', 2)", timeout="10s")
+        tgk_before = db.value("SELECT count(*) FROM t_tgk")
+        rep2 = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgrep'::regclass, '{f}', 2)", timeout="30s")
+        tgk_after = db.value("SELECT count(*) FROM t_tgk")
+        added = tgk_after - tgk_before if isinstance(tgk_before, int) and isinstance(tgk_after, int) else "?"
+        r["trigger replica"] = f"{rep2} | {db.value('SELECT count(*) FROM t_tgrep')} | trigger rows added {added}"
+        r["hold guc"] = db.ddl_outcome("SET pgcolumnar.parallel_copy_open_hold_ms = 1",
+                                       options="-c role=pcopy_noins")
+        r["lost one of three"] = db.lost_one_of_three(f, "t_lost3")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -2396,3 +2529,54 @@ def test_parallel_copy_own_write_refusal_before_the_trigger_refusal(pcopy, expec
                 '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_owntg"',
                 "parallel_copy into a table with an INSERT trigger after the caller's own INSERT with 2 workers gets"
                 " the #2211 refusal (55000) before the trigger refusal (#2187)")
+
+
+# ---- #2187, the review of #2219 ---------------------------------------------------
+
+def test_parallel_copy_dedup_under_a_fingerprint_lock_returns_its_timeout(pcopy, expect):
+    """The caller waits for the coordinator after a cancel; with dedup the coordinator
+    waited on the caller's lock on pgcolumnar.load_fingerprint with no end. Its SIGTERM
+    now raises a cancel, so the wait ends and the load rolls back."""
+    expect.text(pcopy["dedup lock"], "57014 canceling statement due to statement timeout | under 10 s | 0 rows | 0 prepared",
+                "parallel_copy with dedup under the caller's ACCESS EXCLUSIVE lock on pgcolumnar.load_fingerprint returns"
+                " its statement_timeout within 10 s, loads nothing and leaves no prepared transaction (#2187)")
+
+
+def test_parallel_copy_coordinator_waiting_on_share_returns_its_timeout(pcopy, expect):
+    expect.text(pcopy["share wait"], "57014 canceling statement due to statement timeout | under 5 s | 0 prepared",
+                "parallel_copy whose coordinator waits on another session's SHARE lock returns its 2 s"
+                " statement_timeout within 5 s, not when the lock is released (#2187)")
+
+
+def test_parallel_copy_late_trigger_refusal_carries_its_detail(pcopy, expect):
+    expect.text(pcopy["late trigger detail"],
+                "0A000 | Each worker runs the trigger in its own prepared transaction, so writes the trigger makes can"
+                " wait on another worker until the load is cancelled.",
+                "the loaders' refusal of an INSERT trigger created after the caller's check carries its DETAIL to the"
+                " caller (#2187)")
+
+
+def test_parallel_copy_refuses_an_enable_always_trigger(pcopy, expect):
+    expect.text(pcopy["trigger always"], _want_trigger("t_tgalw", "t_tgalw_k"),
+                "parallel_copy refuses a single table with an ENABLE ALWAYS INSERT trigger and 2 workers with 0A000"
+                " (#2187)")
+
+
+def test_parallel_copy_still_loads_an_enable_replica_trigger_table(pcopy, expect):
+    expect.text(pcopy["trigger replica"], "no error (5000) | 5000 | trigger rows added 0",
+                "control: parallel_copy with 2 workers still loads a single table whose INSERT trigger is ENABLE"
+                " REPLICA, and the trigger does not fire (#2187)")
+
+
+def test_parallel_copy_hold_setting_is_superuser_only(pcopy, expect):
+    expect.text(pcopy["hold guc"],
+                '42501 permission denied to set parameter "pgcolumnar.parallel_copy_open_hold_ms" | no hint',
+                "a role without superuser cannot set pgcolumnar.parallel_copy_open_hold_ms (#2187)")
+
+
+def test_parallel_copy_one_lost_loader_keeps_the_wait_for_the_others(pcopy, expect):
+    expect.text(pcopy["lost one of three"],
+                "XX000 pgcolumnar.parallel_copy worker N failed: loader exited without reporting a result | no hint"
+                " | no error (CREATE INDEX) | 0 | leak 0",
+                "with 3 workers, one loader lost before it opens the table and a CREATE INDEX queued after the first,"
+                " the load fails promptly instead of hanging (#2187)")

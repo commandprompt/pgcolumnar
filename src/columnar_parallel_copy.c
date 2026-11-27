@@ -302,8 +302,8 @@ pcopy_has_unique_or_exclusion_index(Relation rel)
 
 /*
  * pcopy_insert_trigger
- *		The name of an enabled, user-defined trigger that fires on INSERT into
- *		rel, or NULL when it has none.
+ *		The name of a user-defined trigger that fires on INSERT into rel in
+ *		this session, or NULL when it has none.
  *
  *		parallel_copy cannot load such a single table with more than one worker
  *		either (#2187). Each loader runs the trigger, and a trigger can write to
@@ -330,8 +330,21 @@ pcopy_insert_trigger(Relation rel)
 	{
 		Trigger    *t = &td->triggers[i];
 
-		if (!t->tgisinternal && t->tgenabled != TRIGGER_DISABLED &&
-			TRIGGER_FOR_INSERT(t->tgtype))
+		bool		fires;
+
+		/*
+		 * Whether it fires in this session, by core's own rule: a REPLICA
+		 * trigger only under session_replication_role = replica, an ORIGIN one
+		 * only outside it, ALWAYS in both, DISABLED never (#2219 review). The
+		 * calling backend and each loader judge by their own setting.
+		 */
+		if (SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA)
+			fires = t->tgenabled == TRIGGER_FIRES_ON_REPLICA ||
+				t->tgenabled == TRIGGER_FIRES_ALWAYS;
+		else
+			fires = t->tgenabled == TRIGGER_FIRES_ON_ORIGIN ||
+				t->tgenabled == TRIGGER_FIRES_ALWAYS;
+		if (!t->tgisinternal && fires && TRIGGER_FOR_INSERT(t->tgtype))
 			return t->tgname;
 	}
 	return NULL;
@@ -561,19 +574,8 @@ typedef struct PcopyHeader
 	char		coord_errdetail[512];
 	char		coord_errhint[256];
 
-	/*
-	 * Opening the target (#2187). open_lock_key names this load's open locks.
-	 * lost is set by the coordinator when a loader exited without reporting, so
-	 * no sibling waits for it to open the table. launched and caller_gone are a
-	 * handshake: the coordinator sets launched before it starts any loader, the
-	 * caller sets caller_gone when it stops waiting, and each reads the other's
-	 * flag after a barrier, so either the coordinator starts no loader or the
-	 * caller waits for it to finish.
-	 */
+	/* names this load's open locks (#2187), see "Opening the target together" */
 	uint32		open_lock_key;
-	pg_atomic_uint32 lost;
-	pg_atomic_uint32 launched;
-	pg_atomic_uint32 caller_gone;
 
 	/*
 	 * Opt-in load dedup (#403 item 7). dedup is what the caller asked for;
@@ -1068,8 +1070,10 @@ int			pgcolumnar_parallel_copy_open_hold_ms = 0;	/* dev/test (#2187) */
  * lock before loader i did would not wait at all, so it first waits, outside
  * the lock manager, for the flag. Loader i sets it before it requests anything
  * on the target, so that wait cannot be part of a lock cycle. A loader that
- * fails sets its state to FAILED, and one that exits without reporting makes
- * the coordinator set lost, so nobody waits for the flag forever.
+ * fails sets its state to FAILED, and for one that exits without reporting the
+ * coordinator moves that loader's slot from PENDING to FAILED, so nobody waits
+ * for the flag forever -- and the other siblings are still waited for (#2219
+ * review: one flag for the whole load stopped the wait for every sibling).
  */
 static void
 pcopy_open_locktag(LOCKTAG *tag, const PcopyHeader *hdr, int widx)
@@ -1120,8 +1124,7 @@ pcopy_wait_for_siblings_to_open(PcopyHeader *hdr, PcopyWorkerSlot *slots, int wi
 		if (j == widx)
 			continue;
 		while (pg_atomic_read_u32(&slots[j].armed) == 0 &&
-			   pg_atomic_read_u32(&slots[j].state) == PCOPY_PENDING &&
-			   pg_atomic_read_u32(&hdr->lost) == 0)
+			   pg_atomic_read_u32(&slots[j].state) == PCOPY_PENDING)
 		{
 			CHECK_FOR_INTERRUPTS();
 			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
@@ -1517,6 +1520,15 @@ pcopy_rollback_prepared_quietly(const char *gid)
  * cleanup and orphan every loader's prepared transaction (pinning the cluster xmin
  * horizon). Instead the handler records the request and wakes the wait loop, which
  * rolls the prepared loaders back in normal backend context.
+ *
+ * It also raises a query cancel (#2219 review). The caller now waits for this
+ * process to exit after it terminates it, so every wait here must end on SIGTERM,
+ * a lock wait included: with dedup => true the coordinator reads and writes
+ * pgcolumnar.load_fingerprint, and a lock the caller holds there kept both
+ * waiting until a second cancel. The cancel turns such a wait into an ERROR,
+ * whose PG_CATCH below rolls the prepared loaders back. The cleanup paths and
+ * the COMMIT PREPARED loop hold interrupts, so the cancel cannot cut either
+ * short.
  */
 static volatile sig_atomic_t pcopy_coord_got_sigterm = false;
 
@@ -1526,6 +1538,8 @@ pcopy_coord_sigterm(SIGNAL_ARGS)
 	int			save_errno = errno;
 
 	pcopy_coord_got_sigterm = true;
+	InterruptPending = true;
+	QueryCancelPending = true;
 	SetLatch(MyLatch);
 	errno = save_errno;
 }
@@ -1616,17 +1630,6 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		int64		total = 0;
 		int			ncommit = nworkers;	/* ranges that hold data */
 
-		/*
-		 * The handshake with the caller (#2187): either the caller sees
-		 * launched and waits for this coordinator to finish, or this
-		 * coordinator sees caller_gone and starts no loader, so no prepared
-		 * transaction can outlive the caller's error.
-		 */
-		pg_atomic_write_u32(&hdr->launched, 1);
-		pg_memory_barrier();
-		if (pg_atomic_read_u32(&hdr->caller_gone) != 0)
-			pcopy_coord_got_sigterm = true;
-
 		for (i = 0; i < nworkers && !pcopy_coord_got_sigterm; i++)
 		{
 			memcpy(bw.bgw_extra, &i, sizeof(int));
@@ -1657,8 +1660,19 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 					continue;
 				if (GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
 					running++;
-				else if (pg_atomic_read_u32(&slots[i].state) == PCOPY_PENDING)
-					pg_atomic_write_u32(&hdr->lost, 1);	/* see pcopy_wait_for_siblings_to_open */
+				else
+				{
+					/*
+					 * Stopped without reporting: mark that slot FAILED, so its
+					 * siblings stop waiting for it to open the table (see
+					 * pcopy_wait_for_siblings_to_open). It has exited, so it
+					 * can no longer store a state of its own.
+					 */
+					uint32		expected = PCOPY_PENDING;
+
+					(void) pg_atomic_compare_exchange_u32(&slots[i].state, &expected,
+														  PCOPY_FAILED);
+				}
 			}
 			if (running == 0 || pcopy_coord_got_sigterm)
 				break;
@@ -1693,8 +1707,10 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			/*
 			 * Cancelled: stop every loader, wait for it to exit, then roll back
 			 * every range that prepared -- all in normal backend context, so no
-			 * prepared transaction is orphaned in-doubt.
+			 * prepared transaction is orphaned in-doubt. Interrupts stay held
+			 * from here to exit: the pending cancel must not cut this short.
 			 */
+			HOLD_INTERRUPTS();
 			for (i = 0; i < nworkers; i++)
 				if (handles[i] != NULL)
 					TerminateBackgroundWorker(handles[i]);
@@ -1794,11 +1810,13 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			 * pg_prepared_xacts for resolution). COMMIT PREPARED does not fail
 			 * transiently, so short of a crash this loop completes.
 			 */
+			HOLD_INTERRUPTS();	/* a cancel must not stop the loop halfway (#2219) */
 			for (i = 0; i < ncommit; i++)
 			{
 				pcopy_finish_prepared(slots[i].gid, true);
 				total += slots[i].rows;
 			}
+			RESUME_INTERRUPTS();
 			hdr->total_rows = total;
 
 			/*
@@ -1847,6 +1865,8 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		ErrorData  *edata;
 		MemoryContext ecxt;
 
+		/* held to exit, so a pending cancel cannot cut the cleanup short */
+		HOLD_INTERRUPTS();
 		ecxt = MemoryContextSwitchTo(TopMemoryContext);
 		edata = CopyErrorData();
 		hdr->coord_sqlerrcode = edata->sqlerrcode;
@@ -2140,9 +2160,6 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	hdr->skipped_duplicate = false;
 	memset(hdr->fingerprint, 0, sizeof(hdr->fingerprint));
 	pg_atomic_init_u32(&hdr->coord_state, PCOPY_COORD_PENDING);
-	pg_atomic_init_u32(&hdr->lost, 0);
-	pg_atomic_init_u32(&hdr->launched, 0);
-	pg_atomic_init_u32(&hdr->caller_gone, 0);
 
 	for (i = 0; i < workers; i++)
 	{
@@ -2181,11 +2198,12 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	 * And wait for it to exit before raising the error (#2187). Returning at
 	 * once left the loaders' prepared transactions in pg_prepared_xacts while
 	 * the coordinator rolled them back: measured on PG 18, the caller's own
-	 * next statement saw 1 after a statement_timeout. The wait cannot hang on
-	 * a lock this backend holds: the coordinator waits on the target only
-	 * before it sets launched, and the caller waits only once it has seen
-	 * launched. Before that, caller_gone stops it from starting any loader. A
-	 * second cancel ends the wait.
+	 * next statement saw 1 after a statement_timeout. The wait is bounded by
+	 * the coordinator's cleanup, not by any lock: its SIGTERM raises a query
+	 * cancel, so a lock wait there -- on the target before it starts the
+	 * loaders, on pgcolumnar.load_fingerprint with dedup => true -- ends in an
+	 * ERROR and the same rollback (#2219 review). A second cancel also ends
+	 * the wait.
 	 */
 	PG_TRY();
 	{
@@ -2198,13 +2216,10 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		pg_atomic_write_u32(&hdr->caller_gone, 1);
-		pg_memory_barrier();
 		if (coord_handle != NULL)
 		{
 			TerminateBackgroundWorker(coord_handle);
-			if (pg_atomic_read_u32(&hdr->launched) != 0)
-				(void) WaitForBackgroundWorkerShutdown(coord_handle);
+			(void) WaitForBackgroundWorkerShutdown(coord_handle);
 		}
 		dsm_detach(seg);
 		PG_RE_THROW();

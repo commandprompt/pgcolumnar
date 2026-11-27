@@ -580,6 +580,16 @@ remote_refusal() {	# SQL -> "SQLSTATE message | hint" of its error, or "no error
 		*) printf 'no error (%s)\n' "$out";;
 	esac
 }
+remote_detail() {	# SQL -> "SQLSTATE | DETAIL" of its error, or "no error (...)"
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+	case "$out" in
+		*ERROR:*) printf '%s | %s\n' "$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): .*$/\1/p;q;}' <<<"$out")" \
+			"$(sed -n '/^DETAIL:/{s/^DETAIL: *//p;q;}' <<<"$out")";;
+		*) printf 'no error (%s)\n' "$out";;
+	esac
+}
 want_refusal() {	# FUNCTION URL -> the refusal #1886 promises
 	printf '0A000 columnar: %s does not read "%s" | %s reads local files only. Use a local filesystem path.\n' \
 		"$1" "$2" "$1"
@@ -1214,7 +1224,7 @@ SQL
 		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = '$t'::regclass AND mode = 'ShareLock' AND granted")" = 1 ] && break
 		sleep 0.1
 	done
-	got="$(PGOPTIONS='-c statement_timeout=20s' remote_refusal "SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $w)" \
+	got="$(PGOPTIONS='-c statement_timeout=20s' "${LATE_READER:-remote_refusal}" "SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $w)" \
 		| sed 's/worker [0-9]* failed/worker N failed/')"
 	wait "$pid"
 	printf '%s\n' "$got"
@@ -1703,4 +1713,117 @@ psql_run "DROP TABLE IF EXISTS t_owntg;
 check "parallel_copy into a table with an INSERT trigger after the caller's own INSERT with 2 workers gets the #2211 refusal (55000) before the trigger refusal (#2187)" \
 	"$(self_lock_copy "INSERT INTO t_owntg VALUES (-7, 'pre')" t_owntg)" \
 	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_owntg"'
+
+# ---- #2187, the review of #2219 ------------------------------------------------
+# 1. The caller waits for the coordinator to exit after a cancel. With dedup =>
+#    true the coordinator reads pgcolumnar.load_fingerprint, and a lock the
+#    caller holds there kept it waiting with no end: the caller returned only on
+#    a second cancel, and the rows committed after the caller's ROLLBACK. Its
+#    SIGTERM now raises a cancel, so the wait ends and the load rolls back. A
+#    watchdog cancels the caller again at 12 s, so the old hang reads as 57014
+#    "user request" after 12 s rather than hanging the suite.
+psql_run "DROP TABLE IF EXISTS t_ddl; CREATE TABLE t_ddl (id int, txt text) USING pgcolumnar;" >/dev/null
+dedup_lock_probe() {	# -> "error | time | rows | prepared"
+	local t0 t1 ms out wd
+	( sleep 12; q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = 'pcopy_ddl_probe'" >/dev/null ) &
+	wd=$!
+	t0=$(date +%s%N)
+	out="$(timeout -s KILL 60 env PGAPPNAME=pcopy_ddl_probe PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -X -At -v VERBOSITY=verbose -c "BEGIN" \
+		-c "LOCK pgcolumnar.load_fingerprint IN ACCESS EXCLUSIVE MODE" -c "SET statement_timeout = '4s'" \
+		-c "SELECT pgcolumnar.parallel_copy('t_ddl'::regclass, '$F', 2, dedup => true)" -c "ROLLBACK" 2>&1)"
+	t1=$(date +%s%N)
+	kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+	for _ in $(seq 300); do
+		[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")" = 0 ] && break
+		sleep 0.1
+	done
+	ms=$(( (t1 - t0) / 1000000 ))
+	printf '%s | %s | %s rows | %s prepared\n' \
+		"$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")" \
+		"$([ "$ms" -lt 10000 ] && echo 'under 10 s' || echo "took $ms ms")" \
+		"$(q "SELECT count(*) FROM t_ddl")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "parallel_copy with dedup under the caller's ACCESS EXCLUSIVE lock on pgcolumnar.load_fingerprint returns its statement_timeout within 10 s, loads nothing and leaves no prepared transaction (#2187)" \
+	"$(dedup_lock_probe)" "57014 canceling statement due to statement timeout | under 10 s | 0 rows | 0 prepared"
+# The same bound when the coordinator waits on the target before it starts any
+# loader: another session holds SHARE on it for 8 s, and the caller's 2 s
+# statement_timeout must end the call near 2 s.
+psql_run "DROP TABLE IF EXISTS t_shw; CREATE TABLE t_shw (id int, txt text) USING pgcolumnar;" >/dev/null
+share_wait_probe() {	# -> "error | time | prepared"
+	local hp t0 t1 ms out
+	pcopy_psql -c "BEGIN" -c "LOCK TABLE t_shw IN SHARE MODE" -c "SELECT pg_sleep(8)" -c "COMMIT" >/dev/null 2>&1 &
+	hp=$!
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 't_shw'::regclass AND mode = 'ShareLock' AND granted")" = 1 ] && break
+		sleep 0.05
+	done
+	t0=$(date +%s%N)
+	out="$(PGOPTIONS='-c statement_timeout=2s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_shw'::regclass, '$F', 2)")"
+	t1=$(date +%s%N)
+	ms=$(( (t1 - t0) / 1000000 ))
+	wait "$hp"
+	printf '%s | %s | %s prepared\n' "${out%% | *}" "$([ "$ms" -lt 5000 ] && echo 'under 5 s' || echo "took $ms ms")" \
+		"$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "parallel_copy whose coordinator waits on another session's SHARE lock returns its 2 s statement_timeout within 5 s, not when the lock is released (#2187)" \
+	"$(share_wait_probe)" "57014 canceling statement due to statement timeout | under 5 s | 0 prepared"
+
+# 2. What the earlier checks did not read. The loaders' DETAIL reaches the caller.
+#    An ENABLE ALWAYS trigger fires in the loaders and is refused; an ENABLE
+#    REPLICA trigger never fires there, so 2 workers still load and the trigger
+#    writes nothing. The hold setting is superuser-only.
+psql_run "DROP TABLE IF EXISTS t_tgl2, t_tgalw, t_tgrep;
+          CREATE TABLE t_tgl2 (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_tgalw (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgalw_k AFTER INSERT ON t_tgalw FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          ALTER TABLE t_tgalw ENABLE ALWAYS TRIGGER t_tgalw_k;
+          CREATE TABLE t_tgrep (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgrep_k AFTER INSERT ON t_tgrep FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          ALTER TABLE t_tgrep ENABLE REPLICA TRIGGER t_tgrep_k;" >/dev/null
+check "the loaders' refusal of an INSERT trigger created after the caller's check carries its DETAIL to the caller (#2187)" \
+	"$(LATE_READER=remote_detail late_ddl t_tgl2 2 "CREATE TRIGGER t_tgl2_k AFTER INSERT ON t_tgl2 FOR EACH ROW EXECUTE FUNCTION t_tg_row();")" \
+	"0A000 | Each worker runs the trigger in its own prepared transaction, so writes the trigger makes can wait on another worker until the load is cancelled."
+check "parallel_copy refuses a single table with an ENABLE ALWAYS INSERT trigger and 2 workers with 0A000 (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgalw'::regclass, '$F', 2)")" \
+	"$(want_trigger t_tgalw t_tgalw_k)"
+tgk_before="$(q "SELECT count(*) FROM t_tgk")"
+check "control: parallel_copy with 2 workers still loads a single table whose INSERT trigger is ENABLE REPLICA, and the trigger does not fire (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgrep'::regclass, '$F', 2)") | $(q "SELECT count(*) FROM t_tgrep") | trigger rows added $(( $(q "SELECT count(*) FROM t_tgk") - tgk_before ))" \
+	"no error (5000) | 5000 | trigger rows added 0"
+check "a role without superuser cannot set pgcolumnar.parallel_copy_open_hold_ms (#2187)" \
+	"$(PGOPTIONS='-c role=pcopy_noins' remote_refusal "SET pgcolumnar.parallel_copy_open_hold_ms = 1")" \
+	'42501 permission denied to set parameter "pgcolumnar.parallel_copy_open_hold_ms" | no hint'
+
+# 3. One loader lost must not stop the wait for the others. With 3 workers held,
+#    the second loader is terminated before it opens the table, then CREATE INDEX
+#    queues: the first loader must still wait for the third, so the load fails
+#    promptly with the lost loader's error instead of hanging behind the index.
+psql_run "DROP TABLE IF EXISTS t_lost3; CREATE TABLE t_lost3 (id int, txt text) USING pgcolumnar;" >/dev/null
+lost_one_of_three() {	# -> "load | ddl | rows | leak"
+	local lp dp victim=""
+	pcopy_hold 4000 >/dev/null
+	( PGOPTIONS='-c statement_timeout=15s' remote_refusal \
+		"SELECT pgcolumnar.parallel_copy('t_lost3'::regclass, '$F', 3)" >"$DATADIR/t_lost3.load" ) &
+	lp=$!
+	for _ in $(seq 100); do
+		case "$(loaders_on t_lost3)" in "1 held"*)
+			[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE $LOADER")" = 3 ] &&
+				victim="$(q "SELECT pid FROM pg_stat_activity WHERE $LOADER AND pid NOT IN
+					(SELECT pid FROM pg_locks WHERE relation = 't_lost3'::regclass AND pid IS NOT NULL) ORDER BY pid LIMIT 1")"
+			[ -n "$victim" ] && break ;;
+		esac
+		sleep 0.05
+	done
+	q "SELECT pg_terminate_backend($victim)" >/dev/null
+	( PGOPTIONS='-c statement_timeout=15s' remote_refusal "CREATE INDEX t_lost3_id ON t_lost3 (id)" >"$DATADIR/t_lost3.ddl" ) &
+	dp=$!
+	wait "$lp"; wait "$dp"
+	pcopy_hold 0 >/dev/null
+	printf '%s | %s | %s | leak %s\n' "$(sed 's/worker [0-9]* failed/worker N failed/' "$DATADIR/t_lost3.load")" \
+		"$(cat "$DATADIR/t_lost3.ddl")" "$(q "SELECT count(*) FROM t_lost3")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "with 3 workers, one loader lost before it opens the table and a CREATE INDEX queued after the first, the load fails promptly instead of hanging (#2187)" \
+	"$(lost_one_of_three)" \
+	"XX000 pgcolumnar.parallel_copy worker N failed: loader exited without reporting a result | no hint | no error (CREATE INDEX) | 0 | leak 0"
 pgc_summary

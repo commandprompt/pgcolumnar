@@ -621,7 +621,11 @@ true until the next version shipped.
   again in each worker. A worker's refusal now carries its HINT and DETAIL to
   the caller. A cancelled load returned while the coordinator was still rolling
   back, so the caller's next statement could see the prepared transactions;
-  the function now waits for the coordinator first. New internal setting
+  the function now waits for the coordinator first. The coordinator's SIGTERM
+  now also cancels its lock waits, so that wait ends even when the coordinator
+  waits on a lock the caller holds, such as on `pgcolumnar.load_fingerprint`
+  with `dedup => true`; the load then rolls back. A trigger that does not fire
+  in the workers' session, such as `ENABLE REPLICA`, is not refused. New internal setting
   `pgcolumnar.parallel_copy_open_hold_ms`, for tests. docs/limitations.md,
   docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
   `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
