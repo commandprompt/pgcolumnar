@@ -698,6 +698,24 @@ true until the next version shipped.
   load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
   newline), which must be refused with 22P04 as heap `COPY` refuses it, and
   a `\.` line in the first range, which must end the load there.
+- `pgcolumnar.parallel_copy` into a partitioned target now reads the fields up
+  to the partition key with COPY's text escapes (#2202). It refused, with 22P02
+  and 0 rows loaded, two kinds of file that `COPY FROM` loads: a backslash
+  before a raw TAB in a field before the key, which COPY reads as a TAB inside
+  the value but the key parser read as the end of the field, and a key written
+  with an escape such as `\061`, which the key parser gave to the integer input
+  function undecoded. The key parser now splits at an unescaped TAB only and
+  decodes the key as COPY does: octal, hex and `\b \f \n \r \t \v` escapes, two
+  backslashes as one, any other escaped byte as itself, and a field that is
+  exactly `\N` as NULL. No RANGE partition takes a NULL key, so that load is now
+  refused with 23514, as `COPY FROM` refuses it. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`: 19 checks. Each of nine files is loaded by heap
+  `COPY` into a heap table partitioned the same way and by `parallel_copy` with
+  2 and 4 workers, and the outcome, the rows per partition and the rows must be
+  heap `COPY`'s: the issue's two cases, keys in octal, in hex, and with named
+  and other escaped bytes around them, a field before the key with every kind
+  of escape, an escaped backslash right before the delimiter, a `\N` key, and
+  two controls with no escapes.
 - The Iceberg foreign data wrapper no longer drops matching rows when an
   Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
   a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader

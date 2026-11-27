@@ -25,8 +25,9 @@
  *     the loaders skip its creation lock, each writing via pgcolumnar_bulk_parallel_writer.
  *   - a standalone byte splitter (pgcolumnar_file_split_offsets) exposed to SQL: N+1
  *     line-aligned offsets, a diagnostic the parallel load itself no longer calls.
- * Text format only for now, numeric/date-time partition keys only (their text form
- * is escape-free); CSV and other key types are later phases (see the plan).
+ * Text format only for now, numeric/date-time partition keys only; the splitter
+ * reads the fields up to the key with core COPY's text escapes (#2202). CSV and
+ * other key types are later phases (see the plan).
  *
  * Independent MIT implementation. References only the public PostgreSQL API
  * (server-file access, the COPY BeginCopyFrom interface, the background-worker and
@@ -37,6 +38,7 @@
  */
 #include "postgres.h"
 
+#include <ctype.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -64,6 +66,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "libpq/pqsignal.h"
+#include "mb/pg_wchar.h"
 #include "access/sysattr.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -579,6 +582,122 @@ pcopy_partition_bucket(Datum kd, PartitionBoundInfo bi, FmgrInfo *cmpfn, Oid col
 	return lo;
 }
 
+/* the value of one hex digit, which the caller has checked with isxdigit() */
+static int
+hex_digit_value(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	return c - 'A' + 10;
+}
+
+/*
+ * pcopy_text_field
+ *		Read one field of a COPY text-format line at p, as core COPY's text
+ *		attribute reader does with the delimiter and NULL marker the loaders use
+ *		(TAB and \N, the defaults) (#2202). The field ends at an unescaped TAB, at
+ *		a CR or LF, or at the end of the string. A backslash escapes the byte after
+ *		it, whatever that byte is: a backslash and a raw TAB are a TAB inside the
+ *		value, not the end of the field. \NNN (1-3 octal digits), \xH and \xHH
+ *		(hex), and \b \f \n \r \t \v decode; any other escaped byte, a second
+ *		backslash included, is itself. A trailing lone backslash is dropped, as
+ *		core drops it.
+ *
+ *		When out is not NULL the decoded value goes there, and the field is
+ *		checked as core checks it: a decoded NUL or high-bit byte makes core
+ *		verify the value's encoding, and so does this. Returns a pointer just past
+ *		the field. *isnull is set when the raw field is exactly the NULL marker
+ *		\N, which core compares before decoding.
+ */
+static char *
+pcopy_text_field(char *p, StringInfo out, bool *isnull)
+{
+	char	   *start = p;
+	bool		saw_non_ascii = false;
+
+	if (out)
+		resetStringInfo(out);
+	for (;;)
+	{
+		char		c = *p;
+
+		if (c == '\0' || c == '\t' || c == '\n' || c == '\r')
+			break;
+		p++;
+		if (c == '\\')
+		{
+			if (*p == '\0')
+				break;			/* a lone backslash at the end: core drops it */
+			c = *p++;
+			switch (c)
+			{
+				case '0':
+				case '1':
+				case '2':
+				case '3':
+				case '4':
+				case '5':
+				case '6':
+				case '7':
+					{
+						int			val = c - '0';
+
+						if (*p >= '0' && *p <= '7')
+						{
+							val = (val << 3) + (*p++ - '0');
+							if (*p >= '0' && *p <= '7')
+								val = (val << 3) + (*p++ - '0');
+						}
+						c = (char) (val & 0377);
+						if (c == '\0' || IS_HIGHBIT_SET(c))
+							saw_non_ascii = true;
+					}
+					break;
+				case 'x':
+					if (isxdigit((unsigned char) *p))
+					{
+						int			val = hex_digit_value(*p++);
+
+						if (isxdigit((unsigned char) *p))
+							val = (val << 4) + hex_digit_value(*p++);
+						c = (char) (val & 0xff);
+						if (c == '\0' || IS_HIGHBIT_SET(c))
+							saw_non_ascii = true;
+					}
+					break;
+				case 'b':
+					c = '\b';
+					break;
+				case 'f':
+					c = '\f';
+					break;
+				case 'n':
+					c = '\n';
+					break;
+				case 'r':
+					c = '\r';
+					break;
+				case 't':
+					c = '\t';
+					break;
+				case 'v':
+					c = '\v';
+					break;
+				default:
+					break;		/* any other byte, a TAB or a backslash too, is itself */
+			}
+		}
+		if (out)
+			appendStringInfoChar(out, c);
+	}
+	*isnull = (p - start == 2 && start[0] == '\\' && start[1] == 'N');
+	if (out && saw_non_ascii && !*isnull)
+		pg_verifymbstr(out->data, out->len, false);
+	return p;
+}
+
 /*
  * pcopy_partition_aligned_offsets
  *		Split a COPY text-format file into *workers_io byte ranges ALIGNED to the
@@ -590,9 +709,9 @@ pcopy_partition_bucket(Datum kd, PartitionBoundInfo bi, FmgrInfo *cmpfn, Oid col
  *		*workers_io to the number of partition segments.
  *
  * v1 restrictions (all checked): single-column RANGE partitioning, no DEFAULT
- * partition, non-expression key, COPY text format with default (whole-table,
- * table-order) column list, and a key field free of COPY escapes (true for the
- * numeric/temporal keys people range-partition on).
+ * partition, non-expression key, and COPY text format with the default
+ * (whole-table, table-order) column list, delimiter and NULL marker. The fields
+ * up to the key are read with core COPY's text escapes (pcopy_text_field, #2202).
  */
 static int64 *
 pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_io)
@@ -621,6 +740,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	ssize_t		len;
 	int64		off = 0;
 	StringInfoData rec;			/* a record that spans physical lines (#2084) */
+	StringInfoData keybuf;		/* the decoded key field (#2202) */
 	int64		rec_start = 0;
 	int			cur = 0;
 	int			prev_bucket = 0;
@@ -668,11 +788,10 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	keycoll = pkey->partcollation[0];
 
 	/*
-	 * Restrict the key to numeric/date-time types. Their COPY text representation
-	 * never contains a delimiter, newline or backslash, so reading the raw field
-	 * without COPY de-escaping is exact. Other types (text, etc.) can carry escapes
-	 * that would mis-parse and mis-bucket a row -- de-escaping them is a planned
-	 * enhancement, and until then we reject rather than silently misroute.
+	 * Restrict the key to numeric/date-time types. The key field is decoded as
+	 * COPY decodes it (#2202), but other types (text, etc.) are compared by
+	 * collation and have not been tested here -- supporting them is a planned
+	 * enhancement, and until then we reject rather than risk a misroute.
 	 */
 	{
 		char		cat;
@@ -683,7 +802,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("pgcolumnar.parallel_copy supports only numeric or date/time partition keys"),
-					 errhint("The partition key is read from the text file without COPY de-escaping; support for other key types is a planned enhancement.")));
+					 errhint("Support for other partition key types is a planned enhancement.")));
 	}
 
 	getTypeInputInfo(keytype, &infnoid, &ioparam);
@@ -762,6 +881,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	 * reclaimed by memory-context reset) and the AllocateFile handle.
 	 */
 	initStringInfo(&rec);
+	initStringInfo(&keybuf);
 	PG_TRY();
 	{
 		for (;;)
@@ -769,8 +889,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			int64		line_start = off;
 			char	   *p;
 			int			f = 0;
-			int			flen;
-			char	   *fld;
+			bool		isnull;
 			Datum		kd;
 			int			bucket;
 			bool		at_eof = false;
@@ -826,31 +945,47 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			else
 				p = line;
 
-			/* advance to the key field */
+			/*
+			 * Advance to the key field. Fields end at an unescaped TAB only: a
+			 * backslash and a TAB are data, as COPY reads them (#2202).
+			 */
 			for (f = 0; f < keyfield; f++)
 			{
-				p = strchr(p, '\t');
-				if (p == NULL)
+				p = pcopy_text_field(p, NULL, &isnull);
+				if (*p != '\t')
 					break;
 				p++;
 			}
-			if (p == NULL)
+			if (f < keyfield)
 				ereport(ERROR,
 						(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 						 errmsg("row at byte %ld has too few columns for the partition key",
 								(long) line_start)));
-			/* field ends at a tab, or a bare/CRLF line ending -- stopping at \r
-			 * too keeps a trailing \r out of the key value */
-			flen = (int) strcspn(p, "\t\r\n");
-			fld = pnstrdup(p, flen);
-			kd = InputFunctionCall(&infn, fld, ioparam, keytypmod);
-			pfree(fld);
-
-			bucket = pcopy_partition_bucket(kd, bi, cmpfn, keycoll);
-			/* free the parsed key: numeric and other by-reference key types would
-			 * otherwise leak one Datum per row across the whole pre-scan */
-			if (!pkey->parttypbyval[0])
-				pfree(DatumGetPointer(kd));
+			/*
+			 * Decode the key as COPY does (#2202). It ends at a TAB, or at a
+			 * bare/CRLF line ending -- stopping at \r too keeps a trailing \r
+			 * out of the key value.
+			 */
+			(void) pcopy_text_field(p, &keybuf, &isnull);
+			if (isnull)
+			{
+				/*
+				 * A NULL key. No RANGE partition takes NULL and a DEFAULT
+				 * partition is refused above, so core COPY refuses the row
+				 * (23514). Leave it in the current range: its loader's COPY
+				 * raises that error, and the load rolls back as a whole.
+				 */
+				bucket = prev_bucket;
+			}
+			else
+			{
+				kd = InputFunctionCall(&infn, keybuf.data, ioparam, keytypmod);
+				bucket = pcopy_partition_bucket(kd, bi, cmpfn, keycoll);
+				/* free the parsed key: numeric and other by-reference key types
+				 * would otherwise leak one Datum per row across the whole pre-scan */
+				if (!pkey->parttypbyval[0])
+					pfree(DatumGetPointer(kd));
+			}
 			if (bucket < prev_bucket)
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_EXCEPTION),
@@ -881,6 +1016,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 		free(line);				/* getline() uses malloc, not palloc */
 	fclose(fp);
 	pfree(rec.data);
+	pfree(keybuf.data);
 
 	while (cur < nseg - 1)
 		seg_start[++cur] = size;

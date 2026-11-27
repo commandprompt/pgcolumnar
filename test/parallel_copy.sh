@@ -1049,6 +1049,125 @@ check "#2084 end-of-data marker in the first range / single table, 4 workers: re
 check "#2084 end-of-data marker in the first range / single table, 4 workers: no prepared-transaction leak" \
 	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
 
+# ---- #2202: the key parser reads COPY escapes as COPY does ---------------------
+# The partitioned splitter reads the fields up to the partition key itself, so it
+# must split and decode them as core COPY's text format does, with the delimiter
+# (TAB) and NULL marker (\N) the loaders use: a backslash escapes the byte after
+# it, so a backslash and a raw TAB are a TAB inside the value, not a field end;
+# \NNN (octal), \xHH (hex) and \b \f \n \r \t \v decode; two backslashes are one;
+# any other escaped byte is itself; and a field that is exactly \N is NULL. Before
+# the fix the parser split at every TAB byte and gave the raw key text to the
+# integer input function, so these loads failed with 22P02.
+#
+# Each file is loaded by heap COPY into a heap table partitioned the same way,
+# and by parallel_copy with 2 and 4 workers. The reading is the outcome (row
+# count or SQLSTATE), the rows per partition bound, and a hash of the rows with
+# their bound, and it must be heap COPY's.
+#   esctab   (t, id)  t = a, backslash, TAB, b<i>              the issue's case 1
+#   octkey   (id, t)  every key digit as \0NN                  the issue's case 2
+#   hexkey   (id, t)  every key digit as \x3N
+#   namedkey (id, t)  \t<i>, <i>\n, \v<i>\f, \r<i>, backslash-space <i>, \+<i>
+#   escfield (t, id)  t holds \101 \x41 \b \f \n \r \t \v, two backslashes, a
+#                     backslash and a TAB, and \N inside a longer value; every
+#                     7th t is exactly \N (NULL)
+#   bsbs     (t, id)  odd rows: t ends in two backslashes right before the
+#                     delimiter; even rows: three backslashes, a TAB, then b
+#   nullkey  (id, t)  row 1200's key is \N: COPY refuses it with 23514, since
+#                     no RANGE partition takes NULL and a DEFAULT one is refused
+#   plainkt, plaintk  controls, no escapes
+F_ESCTAB="$DATADIR/esctab.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "a\\\tb%d\t%d\n", i, i }' >"$F_ESCTAB"
+F_OCTKEY="$DATADIR/octkey.txt"
+awk 'function oct(n,   s, k, d) { s = ""; n = n ""; for (k = 1; k <= length(n); k++) { d = substr(n, k, 1) + 0; s = s (d < 8 ? "\\06" d : "\\07" (d - 8)) } return s }
+     BEGIN { for (i = 1; i <= 2000; i++) printf "%s\tx%d\n", oct(i), i }' >"$F_OCTKEY"
+F_HEXKEY="$DATADIR/hexkey.txt"
+awk 'function hex(n,   s, k) { s = ""; n = n ""; for (k = 1; k <= length(n); k++) s = s "\\x3" substr(n, k, 1); return s }
+     BEGIN { for (i = 1; i <= 2000; i++) printf "%s\tx%d\n", hex(i), i }' >"$F_HEXKEY"
+F_NAMEDKEY="$DATADIR/namedkey.txt"
+awk 'BEGIN { split("\\t%d|%d\\n|\\v%d\\f|\\r%d|\\ %d|\\+%d", fm, "|");
+             for (i = 1; i <= 2000; i++) { printf fm[i % 6 + 1], i; printf "\tx%d\n", i } }' >"$F_NAMEDKEY"
+F_ESCFIELD="$DATADIR/escfield.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++)
+               if (i % 7 == 0) printf "\\N\t%d\n", i;
+               else printf "o\\101h\\x41n\\b\\f\\n\\r\\t\\v\\\\s\\\tq\\N%d\t%d\n", i, i }' >"$F_ESCFIELD"
+F_BSBS="$DATADIR/bsbs.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++)
+               if (i % 2) printf "a%d\\\\\t%d\n", i, i; else printf "a%d\\\\\\\tb\t%d\n", i, i }' >"$F_BSBS"
+F_NULLKEY="$DATADIR/nullkey.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\N\tnull\n"; else printf "%d\tx%d\n", i, i }' >"$F_NULLKEY"
+F_PLAINKT="$DATADIR/plainkt.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "%d\tx%d\n", i, i }' >"$F_PLAINKT"
+F_PLAINTK="$DATADIR/plaintk.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "a%d\t%d\n", i, i }' >"$F_PLAINTK"
+chmod 644 "$F_ESCTAB" "$F_OCTKEY" "$F_HEXKEY" "$F_NAMEDKEY" "$F_ESCFIELD" "$F_BSBS" "$F_NULLKEY" "$F_PLAINKT" "$F_PLAINTK"
+mkesc() {	# NAME "COLUMNS" AM -> NAME, RANGE-partitioned on id at 500, 1000 and 1500, partitions USING AM
+	psql_run "DROP TABLE IF EXISTS $1 CASCADE;
+	          CREATE TABLE $1 ($2) PARTITION BY RANGE (id);
+	          CREATE TABLE $1_a PARTITION OF $1 FOR VALUES FROM (MINVALUE) TO (500) USING $3;
+	          CREATE TABLE $1_b PARTITION OF $1 FOR VALUES FROM (500) TO (1000) USING $3;
+	          CREATE TABLE $1_c PARTITION OF $1 FOR VALUES FROM (1000) TO (1500) USING $3;
+	          CREATE TABLE $1_d PARTITION OF $1 FOR VALUES FROM (1500) TO (MAXVALUE) USING $3;" >/dev/null
+}
+for _e in esctab:tk octkey:kt hexkey:kt namedkey:kt escfield:tk bsbs:tk nullkey:kt plainkt:kt plaintk:tk; do
+	case "${_e#*:}" in kt) _cols="id int, t text" ;; *) _cols="t text, id int" ;; esac
+	mkesc "h_${_e%%:*}" "$_cols" heap
+	mkesc "t_${_e%%:*}" "$_cols" pgcolumnar
+done
+esc_reading() {	# SQL TABLE -> "outcome | rows per partition bound | hash of the rows with their bound"
+	local o
+	o="$(outcome_of "$1" "$2")"
+	echo "$o | $(q "SELECT coalesce(string_agg(b || '=' || n, ', ' ORDER BY b), 'no rows')
+	                FROM (SELECT pg_get_expr(c.relpartbound, c.oid) AS b, count(*) AS n
+	                      FROM $2 x JOIN pg_class c ON c.oid = x.tableoid GROUP BY 1) s") | $(pgc_set_hash "SELECT pg_get_expr(c.relpartbound, c.oid) AS b, x.* FROM $2 x JOIN pg_class c ON c.oid = x.tableoid")"
+}
+esc_pcopy() {	# NAME FILE WORKERS -> esc_reading of a parallel_copy of FILE into an emptied t_NAME
+	psql_run "TRUNCATE t_$1" >/dev/null
+	esc_reading "SELECT pgcolumnar.parallel_copy('t_$1'::regclass, '$2', $3)" "t_$1"
+}
+for _e in esctab octkey hexkey namedkey escfield bsbs nullkey plainkt plaintk; do
+	_f="$DATADIR/$_e.txt"
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$_f'" "h_$_e")"
+done
+check "premise: heap COPY loads esctab, octkey, hexkey, namedkey, escfield, bsbs, plainkt and plaintk 2000 rows each and refuses nullkey with 23514; esctab's t is a, TAB, b<id> on every row; the files start 61 5c 09 62 (esctab) and 5c 30 36 31 (octkey) (#2202)" \
+	"$(for _e in esctab octkey hexkey namedkey escfield bsbs plainkt plaintk nullkey; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(q "SELECT count(*) FROM h_esctab WHERE t = 'a' || chr(9) || 'b' || id") $(od -An -tx1 -N 4 "$F_ESCTAB" | tr -d ' ') $(od -An -tx1 -N 4 "$F_OCTKEY" | tr -d ' ')" \
+	"2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 23514 2000 615c0962 5c303631"
+check "#2202 a backslash before a raw TAB in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy esctab "$F_ESCTAB" 2)" "$ESC_HEAP_esctab"
+check "#2202 a backslash before a raw TAB in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy esctab "$F_ESCTAB" 4)" "$ESC_HEAP_esctab"
+check "#2202 a key written in octal escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy octkey "$F_OCTKEY" 2)" "$ESC_HEAP_octkey"
+check "#2202 a key written in octal escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy octkey "$F_OCTKEY" 4)" "$ESC_HEAP_octkey"
+check "#2202 a key written in hex escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexkey "$F_HEXKEY" 2)" "$ESC_HEAP_hexkey"
+check "#2202 a key written in hex escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexkey "$F_HEXKEY" 4)" "$ESC_HEAP_hexkey"
+check "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy namedkey "$F_NAMEDKEY" 2)" "$ESC_HEAP_namedkey"
+check "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy namedkey "$F_NAMEDKEY" 4)" "$ESC_HEAP_namedkey"
+check "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy escfield "$F_ESCFIELD" 2)" "$ESC_HEAP_escfield"
+check "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy escfield "$F_ESCFIELD" 4)" "$ESC_HEAP_escfield"
+check "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bsbs "$F_BSBS" 2)" "$ESC_HEAP_bsbs"
+check "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bsbs "$F_BSBS" 4)" "$ESC_HEAP_bsbs"
+check "#2202 a NULL marker key / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkey "$F_NULLKEY" 2)" "$ESC_HEAP_nullkey"
+check "#2202 a NULL marker key / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkey "$F_NULLKEY" 4)" "$ESC_HEAP_nullkey"
+check "#2202 control, plain keys, key first / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plainkt "$F_PLAINKT" 2)" "$ESC_HEAP_plainkt"
+check "#2202 control, plain keys, key first / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plainkt "$F_PLAINKT" 4)" "$ESC_HEAP_plainkt"
+check "#2202 control, plain keys, key last / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plaintk "$F_PLAINTK" 2)" "$ESC_HEAP_plaintk"
+check "#2202 control, plain keys, key last / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plaintk "$F_PLAINTK" 4)" "$ESC_HEAP_plaintk"
+
 # ---- #2080: a single table with a unique index needs one worker ------------
 # Each loader keeps its unique-key locks in a prepared transaction until every
 # loader has finished, so two loaders of one table with a unique index waited on

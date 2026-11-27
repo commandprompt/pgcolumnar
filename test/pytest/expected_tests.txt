@@ -2380,4 +2380,8 @@ guard_tests 897
 # holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
 # and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5672 tests collected.
-cluster_tests 5872
+# cluster_tests 5872 -> 5891 for #2202's tests in test_parallel_copy.py (parallel_copy into a partitioned
+# target reads the fields up to the key with COPY's text escapes: a premise over the nine files' heap COPY,
+# and 18 cases, nine files by 2 and 4 workers, each against heap COPY's outcome, rows per partition and
+# rows), by collection of the files NO_CLUSTER does not name, as ci.yml selects them.
+cluster_tests 5891
