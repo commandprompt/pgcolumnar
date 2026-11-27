@@ -37,6 +37,7 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
 #include "lib/stringinfo.h"
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_foreign_server.h"
@@ -485,7 +486,21 @@ write_leaf_value(PqLeaf *c, Datum d, __int128 dec)
 			}
 		case P_TIMESTAMP:
 			{
-				int64		v = (int64) DatumGetTimestamp(d) + PG_TO_UNIX_USECS;
+				int64		v;
+
+				/*
+				 * A finite timestamp after 294247-01-10 04:00:54.775807 does not
+				 * fit in int64 microseconds since 1970-01-01. Refuse it rather
+				 * than write a wrapped value (#2160). path[0] is the table
+				 * column, also for an array element or a composite field.
+				 */
+				if (pg_add_s64_overflow((int64) DatumGetTimestamp(d),
+										PG_TO_UNIX_USECS, &v))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("columnar: a value in column \"%s\" is out of range for a Parquet timestamp",
+									c->path[0]),
+							 errdetail("Parquet stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807.")));
 
 				appendBinaryStringInfo(&c->values, (char *) &v, 8);
 				pqstats_int(&c->st, v);

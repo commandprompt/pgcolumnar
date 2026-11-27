@@ -11,6 +11,9 @@ unsupported column type are refused, each by its own message; and date, time,
 timestamps, uuid, numeric and json export to the representation each maps to. A table
 with dropped columns exports its live columns through export_parquet,
 parallel_export_parquet and tier_partition (#2076).
+A timestamp past Parquet's int64 range is refused with SQLSTATE 22008 by
+export_parquet, parallel_export_parquet and tier_partition alike, and the last value
+that fits still exports (#2160).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading, so one red cannot stop the next (#1339). The heap oracle is read
@@ -831,3 +834,257 @@ def test_a_row_group_cut_on_a_table_with_a_dropped_column(pqd, expect):
         return
     expect.text(f"{pqd['bdrop']}|{_reading(_groups, pa, pqd['files']['bdrop'])}", "40|40|6,6,6,6,6,6,4",
                 "a row group is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make groups of 6,6,6,6,6,6,4")
+
+
+# ---- #2160: a timestamp past Parquet's int64 range is refused, not wrapped --------
+#
+# Parquet stores a timestamp as int64 microseconds since 1970-01-01, so its last value
+# is 294247-01-10 04:00:54.775807. PostgreSQL timestamps reach 294276-12-31. The writer
+# added the epoch shift without an overflow check, so a later value wrapped to a large
+# negative number while the export reported success. Now the export fails with SQLSTATE
+# 22008, names the table column, and leaves no file. The Parquet twin of #2085. On its
+# own database, so the fixtures above are not disturbed. parallel_export_parquet's
+# workers and tier_partition write through the same encoder, and are checked too.
+TS_DB = "pgc_parquet_export_ts"
+TS_RANGE_MSG = 'columnar: a value in column "%s" is out of range for a Parquet timestamp'
+TS_DETAIL = ("Parquet stores a timestamp as 64-bit microseconds since 1970-01-01, "
+             "so its last value is 294247-01-10 04:00:54.775807.")
+TS_SETUP = (
+    "CREATE TABLE pq_tsover (ts timestamp) USING pgcolumnar",
+    "INSERT INTO pq_tsover VALUES ('294247-01-10 04:00:54.775808')",
+    "CREATE TABLE pq_tzover (tz timestamptz) USING pgcolumnar",
+    "INSERT INTO pq_tzover VALUES ('294276-12-31 23:59:59.999999+00')",
+    "CREATE TABLE pq_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar",
+    "INSERT INTO pq_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00')",
+    "CREATE TABLE pq_tspre (ts timestamp, tz timestamptz) USING pgcolumnar",
+    "INSERT INTO pq_tspre VALUES ('1969-12-31 23:59:59.999999', '1969-12-31 23:59:59.999999+00'),"
+    " ('4714-11-24 00:00:00 BC', '4714-11-24 00:00:00+00 BC')",
+    "CREATE TABLE pq_tsarr (tsarr timestamp[]) USING pgcolumnar",
+    "INSERT INTO pq_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[])",
+    "CREATE TYPE pq_tsfield AS (t timestamp)",
+    "CREATE TABLE pq_tscomp (tscomp pq_tsfield) USING pgcolumnar",
+    "INSERT INTO pq_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'))",
+    "CREATE TYPE pq_tspair AS (lo timestamp, hi timestamptz)",
+    "CREATE TABLE pq_tsnest (tsa timestamp[], tza timestamptz[], tsc pq_tspair) USING pgcolumnar",
+    "INSERT INTO pq_tsnest VALUES ("
+    "ARRAY['1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807']::timestamp[], "
+    "ARRAY['1969-12-31 23:59:59.999999+00', '294247-01-10 04:00:54.775807+00']::timestamptz[], "
+    "ROW('1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807+00')::pq_tspair)",
+    "CREATE SERVER pq_ts_srv FOREIGN DATA WRAPPER pgcolumnar_parquet",
+    "CREATE TABLE pq_tspar (id int, ts timestamp) PARTITION BY RANGE (id)",
+    "CREATE TABLE pq_tspar1 PARTITION OF pq_tspar FOR VALUES FROM (0) TO (100) USING pgcolumnar",
+    "INSERT INTO pq_tspar VALUES (1, '294247-01-10 04:00:54.775808')",
+)
+
+
+def _refusal_code(dsn, sql, msg, sqlstate):
+    """-> "refused: SQLSTATE: MSG" when `sql` fails with `msg` and `sqlstate`,
+    "succeeded", or the other error led by its SQLSTATE, as the shell reads it."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql)
+    except psycopg.Error as exc:
+        text = str(exc)
+        if msg in text and exc.sqlstate == sqlstate:
+            return f"refused: {sqlstate}: {msg}"
+        return f"other error: {exc.sqlstate}: {text.splitlines()[0] if text else type(exc).__name__}"
+    return "succeeded"
+
+
+def _detail(dsn, sql):
+    """-> the DETAIL of the error `sql` raises, "succeeded", or "no detail"."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql)
+    except psycopg.Error as exc:
+        return exc.diag.message_detail or "no detail"
+    return "succeeded"
+
+
+@pytest.fixture(scope="module")
+def pqt(pgc_cluster, server_dir):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {TS_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {TS_DB}")
+    try:
+        dsn = pgc_cluster.dsn(dbname=TS_DB)
+        _run(dsn, "CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        for st in TS_SETUP:
+            _run(dsn, st)
+        f = {k: server_dir / f"{k}.parquet" for k in ("tsover", "tzover", "tsedge", "tspre", "tsarr",
+                                                       "tscomp", "tsnest", "tstier")}
+        f["tspar"] = server_dir / "tsover_par"
+        r = {"files": f}
+        r["tsover"] = _refusal_code(dsn, f"SELECT pgcolumnar.export_parquet('pq_tsover', '{f['tsover']}')",
+                                    TS_RANGE_MSG % "ts", "22008")
+        r["tsover file"] = "present" if f["tsover"].exists() else "absent"
+        r["tzover"] = _refusal_code(dsn, f"SELECT pgcolumnar.export_parquet('pq_tzover', '{f['tzover']}')",
+                                    TS_RANGE_MSG % "tz", "22008")
+        r["tsedge rows"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_tsedge', '{f['tsedge']}')")
+        r["tsedge back"] = _value(dsn, "SELECT ts::text || ',' || (tz AT TIME ZONE 'UTC')::text FROM "
+                                       f"pgcolumnar.read_parquet('{f['tsedge']}') AS t(ts timestamp, tz timestamptz)")
+        r["tspre rows"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_tspre', '{f['tspre']}')")
+        r["tsarr"] = _refusal_code(dsn, f"SELECT pgcolumnar.export_parquet('pq_tsarr', '{f['tsarr']}')",
+                                   TS_RANGE_MSG % "tsarr", "22008")
+        r["tscomp"] = _refusal_code(dsn, f"SELECT pgcolumnar.export_parquet('pq_tscomp', '{f['tscomp']}')",
+                                    TS_RANGE_MSG % "tscomp", "22008")
+        r["tsnest rows"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_tsnest', '{f['tsnest']}')")
+        r["tsover detail"] = _detail(dsn, f"SELECT pgcolumnar.export_parquet('pq_tsover', '{f['tsover']}')")
+        r["tspar"] = _refusal_code(dsn, "SELECT pgcolumnar.parallel_export_parquet("
+                                        f"'pq_tsover'::regclass, '{f['tspar']}', 2)",
+                                   TS_RANGE_MSG % "ts", "22008")
+        r["tspar files"] = str(len(list(f["tspar"].rglob("*.parquet*"))) if f["tspar"].exists() else 0)
+        r["tstier"] = _refusal_code(dsn, f"SELECT pgcolumnar.tier_partition('pq_tspar1', 'pq_ts_srv', '{f['tstier']}')",
+                                    TS_RANGE_MSG % "ts", "22008")
+        r["tstier kind"] = _value(dsn, "SELECT c.relkind::text || ',' || a.amname FROM pg_class c "
+                                       "JOIN pg_am a ON a.oid = c.relam WHERE c.oid = 'pq_tspar1'::regclass")
+        r["tstier rows"] = _value(dsn, "SELECT ts::text FROM pq_tspar")
+        r["tstier file"] = "present" if f["tstier"].exists() else "absent"
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {TS_DB} WITH (FORCE)")
+
+
+def _need_pyarrow(expect):
+    """-> pyarrow with pyarrow.parquet imported, or None after declining by the shell's skip name."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return None
+    return pa
+
+
+def test_a_timestamp_past_parquets_range_is_refused(pqt, expect):
+    """#2160: one microsecond past Parquet's last timestamp used to wrap to a large
+    negative number while the export reported success."""
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tsover"], f"refused: 22008: {TS_RANGE_MSG % 'ts'}",
+                "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Parquet, not written as a wrapped negative value (#2160)")
+
+
+def test_a_refused_parquet_timestamp_export_leaves_no_file(pqt, expect):
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tsover file"], "absent",
+                "and the refused Parquet timestamp export leaves no file at the target path (#2160)")
+
+
+def test_a_timestamptz_past_parquets_range_is_refused(pqt, expect):
+    """#2160: the latest timestamptz PostgreSQL holds wrapped the same way."""
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tzover"], f"refused: 22008: {TS_RANGE_MSG % 'tz'}",
+                "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Parquet, not written as a wrapped negative value (#2160)")
+
+
+def _ts_edge(pa, path):
+    t = _read(pa, path)
+    return ",".join(str(t.column(n).cast(pa.int64())[0].as_py()) for n in ("ts", "tz"))
+
+
+def test_the_last_timestamp_parquet_holds_still_exports(pqt, expect):
+    """#2160: the range check must not refuse the last value that fits."""
+    pa = _need_pyarrow(expect)
+    if pa is None:
+        return
+    expect.text(f"{pqt['tsedge rows']}|{_reading(_ts_edge, pa, pqt['files']['tsedge'])}",
+                "1|9223372036854775807,9223372036854775807",
+                "the last timestamp Parquet can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz (#2160)")
+
+
+def test_read_parquet_reads_the_last_timestamp_back_unchanged(pqt, expect):
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tsedge back"], "294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807",
+                "and read_parquet reads that last timestamp back unchanged, in timestamp and timestamptz (#2160)")
+
+
+def _ts_pre(pa, path):
+    t = _read(pa, path)
+    ts, tz = (t.column(n).cast(pa.int64()).to_pylist() for n in ("ts", "tz"))
+    return " ".join(f"{a},{b}" for a, b in zip(ts, tz))
+
+
+def test_a_timestamp_before_1970_still_exports_to_parquet(pqt, expect):
+    """#2160: Parquet stores a timestamp before 1970-01-01 as a negative number. The
+    range check must refuse only a value past the top, not every negative one."""
+    pa = _need_pyarrow(expect)
+    if pa is None:
+        return
+    expect.text(f"{pqt['tspre rows']}|{_reading(_ts_pre, pa, pqt['files']['tspre'])}",
+                "2|-1,-1 -210866803200000000,-210866803200000000",
+                "a timestamp before 1970 still exports to Parquet: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz (#2160)")
+
+
+def test_a_timestamp_array_element_past_parquets_range_names_the_column(pqt, expect):
+    """#2160: Parquet names an array's leaf "element"; the error names the table column."""
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tsarr"], f"refused: 22008: {TS_RANGE_MSG % 'tsarr'}",
+                "a timestamp[] element past Parquet's range is refused, and the error names the table column, not the Parquet element (#2160)")
+
+
+def test_a_timestamp_composite_field_past_parquets_range_names_the_column(pqt, expect):
+    """#2160: a composite's leaf is named after its field; the error names the table column."""
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tscomp"], f"refused: 22008: {TS_RANGE_MSG % 'tscomp'}",
+                "a timestamp field of a composite column past Parquet's range is refused, and the error names the table column, not the field (#2160)")
+
+
+def _ts_nested(pa, path):
+    t = _read(pa, path)
+    lists = [t.column(n).combine_chunks().flatten().cast(pa.int64()).to_pylist() for n in ("tsa", "tza")]
+    tsc = t.column("tsc").combine_chunks()
+    pair = [tsc.field(n).cast(pa.int64())[0].as_py() for n in ("lo", "hi")]
+    return " ".join(",".join(str(v) for v in vals) for vals in lists + [pair])
+
+
+def test_an_in_range_nested_timestamp_still_exports_to_parquet(pqt, expect):
+    """#2160: the values sit next to both ends of the check, inside arrays and a composite."""
+    pa = _need_pyarrow(expect)
+    if pa is None:
+        return
+    expect.text(f"{pqt['tsnest rows']}|{_reading(_ts_nested, pa, pqt['files']['tsnest'])}",
+                "1|-1,9223372036854775807 -1,9223372036854775807 -1,9223372036854775807",
+                "an in-range timestamp inside an array or a composite still exports to Parquet: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2160)")
+
+
+def test_the_out_of_range_parquet_timestamp_error_gives_parquets_last_value(pqt, expect):
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tsover detail"], TS_DETAIL,
+                "and the out-of-range Parquet timestamp error's DETAIL gives Parquet's last timestamp, 294247-01-10 04:00:54.775807 (#2160)")
+
+
+def test_parallel_export_parquet_refuses_a_timestamp_past_parquets_range(pqt, expect):
+    """#2160: each worker writes its part through the same encoder."""
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tspar"], f"refused: 22008: {TS_RANGE_MSG % 'ts'}",
+                "parallel_export_parquet refuses a timestamp past Parquet's range, and the error names the table column (#2160)")
+
+
+def test_a_refused_parallel_export_leaves_no_part_file(pqt, expect):
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tspar files"], "0",
+                "and the refused parallel export leaves no Parquet part file in its directory (#2160)")
+
+
+def test_tier_partition_refuses_a_timestamp_past_parquets_range(pqt, expect):
+    """#2160: tier_partition exports with export_parquet. On main it moved the
+    partition, and the parent could no longer be read."""
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(pqt["tstier"], f"refused: 22008: {TS_RANGE_MSG % 'ts'}",
+                "tier_partition refuses a partition holding a timestamp past Parquet's range, and the error names the table column (#2160)")
+
+
+def test_a_refused_tier_partition_leaves_the_partition_in_place(pqt, expect):
+    if _need_pyarrow(expect) is None:
+        return
+    expect.text(f"{pqt['tstier kind']}|{pqt['tstier rows']}|{pqt['tstier file']}",
+                "r,pgcolumnar|294247-01-10 04:00:54.775808|absent",
+                "and the refused tier_partition leaves the partition in place: it is still a pgcolumnar table, the parent reads its timestamp back unchanged, and no file is left (#2160)")

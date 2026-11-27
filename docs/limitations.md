@@ -1186,6 +1186,13 @@ both types in each direction.
 inside an array or composite column, it names that column, not the array element
 or the field. It writes `infinity` and `-infinity` as null, as before.
 
+`export_parquet` refuses the same values, for the same reason: Parquet also
+stores a timestamp as 64-bit microseconds since 1970-01-01. The export fails
+with `out of range for a Parquet timestamp` (SQLSTATE 22008), names the table
+column, and writes no file.
+`parallel_export_parquet` and `tier_partition` write through the same code and
+fail the same way. `tier_partition` then leaves the partition as it was.
+
 ## Write size limits
 
 A row group holds at most `stripe_row_limit` rows, and at most 256 MiB of values

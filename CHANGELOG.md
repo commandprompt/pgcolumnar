@@ -625,6 +625,20 @@ true until the next version shipped.
   docs/limitations.md. `test/parallel_copy.sh`, `test/projections.sh`,
   `test_parallel_copy.py` and `test_projections.py`.
 
+- `pgcolumnar.export_parquet` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2160). Parquet stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, and
+  readers saw a date before year 0. `tier_partition` writes through the same
+  code, so it moved such a partition and left a parent that could no longer be
+  read. Such a value now fails the export with SQLSTATE 22008, naming the table
+  column, also for an element of an array column or a field of a composite
+  column, and no file is written. `parallel_export_parquet` and
+  `tier_partition` fail the same way; a refused `tier_partition` leaves the
+  partition as it was. A timestamp before 1970 still exports, and so does the
+  last value that fits. This is the Parquet twin of #2085.
+  docs/limitations.md. `test/parquet_export.sh` and `test_parquet_export.py`.
 - `read_parquet` and the Parquet foreign table now read a file that holds a data
   page with no values (#2077). Such a page is valid, and pyarrow writes one for a
   dictionary-encoded list column when it flushes pages often. The reader refused
