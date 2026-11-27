@@ -81,6 +81,14 @@
 #                    ranged GET with its head and half its body, then reset.
 #   /rstall/<file>   answer HEAD; reset every GET once it is read, on every
 #                    connection, so the retry on a new connection is reset too.
+#   /rstfin/<file>   answer HEAD; reset a GET that is a later request on its
+#                    connection, and close a GET that is the first request on
+#                    its connection with a FIN and no answer. The retry after
+#                    the reset meets a clean EOF.
+#
+# --reset-all resets every request, of any method and on every connection, once
+# its head is read and before any answer: a read, a LIST, a write and a REST
+# catalog request all fail on a fresh connection with ECONNRESET.
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -301,7 +309,13 @@ class Handler(BaseHTTPRequestHandler):
         if real is not None:
             self.wfile = real
             self._real_wfile = None
-        return super().parse_request()
+        if not super().parse_request():
+            return False
+        if self.server.reset_all:
+            self._log_line()
+            self._after = "rst"
+            return False
+        return True
 
     def handle_one_request(self):
         # What to do with the connection once this request is handled (#2198):
@@ -335,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
         # the headers and refuses from them alone, so 100 is sent only when
         # the body is about to be read (_read_body), and a refusal before
         # that is the answer the client sees instead of 100.
+        if self.server.reset_all:
+            return True                  # parse_request resets it, with no 100
         root = self.server.rootdir
         if os.path.exists(os.path.join(root, "__expect_log__")):
             with open(os.path.join(root, "__expect_log__"), "a") as f:
@@ -419,7 +435,8 @@ class Handler(BaseHTTPRequestHandler):
                        "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
                        "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
                        "/hswap/", "/vhswap/", "/whswap/",
-                       "/closeka/", "/rstka/", "/rsthead/", "/rstbody/", "/rstall/"):
+                       "/closeka/", "/rstka/", "/rsthead/", "/rstbody/", "/rstall/",
+                       "/rstfin/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -775,6 +792,9 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "rstall":
             self._after = "rst"
             return
+        if mode == "rstfin":
+            self._after = "rst" if getattr(self, "_served", 0) > 0 else "close"
+            return
         if mode == "rsthead" and self._reset_mode_later(mode):
             self.wfile.write(b"HTTP/1.1 206 Parti")
             self.wfile.flush()
@@ -1113,6 +1133,8 @@ def main():
                          "bucket (S3 virtual-host addressing, #621)")
     ap.add_argument("--list-page-size", type=int, default=1000,
                     help="ListObjectsV2 keys per page; small values force paging")
+    ap.add_argument("--reset-all", action="store_true",
+                    help="reset every request once its head is read")
     ap.add_argument("--seed-upload", action="append", default=[],
                     help="open a multipart upload at bucket/key before serving")
     args = ap.parse_args()
@@ -1131,6 +1153,7 @@ def main():
     srv.tamper_bucket = args.tamper_bucket
     srv.vhost_base = args.virtual_host_base
     srv.list_page_size = args.list_page_size
+    srv.reset_all = args.reset_all
     srv.uploads = {}
     srv.uploads_lock = threading.Lock()
     srv.swap_gets = {}

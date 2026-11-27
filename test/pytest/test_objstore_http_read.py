@@ -695,6 +695,17 @@ def ohr(pgc_cluster):
         r["C do next"] = _one_message(dsn, "DO $$ BEGIN PERFORM count(*) FROM fhswapdo2; END $$; "
                                            f"{ONE_READ % 'fhswapdo2'}", changed)
         r["C detail"] = (_detail(dsn, TWO_READS % ("fhswapdet", "fhswapdet")), hswapdet.stat().st_size)
+        # #2231: the errno of the last attempt that failed before a response,
+        # as the shell's RST_ONE arms
+        rst_one = ("SET statement_timeout = '20s'; SELECT count(*) FROM "
+                   f"pgcolumnar.read_parquet('%s') AS t({COLDEFS})")
+        r["C rstall detail"] = _detail(dsn, rst_one % f"{base}/rstall/fixture.parquet")
+        r["C hangup detail"] = _detail(dsn, "SELECT count(*) FROM fhangup")
+        pathlib.Path(hlog).write_text("")
+        r["C rstfin"] = _one_message(dsn, rst_one % f"{base}/rstfin/fixture.parquet",
+                                     "failed before a response")
+        r["C rstfin gets"] = _count(hlog, lambda f: f[0] == "GET")
+        r["C rstfin detail"] = _detail(dsn, rst_one % f"{base}/rstfin/fixture.parquet")
         r["C vhlen"] = _refusal(dsn, TWO_READS % ("fvhlen", "fvhlen"), changed)
         r["C whlen"] = _refusal(dsn, TWO_READS % ("fwhlen", "fwhlen"), changed)
 
@@ -1215,6 +1226,41 @@ def test_the_refusal_names_the_earlier_read_of_the_statement_in_its_detail(ohr, 
                 f'this read sees ETag "E" and {size} bytes.',
                 "C: the refusal of an overwrite between two reads names the earlier read of the "
                 "statement in its DETAIL")
+
+
+def test_the_refusal_after_a_reset_on_the_retry_names_the_errno(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rstall detail"], "The connection failed: Connection reset by peer.",
+                "C: the refusal after a reset on the retry names the errno in its DETAIL")
+
+
+def test_a_server_that_hangs_up_gives_no_errno(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C hangup detail"], "no DETAIL",
+                "C: a server that hangs up on a fresh connection gives no errno in the DETAIL")
+
+
+def test_a_reset_and_then_a_clean_close_on_the_retry_are_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rstfin"], "08006: failed before a response",
+                "C: a reset and then a clean close on the retry are refused")
+
+
+def test_the_get_after_the_reset_is_sent_twice(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["C rstfin gets"], 2, "C: and that GET after the reset was sent twice")
+
+
+def test_a_reset_and_then_a_clean_close_name_no_errno_of_the_earlier_attempt(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rstfin detail"], "no DETAIL",
+                "C: a reset and then a clean close on the retry name no errno of the earlier "
+                "attempt")
 
 
 def test_a_versioned_overwrite_by_a_longer_object_reads_the_version_the_first_opened(ohr, expect):

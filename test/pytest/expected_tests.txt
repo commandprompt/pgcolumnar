@@ -369,7 +369,10 @@
 # guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
 # that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
 # over NO_CLUSTER: 897 tests collected.
-guard_tests 897
+# guard_tests 897 -> 899 for #2232's test_ci_cluster_timeout.py, two tests (the reader on a fixture, and both
+# workflows' pytest-cluster timeouts within 1.5 to 2 times the slowest measured job), by collection over
+# NO_CLUSTER: 899 tests collected.
+guard_tests 899
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2555,9 +2558,20 @@ guard_tests 897
 # timestamp` on day() and hour() over timestamp and timestamptz, eight pruning counts either side of the epoch-shift
 # limit, and one with the constant on the left, by collection of that file (87 on main 99c46e24, 100 here) and over
 # the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6169 -> 6178 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# cluster_tests 6169 -> 6181, #2231: five tests in test_objstore_http_read.py (the refusal after a reset on the
+# retry names the errno; a hang-up and a reset followed by a clean close name none) and seven in
+# test_objstore_error_advice.py (the reset fixtures are up; a read over http and over https, a LIST, a mid-size
+# export over http and over https, and a REST catalog request reset before any answer each name the errno), by
+# collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
+# cluster_tests 6181 -> 6239 for #2202's tests in test_parallel_copy.py, restated on main bd082bdc (6027 ->
+# 6085 on the branch before its merges with #2228 and main): parallel_copy into a partitioned target reads
+# the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
+# each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
+# not name, as ci.yml selects them.
+# cluster_tests 6239 -> 6248 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
 # a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
 # serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
 # same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
 # workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6178
+cluster_tests 6248
