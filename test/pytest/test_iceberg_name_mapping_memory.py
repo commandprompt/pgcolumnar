@@ -15,6 +15,7 @@ is missing the first test fails under the shell's pgc_skip message, as pgc_skip 
 and the rest decline unnamed.
 """
 import json
+import os
 import pathlib
 import shutil
 
@@ -68,7 +69,14 @@ def _build(mdir, n):
 
 
 def _measure(dsn, mdir, n):
+    """-> (core, scan, overhead) in kB for the arm of n entries. PGC_NMMEM_READINGS_<n>,
+    as the shell reads it ("core scan" in kB), replaces the two measured peaks, to show
+    the checks what a runner that reads the scan low gives (#2199)."""
     _build(mdir, n)
+    fake = os.environ.get(f"PGC_NMMEM_READINGS_{n}")
+    if fake:
+        core, scan = (int(v) for v in fake.split())
+        return core, scan, scan - core
     core = _peak(dsn, f"SELECT length(pg_read_file('{mdir}/mapping.json')::jsonb::text)")
     scan = _peak(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{mdir}/pad.metadata.json') {COLS}")
     return None if core is None or scan is None else (core, scan, scan - core)
@@ -119,6 +127,21 @@ def nm(pgc_cluster, server_dir):
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
 
 
+def _below_floor(nm, expect, name):
+    """The shell's LOW: a scan peak below core's parse floor is not a measurement
+    (#2199). The scan parses the same bytes core's arm does, and more, so its peak
+    cannot be lower. -> True, with `name` declared unrunnable, when either arm read so;
+    the checks that compare readings are then neither failed nor passed."""
+    low = [k for k in ("small", "large") if nm[k] is not None and nm[k][1] < nm[k][0]]
+    if not low:
+        return False
+    expect.cannot_run("UNMET_PRECONDITION",
+                      f"a scan peak below core's parse floor is not a measurement "
+                      f"(the {' '.join(low)} arm), from readings {nm['small']} {nm['large']}",
+                      name=name)
+    return True
+
+
 def _declined(nm, expect):
     if nm is not None:
         return False
@@ -141,7 +164,7 @@ def test_the_large_arm_produced_three_readings(nm, expect):
 
 
 def test_cores_own_parse_is_the_larger_part(nm, expect):
-    if _declined(nm, expect):
+    if _declined(nm, expect) or _below_floor(nm, expect, "core's own parse is the larger part of the scan's peak"):
         return
     big = nm["large"]
     expect.text("1" if big is not None and big[0] > big[2] else f"0 (core floor and overhead, kB: {big})", "1",
@@ -149,7 +172,7 @@ def test_cores_own_parse_is_the_larger_part(nm, expect):
 
 
 def test_the_two_sizes_give_different_peaks(nm, expect):
-    if _declined(nm, expect):
+    if _declined(nm, expect) or _below_floor(nm, expect, "the two sizes give different peaks"):
         return
     s, big = nm["small"], nm["large"]
     expect.text("1" if s is not None and big is not None and big[1] > s[1] * 2 else f"0 (scan peaks: small {s} large {big})", "1",
@@ -157,7 +180,7 @@ def test_the_two_sizes_give_different_peaks(nm, expect):
 
 
 def test_the_name_mapping_parse_does_not_allocate_per_entry(nm, expect):
-    if _declined(nm, expect):
+    if _declined(nm, expect) or _below_floor(nm, expect, "the name-mapping parse does not allocate per entry (#731)"):
         return
     s, big = nm["small"], nm["large"]
     if s is None or big is None:

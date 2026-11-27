@@ -2791,6 +2791,25 @@ PgColumnarRenameSortKeyColumn(uint64 storageId, const char *oldName,
 	if (skey == NIL || skind == NULL)
 		return;					/* no mark to maintain */
 
+	/*
+	 * A key entry that already holds the NEW name is stale (#2175). The rename
+	 * succeeded, so no live column had that name: the entry names a dropped
+	 * column. A build older than #2135 left such marks, because its drop did
+	 * not clear them. Followed, the rename would hand that dropped column's
+	 * order to the column taking its name, and ORDER BY on it would skip the
+	 * Sort. So the whole mark goes, run included, as a drop clears it
+	 * (PgColumnarForgetSortKeyColumn). This is tested before the renaming
+	 * loop on purpose: after it, the renamed entry also holds the new name.
+	 */
+	foreach(lc, skey)
+	{
+		if (strcmp((char *) lfirst(lc), newName) == 0)
+		{
+			PgColumnarSetSortedExtent(storageId, -1, -1, NIL, NULL);
+			return;
+		}
+	}
+
 	foreach(lc, skey)
 	{
 		char	   *nm = (char *) lfirst(lc);
@@ -2822,12 +2841,16 @@ PgColumnarRenameSortKeyColumn(uint64 storageId, const char *oldName,
  *		planner would leave out the Sort for ORDER BY on it, and vacuum_sorted's
  *		gate would skip the rewrite.
  *
- *		The key and the kind are both cleared, which every reader takes as
- *		"order unknown". The run extent is kept, as a type change keeps it
- *		(#1341 item 19). Clearing the whole mark, not just the dropped name,
- *		is deliberate: a Z-order or Hilbert run is not ordered on any subset of
- *		its key, and a fail-safe clear costs only an optimisation until the next
- *		ordering rewrite.
+ *		The key, the kind and the run extent are all cleared, so the storage
+ *		row reads as never ordered. The key and kind alone were enough for the
+ *		planner and the gates, which take a NULL kind as "order unknown", but
+ *		sort_status and maintenance_due count the run from the extent alone, and
+ *		a kept extent made sort_status report every group of an unordered table
+ *		as sorted (#2174). A dropped key column leaves no column the run is
+ *		ordered on, so there is no run left to report. Clearing the whole mark,
+ *		not just the dropped name, is deliberate: a Z-order or Hilbert run is
+ *		not ordered on any subset of its key, and a fail-safe clear costs only
+ *		an optimisation until the next ordering rewrite.
  */
 void
 PgColumnarForgetSortKeyColumn(uint64 storageId, const char *dropped)
@@ -2843,11 +2866,77 @@ PgColumnarForgetSortKeyColumn(uint64 storageId, const char *dropped)
 	{
 		if (strcmp((char *) lfirst(lc), dropped) == 0)
 		{
-			PgColumnarSetSortedExtent(storageId, sfrom, sthrough, NIL, NULL);
+			PgColumnarSetSortedExtent(storageId, -1, -1, NIL, NULL);
 			return;
 		}
 	}
 	/* a drop that touches no sort-key column must not rewrite the row */
+}
+
+/*
+ * PgColumnarForgetRetentionColumn
+ *		Clear the declared retention when its column is dropped (#2070).
+ *
+ *		options.ttl_column holds a NAME, and expire() resolves it on every run.
+ *		A drop frees that name. Left in place, expire() failed with 42703 until
+ *		another time column took the name, and from then on it cut on that
+ *		column and retired rows still inside the retention. ttl_column and
+ *		ttl_interval are cleared together: they were declared as a pair, and
+ *		expire() then refuses with "has no declared retention" (55000) until
+ *		set_options declares a new one. A drop of any other column writes
+ *		nothing.
+ */
+void
+PgColumnarForgetRetentionColumn(Oid relid, const char *dropped)
+{
+	Relation	rel;
+	TupleDesc	tupdesc;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+
+	CommandCounterIncrement();
+
+	rel = open_columnar_table("options", RowExclusiveLock);
+	tupdesc = RelationGetDescr(rel);
+	if (tupdesc->natts < Anum_options_ttl_interval)
+	{
+		table_close(rel, RowExclusiveLock);
+		return;					/* a catalog older than retention has none */
+	}
+	ScanKeyInit(&key[0], Anum_options_regclass, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(relid));
+	{
+		Oid			optIdx = pgcolumnar_scan_index_oid(rel, "options_pkey");
+
+		scan = systable_beginscan(rel, optIdx, OidIsValid(optIdx), NULL, 1, key);
+	}
+	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool		isnull;
+		Datum		d = heap_getattr(tuple, Anum_options_ttl_column, tupdesc, &isnull);
+
+		if (!isnull && strcmp(NameStr(*DatumGetName(d)), dropped) == 0)
+		{
+			Datum		values[Natts_options];
+			bool		nulls[Natts_options];
+			bool		replace[Natts_options];
+			HeapTuple	newTuple;
+
+			memset(values, 0, sizeof(values));
+			memset(nulls, false, sizeof(nulls));
+			memset(replace, false, sizeof(replace));
+			nulls[Anum_options_ttl_column - 1] = true;
+			replace[Anum_options_ttl_column - 1] = true;
+			nulls[Anum_options_ttl_interval - 1] = true;
+			replace[Anum_options_ttl_interval - 1] = true;
+			newTuple = heap_modify_tuple(tuple, tupdesc, values, nulls, replace);
+			CatalogTupleUpdate(rel, &newTuple->t_self, newTuple);
+			heap_freetuple(newTuple);
+		}
+	}
+	systable_endscan(scan);
+	metadata_flush_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -2926,9 +3015,21 @@ PgColumnarSetSortedExtent(uint64 storageId, int64 firstGroup, int64 lastGroup,
 		memset(values, 0, sizeof(values));
 		memset(nulls, false, sizeof(nulls));
 		memset(replace, false, sizeof(replace));
-		values[Anum_native_storage_sorted_through - 1] = Int64GetDatum(lastGroup);
+		/*
+		 * A negative bound is written as NULL (#2174). It is what
+		 * PgColumnarGetSortedInfo returns for NULL, so a caller that reads the
+		 * mark and writes it back keeps a NULL bound NULL, and a caller that
+		 * passes -1 clears the run.
+		 */
+		if (lastGroup < 0)
+			nulls[Anum_native_storage_sorted_through - 1] = true;
+		else
+			values[Anum_native_storage_sorted_through - 1] = Int64GetDatum(lastGroup);
 		replace[Anum_native_storage_sorted_through - 1] = true;
-		values[Anum_native_storage_sorted_from - 1] = Int64GetDatum(firstGroup);
+		if (firstGroup < 0)
+			nulls[Anum_native_storage_sorted_from - 1] = true;
+		else
+			values[Anum_native_storage_sorted_from - 1] = Int64GetDatum(firstGroup);
 		replace[Anum_native_storage_sorted_from - 1] = true;
 		/*
 		 * The new columns exist only after the base script (fresh install) or

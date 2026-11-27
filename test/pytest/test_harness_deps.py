@@ -93,6 +93,9 @@ NO_CLUSTER = [
     # #2038: reads the two workflow files as text, with its own Python reader. Needs
     # no cluster and no driver.
     "test_pytest_runs_where_the_suites_run.py",
+    # #2232: reads the two workflow files' pytest-cluster timeouts as text. Needs no
+    # cluster and no driver.
+    "test_ci_cluster_timeout.py",
     # #2038: drives run_coverage.py on a stand-in tree with stand-in make, pytest,
     # lcov and genhtml. Needs no cluster and no driver.
     "test_coverage_report.py",

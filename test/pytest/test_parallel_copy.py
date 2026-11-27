@@ -18,6 +18,18 @@ than one worker for a single table with a unique index, which used to hang or fa
 with a deadlock error (#2080). Each loader checks again under its own lock. On
 PostgreSQL 18 and later that covers a temporal primary key, whose one index is both
 unique and exclusion (#2200); the test declines before 18, which has no WITHOUT OVERLAPS.
+Into a partitioned target, the key parser reads the fields up to the key with COPY's
+text escapes, so files whose key or earlier fields hold escapes give heap COPY's outcome
+and rows with 2 and 4 workers (#2202).
+
+#2187. A CREATE INDEX that queues between the loaders' locks on the table must not
+hang the load: pgcolumnar.parallel_copy_open_hold_ms holds every loader but the first
+before it opens the table, so the index queues in that gap every run, and the load
+must finish with the index built after it. A loader that exits before it opens the
+table fails the load rather than hanging it. A cancelled load returns only once its
+prepared transactions are gone, so the caller's next statement sees none. A single
+table with an enabled user trigger on INSERT is refused with more than one worker,
+by the calling backend and by each loader, and a loader's refusal carries its HINT.
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
@@ -26,6 +38,11 @@ with "failed" in it. And a backend that died does not pass as one that survived:
 fresh connection answers after crash recovery, so survival also reads the server log's
 count of killed backends.
 
+EVERY RANGE KEEPS THE FILE'S NEWLINE STYLE (#2189). COPY FROM takes LF or CRLF from
+the file's first line and refuses a later line ending, or a \\.\\r\\n marker in an LF
+file, whose style differs (22P04). A load whose range starts where the style changes
+is refused with heap COPY's SQLSTATE and message too, and loads nothing.
+
 A LOADER THAT FAILS CLOSES ITS FILE ONCE (#2083). The server log must carry no
 "CloseTransientFile was not obtained" WARNING from the failed loads.
 
@@ -33,7 +50,9 @@ ON A PRIVATE DATABASE, built in the shell's order by a module fixture. Prepared
 transactions are counted in that database only, so another file's leftover cannot
 redden this one.
 """
+import datetime
 import os
+import pathlib
 import random
 import re
 import threading
@@ -45,10 +64,13 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_parallel_copy"
+DB_UTF8 = "pgc_parallel_copy_utf8"
 GEN_F = "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, {n}) g"
 GEN_BIG = "SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
 GEN_NONL = "SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
 LEAK = "SELECT count(*) FROM pg_prepared_xacts WHERE database = current_database()"
+LOADER = "backend_type = 'pgcolumnar parallel_copy loader'"
+ROW_WAIT = f"SELECT count(*) FROM pg_stat_activity WHERE {LOADER} AND wait_event = 'transactionid'"
 REMOTE_S3 = "s3://pgc-test/f1886/data.txt"
 REMOTE_HTTP = "http://127.0.0.1:9/f1886/data.txt"
 REMOTE_OTHER = ("https://127.0.0.1:9/f1886/data.txt", "gs://pgc-test/f1886/data.txt",
@@ -124,6 +146,12 @@ def _want_refusal(fn, url):
 def _timeout(timeout):
     """-> connect() keywords that set statement_timeout to `timeout`, or none."""
     return {"options": f"-c statement_timeout={timeout}"} if timeout else {}
+
+
+def _want_trigger(table, trigger):
+    """The refusal #2187 promises for a single table with a trigger on INSERT."""
+    return (f'0A000 pgcolumnar.parallel_copy cannot load "{table}" with more than one worker, '
+            f'because it has trigger "{trigger}" on INSERT | Load it with workers => 1, or with COPY.')
 
 
 def _want_unique(table):
@@ -204,16 +232,18 @@ class _Db:
             return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
         return f"no error ({row[0] if row else None})"
 
-    def unique_index_after_check(self, path, table="t_ur", workers=2):
+    def unique_index_after_check(self, path, table="t_ur", workers=2, ddl=None, reader=None):
         """-> remote_refusal() of a `workers`-worker parallel_copy into `table`
         (which must exist) that gains a unique index after the calling backend's
-        check, with "worker N" for the worker number, which varies."""
+        check, with "worker N" for the worker number, which varies. `ddl` is a list
+        of statements to run there instead of creating the index."""
         out = {}
         try:
             with psycopg.connect(self.dsn, autocommit=True) as lk:
                 lk.execute("BEGIN")
                 lk.execute(f"LOCK TABLE {table} IN SHARE MODE")
-                load = threading.Thread(target=lambda: out.setdefault("got", self.remote_refusal(
+                read = reader or self.remote_refusal
+                load = threading.Thread(target=lambda: out.setdefault("got", read(
                     f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})",
                     timeout="20s")))
                 load.start()
@@ -221,12 +251,353 @@ class _Db:
                            "EXIT WHEN EXISTS (SELECT 1 FROM pg_locks "
                            f"WHERE relation = '{table}'::regclass AND NOT granted); "
                            "PERFORM pg_sleep(0.05); END LOOP; END $$")
-                lk.execute(f"CREATE UNIQUE INDEX {table}_id ON {table} (id)")
+                for stmt in ddl or [f"CREATE UNIQUE INDEX {table}_id ON {table} (id)"]:
+                    lk.execute(stmt)
                 lk.execute("COMMIT")
                 load.join()
         except psycopg.Error as exc:
             return query_error(_message(exc))
         return re.sub(r"worker \d+ failed", "worker N failed", out.get("got", "no result"))
+
+    def ddl_outcome(self, sql, timeout=None, options=""):
+        """-> "no error (<command tag>)" when `sql` ran, else remote_refusal()'s "SQLSTATE message | hint".
+        `options` adds "-c name=value" settings."""
+        kw = _timeout(timeout)
+        if options:
+            kw["options"] = f"{kw.get('options', '')} {options}".strip()
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **kw) as conn:
+                cur = conn.execute(sql)
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
+        return f"no error ({cur.statusmessage})"
+
+    def _hold(self, ms):
+        """Hold every loader but the first `ms` ms before it opens its table, or reset."""
+        if ms:
+            self.run(f"ALTER DATABASE {DB} SET pgcolumnar.parallel_copy_open_hold_ms = {ms}")
+        else:
+            self.run(f"ALTER DATABASE {DB} RESET pgcolumnar.parallel_copy_open_hold_ms")
+
+    def _poll(self, sql, done, tries=100):
+        """-> the last value of `sql`, read every 50 ms until done(value) or `tries` reads."""
+        got = None
+        for _ in range(tries):
+            got = self.value(sql)
+            if done(got):
+                break
+            time.sleep(0.05)
+        return got
+
+    def _loaders_on(self, table):
+        """-> "H held, W waiting": the loaders' locks on `table`. A loader that has
+        prepared holds its lock with no process (pid is null)."""
+        return self.value("SELECT count(*) FILTER (WHERE l.granted) || ' held, ' || "
+                          "count(*) FILTER (WHERE NOT l.granted) || ' waiting' "
+                          f"FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) "
+                          f"WHERE l.relation = '{table}'::regclass AND (l.pid IS NULL OR a.{LOADER})")
+
+    def index_mid_open(self, path, table, workers, ddl):
+        """-> (what the loaders held when `ddl` queued, "load | ddl | rows | valid | leak").
+        Every loader but the first is held 4 s before it opens `table`; `ddl` runs once
+        the first holds its lock, so it queues between the loaders' requests (#2187)."""
+        out = {}
+        self._hold(4000)
+        try:
+            load = threading.Thread(target=lambda: out.setdefault("load", self.remote_refusal(
+                f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})", timeout="15s")))
+            load.start()
+            got = None
+            for _ in range(100):
+                got = self._loaders_on(table)
+                if isinstance(got, str) and not got.startswith("0 held"):
+                    break
+                time.sleep(0.05)
+            ddl_t = threading.Thread(target=lambda: out.setdefault("ddl", self.ddl_outcome(ddl, timeout="15s")))
+            ddl_t.start()
+            waiting = f"SELECT count(*) FROM pg_locks WHERE relation = '{table}'::regclass AND mode = 'ShareLock' AND NOT granted"
+            self._poll(waiting, lambda g: g == 1)
+            seen = f"loaders {self._loaders_on(table)}, index {self.value(waiting)} waiting"
+            load.join()
+            ddl_t.join()
+        finally:
+            self._hold(0)
+        rows = self.value(f"SELECT count(*) FROM {table}")
+        valid = self.value(f"SELECT indisvalid::text FROM pg_index WHERE indexrelid = '{table}_id'::regclass")
+        valid = {"true": "t", "false": "f"}.get(valid, valid)
+        return seen, (f"{out.get('load', 'no result')} | {out.get('ddl', 'no result')} | {rows} | "
+                      f"valid {valid} | leak {self.value(LEAK)}")
+
+    def gone_load(self, path, table):
+        """-> "load | rows | leak" of a 2-worker load whose second loader is terminated
+        while it is held before opening `table` (#2187)."""
+        out = {}
+        self._hold(4000)
+        try:
+            load = threading.Thread(target=lambda: out.setdefault("load", self.remote_refusal(
+                f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2)", timeout="15s")))
+            load.start()
+            victim = None
+            for _ in range(100):
+                held = self._loaders_on(table)
+                if isinstance(held, str) and held.startswith("1 held"):
+                    victim = self.value(f"SELECT pid FROM pg_stat_activity WHERE {LOADER} AND pid NOT IN "
+                                        f"(SELECT pid FROM pg_locks WHERE relation = '{table}'::regclass AND pid IS NOT NULL)")
+                    if isinstance(victim, int):
+                        break
+                time.sleep(0.05)
+            self.value(f"SELECT pg_terminate_backend({victim})")
+            load.join()
+        finally:
+            self._hold(0)
+        return (f"{out.get('load', 'no result')} | {self.value(f'SELECT count(*) FROM {table}')} | "
+                f"leak {self.value(LEAK)}")
+
+    def cancelled_load(self, path, table, ref):
+        """-> (what was seen before the cancel, "error | prepared seen by the same session").
+        Another session locks row 1 of `ref`, which the first loader's foreign-key check
+        needs; the second loader prepares; statement_timeout cancels the load (#2187).
+        `<table>_load` catches the 57014 in plpgsql and counts the prepared transactions
+        in the caller's backend at once, so the reading does not race the client."""
+        seen = None
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as lk:
+                lk.execute("BEGIN")
+                lk.execute(f"SELECT id FROM {ref} WHERE id = 1 FOR UPDATE")
+                out = {}
+
+                def go():
+                    try:
+                        with psycopg.connect(self.dsn, autocommit=True, **_timeout("6s")) as conn:
+                            out["got"] = conn.execute(f"SELECT {table}_load('{path}')").fetchone()[0]
+                    except psycopg.Error as exc:
+                        out["err"] = query_error(_message(exc))
+
+                load = threading.Thread(target=go)
+                load.start()
+                for _ in range(100):
+                    seen = f"prepared {self.value(LEAK)}, loaders waiting on a row {self.value(ROW_WAIT)}"
+                    if seen == "prepared 1, loaders waiting on a row 1":
+                        break
+                    time.sleep(0.05)
+                load.join()
+                lk.execute("COMMIT")
+        except psycopg.Error as exc:
+            return seen, query_error(_message(exc))
+        return seen, out.get("got", out.get("err", "no result"))
+
+    def remote_detail(self, sql, timeout=None):
+        """-> "SQLSTATE | DETAIL" of the error `sql` raised, or "no error (...)"."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout(timeout)) as conn:
+                row = conn.execute(sql).fetchone()
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            return f"{exc.sqlstate} | {exc.diag.message_detail or ''}"
+        return f"no error ({row[0] if row else None})"
+
+    def _no_coordinator(self):
+        self._poll("SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'",
+                   lambda g: g == 0, tries=300)
+
+    def dedup_lock_probe(self, path, table):
+        """-> "error | time | rows | prepared": a dedup load under the caller's ACCESS
+        EXCLUSIVE lock on pgcolumnar.load_fingerprint and a 4 s statement_timeout. A
+        watchdog cancels the caller again at 12 s, so the old hang reads as an error."""
+        out = {}
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                dog = threading.Timer(12, lambda: self.value(f"SELECT pg_cancel_backend({pid})"))
+                dog.start()
+                conn.execute("BEGIN")
+                conn.execute("LOCK pgcolumnar.load_fingerprint IN ACCESS EXCLUSIVE MODE")
+                conn.execute("SET statement_timeout = '4s'")
+                t0 = time.monotonic()
+                try:
+                    conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)")
+                    out["err"] = "no error"
+                except psycopg.Error as exc:
+                    out["err"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+                took = time.monotonic() - t0
+                dog.cancel()
+                conn.execute("ROLLBACK")
+        except psycopg.Error as exc:
+            return query_error(_message(exc))
+        self._no_coordinator()
+        when = "under 10 s" if took < 10 else f"took {int(took * 1000)} ms"
+        return f"{out['err']} | {when} | {self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared"
+
+    def share_wait_probe(self, path, table):
+        """-> "error | time | prepared": another session holds SHARE on `table` for 8 s,
+        from its own thread so it lets go whatever the load does, while a load runs
+        under a 2 s statement_timeout."""
+        held = threading.Event()
+
+        def hold():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True) as lk:
+                    lk.execute("BEGIN")
+                    lk.execute(f"LOCK TABLE {table} IN SHARE MODE")
+                    held.set()
+                    lk.execute("SELECT pg_sleep(8)")
+                    lk.execute("COMMIT")
+            except psycopg.Error:
+                held.set()
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        t0 = time.monotonic()
+        got = self.remote_refusal(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2)", timeout="2s")
+        took = time.monotonic() - t0
+        holder.join()
+        when = "under 5 s" if took < 5 else f"took {int(took * 1000)} ms"
+        return f"{str(got).split(' | ')[0]} | {when} | {self.value(LEAK)} prepared"
+
+    def lost_one_of_three(self, path, table):
+        """-> "load | ddl | rows | leak": 3 workers held 4 s, the second terminated
+        before it opens `table`, then CREATE INDEX queues (#2219 review)."""
+        out = {}
+        self._hold(4000)
+        try:
+            load = threading.Thread(target=lambda: out.setdefault("load", self.remote_refusal(
+                f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 3)", timeout="15s")))
+            load.start()
+            victim = None
+            for _ in range(100):
+                held = self._loaders_on(table)
+                if (isinstance(held, str) and held.startswith("1 held")
+                        and self.value(f"SELECT count(*) FROM pg_stat_activity WHERE {LOADER}") == 3):
+                    victim = self.value(f"SELECT pid FROM pg_stat_activity WHERE {LOADER} AND pid NOT IN "
+                                        f"(SELECT pid FROM pg_locks WHERE relation = '{table}'::regclass "
+                                        "AND pid IS NOT NULL) ORDER BY pid LIMIT 1")
+                    if isinstance(victim, int):
+                        break
+                time.sleep(0.05)
+            self.value(f"SELECT pg_terminate_backend({victim})")
+            ddl = threading.Thread(target=lambda: out.setdefault("ddl", self.ddl_outcome(
+                f"CREATE INDEX {table}_id ON {table} (id)", timeout="15s")))
+            ddl.start()
+            load.join()
+            ddl.join()
+        finally:
+            self._hold(0)
+        got = re.sub(r"worker \d+ failed", "worker N failed", str(out.get("load", "no result")))
+        return (f"{got} | {out.get('ddl', 'no result')} | {self.value(f'SELECT count(*) FROM {table}')} | "
+                f"leak {self.value(LEAK)}")
+
+    def dedup_retry_probe(self, path, table):
+        """-> "first error | retry | rows | prepared": another session holds EXCLUSIVE on
+        pgcolumnar.load_fingerprint for 8 s while a dedup load runs under a 3 s
+        statement_timeout; then the same file is loaded again with dedup (#2219)."""
+        held = threading.Event()
+
+        def hold():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True) as lk:
+                    lk.execute("BEGIN")
+                    lk.execute("LOCK pgcolumnar.load_fingerprint IN EXCLUSIVE MODE")
+                    held.set()
+                    lk.execute("SELECT pg_sleep(8)")
+                    lk.execute("COMMIT")
+            except psycopg.Error:
+                held.set()
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        first = self.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)", timeout="3s")
+        holder.join()
+        self._no_coordinator()
+        notices = []
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout("30s")) as conn:
+                conn.add_notice_handler(lambda d: notices.append(d.message_primary or ""))
+                retry = conn.execute(
+                    f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)").fetchone()[0]
+        except psycopg.Error as exc:
+            retry = query_error(_message(exc))
+        skip = any(f'skipped a load already applied to "{table}"' in n for n in notices)
+        return (f"first {str(first).split(' ')[0]} | retry {retry} "
+                f"{'with' if skip else 'without'} the skip NOTICE | "
+                f"{self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared")
+
+    def _fp_rows(self, table):
+        return self.value(f"SELECT count(*) FROM pgcolumnar.load_fingerprint WHERE relation_oid = '{table}'::regclass")
+
+    def caller_lock_record_probe(self, path, table):
+        """-> "error | time | rows | fingerprints | prepared": the caller holds SHARE on
+        pgcolumnar.load_fingerprint during a dedup load under a 3 s timeout, then rolls
+        back. A watchdog cancels the caller again at 25 s (#2219, third review)."""
+        out = {}
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                dog = threading.Timer(25, lambda: self.value(f"SELECT pg_cancel_backend({pid})"))
+                dog.start()
+                conn.execute("BEGIN")
+                conn.execute("LOCK pgcolumnar.load_fingerprint IN SHARE MODE")
+                conn.execute("SET statement_timeout = '3s'")
+                t0 = time.monotonic()
+                try:
+                    conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)")
+                    out["err"] = "no error"
+                except psycopg.Error as exc:
+                    out["err"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+                took = time.monotonic() - t0
+                dog.cancel()
+                conn.execute("ROLLBACK")
+        except psycopg.Error as exc:
+            return query_error(_message(exc))
+        self._no_coordinator()
+        when = "under 8 s" if took < 8 else f"took {int(took * 1000)} ms"
+        return (f"{out['err']} | {when} | {self.value(f'SELECT count(*) FROM {table}')} rows | "
+                f"{self._fp_rows(table)} fingerprint | {self.value(LEAK)} prepared")
+
+    def other_lock_record_probe(self, path, table):
+        """-> "error | time | fingerprints | retry | rows": another session holds EXCLUSIVE
+        on pgcolumnar.load_fingerprint for 16 s during a dedup load under a 2 s timeout;
+        then the same file is loaded again with dedup (#2219, third review)."""
+        held = threading.Event()
+
+        def hold():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True) as lk:
+                    lk.execute("BEGIN")
+                    lk.execute("LOCK pgcolumnar.load_fingerprint IN EXCLUSIVE MODE")
+                    held.set()
+                    lk.execute("SELECT pg_sleep(16)")
+                    lk.execute("COMMIT")
+            except psycopg.Error:
+                held.set()
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        t0 = time.monotonic()
+        first = self.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)", timeout="2s")
+        took = time.monotonic() - t0
+        holder.join()
+        self._no_coordinator()
+        notices = []
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout("30s")) as conn:
+                conn.add_notice_handler(lambda d: notices.append(d.message_primary or ""))
+                again = conn.execute(
+                    f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)").fetchone()[0]
+        except psycopg.Error as exc:
+            again = query_error(_message(exc))
+        skip = any(f'skipped a load already applied to "{table}"' in n for n in notices)
+        when = "under 6 s" if took < 6 else f"took {int(took * 1000)} ms"
+        return (f"{str(first).split(' | ')[0]} | {when} | {self._fp_rows(table)} fingerprint | "
+                f"retry {'skipped' if skip else f'not skipped ({again})'} | "
+                f"{self.value(f'SELECT count(*) FROM {table}')} rows")
 
     def copy_in(self, table, data):
         try:
@@ -255,6 +626,19 @@ class _Db:
             return exc.sqlstate or query_error(_message(exc))
         n = self.value(f"SELECT count(*) FROM {table}")
         return f"{n} rows" if isinstance(n, int) else n
+
+    def nl_outcome(self, sql, table):
+        """-> "SQLSTATE|message|N rows|P prepared" when `sql` failed under a 60 s
+        statement_timeout, else "loaded|N rows|P prepared" (N = `table`'s count)."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, options="-c statement_timeout=60s") as conn:
+                conn.execute(sql)
+            head = "loaded"
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            head = f"{exc.sqlstate}|{exc.diag.message_primary}"
+        return f"{head}|{self.value(f'SELECT count(*) FROM {table}')} rows|{self.value(LEAK)} prepared"
 
     def offsets(self, path, workers):
         return self.value(f"SELECT pgcolumnar.file_split_offsets('{path}', {workers})")
@@ -617,6 +1001,268 @@ def _own_write_copy(dsn, setup, table, path):
     return f"none|{row[0] if row else None}"
 
 
+def _esc_reading(db, sql, table, msg=False):
+    """-> "outcome | rows per partition bound | hash of the rows with their bound" once
+    `sql` has loaded the RANGE-partitioned `table` (#2202). The outcome is db.outcome()'s:
+    "N rows", or the SQLSTATE `sql` raised. With `msg`, an error's outcome is
+    "SQLSTATE: primary message"."""
+    if msg:
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, options="-c statement_timeout=30s") as conn:
+                conn.execute(sql)
+            n = db.value(f"SELECT count(*) FROM {table}")
+            outcome = f"{n} rows" if isinstance(n, int) else n
+        except psycopg.Error as exc:
+            outcome = (f"{exc.sqlstate}: {exc.diag.message_primary}" if exc.sqlstate
+                       else query_error(_message(exc)))
+    else:
+        outcome = db.outcome(sql, table)
+    placed = db.value("SELECT coalesce(string_agg(b || '=' || n, ', ' ORDER BY b), 'no rows') "
+                      "FROM (SELECT pg_get_expr(c.relpartbound, c.oid) AS b, count(*) AS n "
+                      f"FROM {table} x JOIN pg_class c ON c.oid = x.tableoid GROUP BY 1) s")
+    rows = db.set_hash(f"SELECT pg_get_expr(c.relpartbound, c.oid) AS b, x.* FROM {table} x "
+                       "JOIN pg_class c ON c.oid = x.tableoid")
+    return f"{outcome} | {placed} | {rows}"
+
+
+def _nl_bytes(kind, n, s):
+    """Rows 1..n of "%04d\\tx" with `kind`'s event at row s (#2189): mark and crmark put
+    \\.\\r\\n before row s and midmark \\.\\n; lfcr ends rows from s on in CRLF, crlf the
+    rows before s; crmark, crall and esc end every row in CRLF, and esc's first record
+    holds an escaped LF and ends in an escaped backslash."""
+    out = bytearray()
+    for k in range(1, n + 1):
+        if k == s and kind in ("mark", "crmark"):
+            out += b"\\.\r\n"
+        if k == s and kind == "midmark":
+            out += b"\\.\n"
+        crlf = (kind == "lfcr" and k >= s) or (kind == "crlf" and k < s) or kind in ("crmark", "crall", "esc")
+        if kind == "esc" and k == 1:
+            out += b"0001\ta\\\nb\\\\\r\n"
+        else:
+            out += b"%04d\tx" % k + (b"\r\n" if crlf else b"\n")
+    return bytes(out)
+
+
+def _nl_target(db, kind, cols="id int, txt text"):
+    """(Re)creates t_nl, empty, as a single columnar table or 8 range partitions of 500 ids."""
+    if kind == "single":
+        db.run(f"DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl ({cols}) USING pgcolumnar")
+        return
+    ddl = f"DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl ({cols}) PARTITION BY RANGE (id);"
+    for i in range(8):
+        lo = "MINVALUE" if i == 0 else i * 500 + 1
+        hi = "MAXVALUE" if i == 7 else (i + 1) * 500 + 1
+        ddl += f" CREATE TABLE t_nl_p{i} PARTITION OF t_nl FOR VALUES FROM ({lo}) TO ({hi}) USING pgcolumnar;"
+    db.run(ddl)
+
+
+def _nl_heap(db, path):
+    """-> nl_outcome() of heap COPY of `path` into a fresh h_nl."""
+    db.run("DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl (id int, txt text)")
+    return db.nl_outcome(f"COPY h_nl FROM '{path}'", "h_nl")
+
+
+def _nl_at(db, path, workers, byte):
+    """-> the index of `byte` among the file's interior split offsets, or "none (...)"."""
+    offs = db.offsets(path, workers)
+    if not isinstance(offs, list):
+        return str(offs)
+    return str(offs.index(byte)) if byte in offs[1:workers] else f"none ({offs})"
+
+
+def _nl_refused(db, path, target, workers, rng):
+    """-> "ok" when the load is refused as heap COPY refuses `path`, after "worker RNG
+    failed: ", with 0 rows and no prepared transaction; else what it gave."""
+    heap = _nl_heap(db, path)
+    _nl_target(db, target)
+    got = db.nl_outcome(f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {workers})", "t_nl")
+    state, _, rest = str(heap).partition("|")
+    want = f"{state}|pgcolumnar.parallel_copy worker {rng} failed: {rest}"
+    return "ok" if got == want else f"got [{got}] want [{want}]"
+
+
+def _nl_loads(db, path, target, workers=(2, 3, 4)):
+    """-> "W:ok" per worker count when the load returns heap COPY's outcome and rows."""
+    heap = _nl_heap(db, path)
+    hh = db.set_hash("SELECT * FROM h_nl")
+    res = []
+    for w in workers:
+        _nl_target(db, target)
+        got = db.nl_outcome(f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {w})", "t_nl")
+        gh = db.set_hash("SELECT * FROM t_nl")
+        res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
+    return " ".join(res)
+
+
+def _nl_probe_bytes(kind):
+    """One #2189 review probe file, 40 rows; keys go 0100, 0200, ... 4000 in p3 and p5b,
+    and 0100, then 0600, 0700, ... 4400 in p1, p2 and p4. The shell
+    gives the layout: p1/p2 put the first line's CR at byte 65535 and its LF at
+    65536, the edge of the first 64 KiB scan read, p4 a backslash at 65535 and a CR
+    at 65536, p3 an escaped CR on line 1, p5 an empty first line, and p5b a first
+    byte that is a backslash escaping a CR."""
+    pad = b"y" * 65530
+    if kind == "p5":
+        return b"\r\n" + b"a\r\n" * 40
+    if kind == "p5b":
+        return b"\\\r\t0100\r\n" + b"".join(b"x\t%04d\r\n" % (k * 100) for k in range(2, 41))
+    first = {"p1": b"0100\t" + pad + b"\r\n", "p2": b"0100\t" + pad + b"\r\n",
+             "p3": b"0100\tx\\\r\n", "p4": b"0100\t" + pad + b"\\\rz\n"}[kind]
+    eol = b"\r\n" if kind == "p2" else b"\n"
+    step = 0 if kind == "p3" else 4
+    return first + b"".join(b"%04d\tx" % ((k + step) * 100) + eol for k in range(2, 41))
+
+
+def _nl_same(db, path, target, cols):
+    """-> "W:ok" per worker count 2, 3, 4 when the load gives heap COPY's outcome,
+    message (after "worker N failed: ") and rows; else what it gave against heap COPY."""
+    db.run(f"DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl ({cols})")
+    heap = db.nl_outcome(f"COPY h_nl FROM '{path}'", "h_nl")
+    hh = db.set_hash("SELECT * FROM h_nl")
+    res = []
+    for w in (2, 3, 4):
+        _nl_target(db, target, cols)
+        got = re.sub(r"\|pgcolumnar\.parallel_copy worker \d+ failed: ", "|", str(db.nl_outcome(
+            f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {w})", "t_nl")))
+        gh = db.set_hash("SELECT * FROM t_nl")
+        res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
+    return " ".join(res)
+
+
+# ---- #2188: the caller's client_encoding, and characters that hold 0x5C ----------
+ENC_DB = "pgc_pcopy_enc"
+ENC_ASCII = "pgc_pcopy_ascii"
+
+
+def _enc_rows(kind, n):
+    """-> the records of the #2188 file `kind`, rows k = 1..n, id k, as bytes. The
+    shell gives the layout: sjis's odd rows put 83 5c (one SJIS character) before an
+    escaped newline and its even rows a backslash before 83 5c, big5 the same with
+    a5 5c, sjisbs a backslash before 83 5c right before every newline, sjiseol a
+    first line 83 5c 5c CR LF, chunknl and chunkcr the 83 at byte 65535 with 5c 5c LF
+    and 5c 5c CR LF after it, gb18030 a four-byte character (81 30 81 30) and 81 5c
+    then z and an escaped newline (odd rows) or b0 a1 then z and an escaped newline
+    (even rows), gbk 81 5c then z and an escaped newline, sjistk 83 5c right before the TAB that ends the field
+    before the key (a (txt text, id int) table), utf8txt UTF-8 text, and the controls latin1, utf8 and
+    ascii a high-bit byte, a two-byte character and 83 before a backslash and LF."""
+    pad = b"y" * 65530
+    rows = []
+    for k in range(1, n + 1):
+        if kind in ("sjis", "big5"):
+            c = b"\x83\x5c" if kind == "sjis" else b"\xa5\x5c"
+            r = b"%d\ta%d" % (k, k) + (c + b"\\\nb\n" if k % 2 else b"\\" + c + b"\n")
+        elif kind == "sjisbs":
+            r = b"%d\ta%d\\\x83\x5c\n" % (k, k)
+        elif kind == "sjiseol":
+            r = b"1\ta\x83\x5c\x5c\r\n" if k == 1 else b"%d\tx\n" % k
+        elif kind == "chunknl":
+            r = b"0001\t" + pad + b"\x83\x5c\x5c\nb\n" if k == 1 else b"%04d\tx\n" % k
+        elif kind == "chunkcr":
+            r = b"0001\t" + pad + b"\x83\x5c\x5c\r\n" if k == 1 else b"%04d\tx\n" % k
+        elif kind == "gb18030":
+            r = (b"%d\ta\x81\x30\x81\x30\x81\x5cz\\\nb\n" % k if k % 2
+                 else b"%d\ta\xb0\xa1z\\\ny\n" % k)
+        elif kind == "gbk":
+            r = b"%d\ta\x81\x5cz\\\nb\n" % k
+        elif kind == "sjistk":
+            r = b"a%d\x83\x5c\t%d\n" % (k, k)
+        elif kind == "utf8txt":
+            r = b"%d\tcaf\xc3\xa9%d\n" % (k, k)
+        elif kind == "latin1":
+            r = b"%d\ta\xe9\\\nb\n" % k
+        elif kind == "utf8":
+            r = b"%d\ta\xc3\xa9\\\nb\n" % k
+        else:
+            r = b"%d\ta\x83\\\nb\n" % k
+        rows.append(r)
+    return rows
+
+
+def _enc_outcome(db, ce, sql, table):
+    """-> "SQLSTATE|message|N rows|P prepared" when `sql`, run under client_encoding
+    `ce` and a 60 s statement_timeout, failed, without parallel_copy's "worker N
+    failed: "; else "loaded|N rows|P prepared"."""
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, client_encoding=ce,
+                             options="-c statement_timeout=60s") as conn:
+            conn.execute(sql)
+        head = "loaded"
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        msg = re.sub(r"^pgcolumnar\.parallel_copy worker \d+ failed: ", "", exc.diag.message_primary or "")
+        head = f"{exc.sqlstate}|{msg}"
+    return f"{head}|{db.value(f'SELECT count(*) FROM {table}')} rows|{db.value(LEAK)} prepared"
+
+
+def _enc_target(db, kind, cols="id int, txt text"):
+    """(Re)creates t_enc (`cols`), empty, as a single columnar table or 8 range
+    partitions of 500 ids."""
+    if kind == "single":
+        db.run(f"DROP TABLE IF EXISTS t_enc CASCADE; CREATE TABLE t_enc ({cols}) USING pgcolumnar")
+        return
+    ddl = f"DROP TABLE IF EXISTS t_enc CASCADE; CREATE TABLE t_enc ({cols}) PARTITION BY RANGE (id);"
+    for i in range(8):
+        lo = "MINVALUE" if i == 0 else i * 500 + 1
+        hi = "MAXVALUE" if i == 7 else (i + 1) * 500 + 1
+        ddl += f" CREATE TABLE t_enc_p{i} PARTITION OF t_enc FOR VALUES FROM ({lo}) TO ({hi}) USING pgcolumnar;"
+    db.run(ddl)
+
+
+def _enc_heap(db, ce, path, cols="id int, txt text"):
+    """-> _enc_outcome() of heap COPY of `path` into a fresh h_enc (`cols`) under `ce`."""
+    db.run(f"DROP TABLE IF EXISTS h_enc; CREATE TABLE h_enc ({cols})")
+    return _enc_outcome(db, ce, f"COPY h_enc FROM '{path}'", "h_enc")
+
+
+def _enc_str(v):
+    """A SQL_ASCII database returns text as bytes: -> v as str."""
+    return v.decode("ascii", "replace") if isinstance(v, bytes) else str(v)
+
+
+def _enc_rowhex(db, row_id):
+    """-> h_enc's txt for `row_id`, as the hex of its bytes in the database encoding."""
+    return _enc_str(db.value("SELECT encode(convert_to(txt, pg_encoding_to_char(encoding)), 'hex') "
+                        f"FROM h_enc, pg_database WHERE datname = current_database() AND id = {row_id}"))
+
+
+def _enc_same(db, ce, path, target, workers=(2, 3, 4), cols="id int, txt text"):
+    """-> "W:ok" per worker count when the load under `ce` gives heap COPY's outcome,
+    rows and row hash; else what it gave against heap COPY."""
+    heap = _enc_heap(db, ce, path, cols)
+    hh = db.set_hash("SELECT * FROM h_enc")
+    res = []
+    for w in workers:
+        _enc_target(db, target, cols)
+        got = _enc_outcome(db, ce, f"SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '{path}', {w})", "t_enc")
+        gh = db.set_hash("SELECT * FROM t_enc")
+        res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
+    return " ".join(res)
+
+
+def _enc_cuts(db, ce, path, rows):
+    """-> "W:ok" per worker count 2, 3, 4 when file_split_offsets under `ce` cuts
+    `path` only at record starts (computed from `rows`, the records it was written
+    from) and leaves no range empty; else the offsets."""
+    starts, off = set(), 0
+    for r in rows[:-1]:
+        off += len(r)
+        starts.add(off)
+    res = []
+    for w in (2, 3, 4):
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, client_encoding=ce) as conn:
+                offs = conn.execute(f"SELECT pgcolumnar.file_split_offsets('{path}', {w})").fetchone()[0]
+        except psycopg.Error as exc:
+            res.append(f"{w}:[{_message(exc)}]")
+            continue
+        ok = (len(offs) == w + 1 and all(o in starts for o in offs[1:w])
+              and all(offs[i] < offs[i + 1] for i in range(w)))
+        res.append(f"{w}:ok" if ok else f"{w}:{offs}")
+    return " ".join(res)
+
+
 @pytest.fixture(scope="module")
 def pcopy(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -740,7 +1386,9 @@ def pcopy(pgc_cluster, server_dir):
         r["missing up"] = _survived(db, pgc_cluster, before)
         r["missing empty"] = db.value("SELECT count(*) FROM t_pcp")
 
-        db.run("CREATE TABLE t_heaptgt (id int, txt text)")
+        # t_heaptgt has a primary key, so the #2080 section below can check that
+        # a heap target gets 42809 before the unique-index refusal (#2209).
+        db.run("CREATE TABLE t_heaptgt (id int PRIMARY KEY, txt text)")
         r["heap target"] = db.refused(f"SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '{f}', 2)",
                                       "not a pgcolumnar table")
 
@@ -1093,6 +1741,197 @@ def pcopy(pgc_cluster, server_dir):
         r["2084 eodearly hash want"] = db.set_hash("SELECT * FROM h_eodearly")
         r["2084 eodearly leak"] = db.value(LEAK)
 
+        # ---- #2202: the key parser reads COPY escapes as COPY does ---------------
+        # The partitioned splitter reads the fields up to the key itself, so it must
+        # split and decode them as core COPY's text format does: a backslash and a raw
+        # TAB are a TAB in the value, \NNN, \xHH and \b \f \n \r \t \v decode, two
+        # backslashes are one, any other escaped byte is itself, and a field that is
+        # exactly \N is NULL. Each file is loaded by heap COPY into a heap table
+        # partitioned the same way and by parallel_copy with 2 and 4 workers, and the
+        # outcome, the rows per partition bound and the rows with their bound must
+        # agree. The shell lists the files.
+        named = (b"\\t%d", b"%d\\n", b"\\v%d\\f", b"\\r%d", b"\\ %d", b"\\+%d")
+        esc_files = {
+            "esctab": ("tk", b"".join(b"a\\\tb%d\t%d\n" % (i, i) for i in range(1, 2001))),
+            "octkey": ("kt", b"".join(b"".join(b"\\%03o" % c for c in b"%d" % i) + b"\tx%d\n" % i
+                                      for i in range(1, 2001))),
+            "hexkey": ("kt", b"".join(b"".join(b"\\x%02x" % c for c in b"%d" % i) + b"\tx%d\n" % i
+                                      for i in range(1, 2001))),
+            "namedkey": ("kt", b"".join(named[i % 6] % i + b"\tx%d\n" % i for i in range(1, 2001))),
+            "escfield": ("tk", b"".join(b"\\N\t%d\n" % i if i % 7 == 0 else
+                                        b"o\\101h\\x41n\\b\\f\\n\\r\\t\\v\\\\s\\\tq\\N%d\t%d\n" % (i, i)
+                                        for i in range(1, 2001))),
+            "bsbs": ("tk", b"".join(b"a%d\\\\\t%d\n" % (i, i) if i % 2 else b"a%d\\\\\\\tb\t%d\n" % (i, i)
+                                    for i in range(1, 2001))),
+            "nullkey": ("kt", b"".join(b"\\N\tnull\n" if i == 1200 else b"%d\tx%d\n" % (i, i)
+                                       for i in range(1, 2001))),
+            "plainkt": ("kt", b"".join(b"%d\tx%d\n" % (i, i) for i in range(1, 2001))),
+            "plaintk": ("tk", b"".join(b"a%d\t%d\n" % (i, i) for i in range(1, 2001))),
+        }
+        esc_paths = {}
+        for key, (shape, body) in esc_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                db.run(f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                       f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                       f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                       f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                       f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key, path in esc_paths.items():
+            r[f"2202 {key} heap"] = _esc_reading(db, f"COPY h_{key} FROM '{path}'", f"h_{key}")
+        for key, path in esc_paths.items():
+            for w in (2, 4):
+                db.run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    db, f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{path}', {w})", f"t_{key}")
+        r["2202 premise"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("esctab", "octkey", "hexkey", "namedkey", "escfield", "bsbs", "plainkt", "plaintk", "nullkey")]
+            + [str(db.value("SELECT count(*) FROM h_esctab WHERE t = 'a' || chr(9) || 'b' || id")),
+               esc_files["esctab"][1][:4].hex(), esc_files["octkey"][1][:4].hex()])
+
+        # Over-applied rules (review of the first version): each of these files loads,
+        # or fails, the way heap COPY does only if the decoder applies its rules no wider
+        # than COPY. nulkey and highbit load in a database created with ENCODING 'UTF8',
+        # so the encoding check does not depend on the cluster's locale. The shell lists
+        # what each file holds. For nprefkey and bsnkey the outcome also carries the
+        # error's message: a key read as NULL by mistake reaches core COPY in a loader,
+        # which refuses it with the same SQLSTATE behind "worker N failed:".
+
+        def row1200(key):
+            return b"".join(key + b"\tx1200\n" if i == 1200 else b"%d\tx%d\n" % (i, i) for i in range(1, 2001))
+
+        over_files = {
+            "nprefkey": ("kt", row1200(b"\\N5")),
+            "bsnkey": ("kt", row1200(b"\\\\N")),
+            "escother": ("kt", b"".join(b"".join(b"\\" + bytes([c]) if c in b"89" else bytes([c]) for c in b"%d" % i)
+                                        + b"\tx%d\n" % i for i in range(1, 2001))),
+            "hexlit": ("tk", b"".join(b"a%d\\x\t%d\n" % (i, i) if i % 2 else b"a%d\\xg\t%d\n" % (i, i)
+                                      for i in range(1, 2001))),
+            "hexlitkey": ("kt", row1200(b"1200\\x")),
+            "nulkey": ("kt", row1200(b"\\x00")),
+            "highbit": ("kt", row1200(b"1200\\351")),
+        }
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DB_UTF8} WITH (FORCE)")
+            a.execute(f"CREATE DATABASE {DB_UTF8} ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")
+        udb = _Db(pgc_cluster.dsn(dbname=DB_UTF8))
+        udb.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        over_db = {k: (udb if k in ("nulkey", "highbit") else db) for k in over_files}
+        for key, (shape, body) in over_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                over_db[key].run(
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                    f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                    f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                    f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                    f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key in over_files:
+            r[f"2202 {key} heap"] = _esc_reading(over_db[key], f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}",
+                                                 msg=key in ("nprefkey", "bsnkey"))
+        for key in over_files:
+            for w in (2, 4):
+                over_db[key].run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    over_db[key], f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})",
+                    f"t_{key}", msg=key in ("nprefkey", "bsnkey"))
+        r["2202 premise 2"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("escother", "hexlit", "nprefkey", "bsnkey", "hexlitkey", "nulkey", "highbit")]
+            + [str(db.value("SELECT count(*) FROM h_hexlit "
+                            "WHERE t = 'a' || id || CASE WHEN id % 2 = 1 THEN 'x' ELSE 'xg' END")),
+               str(udb.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                             "WHERE datname = current_database()"))])
+
+        # Six more decoder rules, from jdatcmd's review of 19bb9309 (M04-M07, M10 and
+        # M13 there). oct400 loads in the UTF8 database. The shell lists the files.
+
+        def tk_row1200(row):
+            return b"".join(row if i == 1200 else b"a%d\t%d\n" % (i, i) for i in range(1, 2001))
+
+        more_files = {
+            "crtk": ("tk", b"".join(b"a%d\t%d\r" % (i, i) for i in range(1, 2001))),
+            "barecr": ("tk", tk_row1200(b"a\t1200\rjunk\n")),
+            "bseof": ("tk", b"".join(b"a%d\t%d\n" % (i, i) for i in range(1, 2000)) + b"a2000\t2000\\"),
+            "hex3": ("kt", row1200(b"\\x31200")),
+            "hexspc": ("kt", row1200(b"\\x201200\\x20")),
+            "oct400": ("kt", row1200(b"12\\400")),
+            "hexupper": ("kt", row1200(b"\\x2B1200")),
+            "toofew": ("tk", tk_row1200(b"a\n")),
+        }
+        for key in more_files:
+            over_db[key] = udb if key == "oct400" else db
+        for key, (shape, body) in more_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                over_db[key].run(
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                    f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                    f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                    f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                    f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key in more_files:
+            r[f"2202 {key} heap"] = _esc_reading(over_db[key], f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}")
+        for key in more_files:
+            for w in (2, 4):
+                over_db[key].run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    over_db[key], f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})",
+                    f"t_{key}")
+        r["2202 premise 3"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("crtk", "bseof", "hex3", "hexspc", "hexupper", "barecr", "toofew", "oct400")]
+            + [str(more_files["crtk"][1].count(b"\n")), more_files["bseof"][1][-2:].hex()])
+
+        # Two more, from jdatcmd's re-review at 960286e1 (M15 and M16 there): a \N key in
+        # the last column, a lowercase hex digit, and a date key whose row 1200 writes its
+        # dashes as \055 and \x2d, partitioned at 500, 1000 and 1500 days after 2020-01-01.
+        day0 = datetime.date(2020, 1, 1)
+
+        def date_key(i):
+            k = (day0 + datetime.timedelta(days=i)).isoformat().encode()
+            return k[:4] + b"\\055" + k[5:7] + b"\\x2d" + k[8:] if i == 1200 else k
+
+        last_files = {
+            "nullkeylast": ("t text, id int", tk_row1200(b"a\t\\N\n")),
+            "hexlower": ("id int, t text", row1200(b"\\x2b1200")),
+            "dateesc": ("id date, t text", b"".join(date_key(i) + b"\tx%d\n" % i for i in range(1, 2001))),
+        }
+        for key, (cols, body) in last_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            b = ("'2021-05-15'", "'2022-09-27'", "'2024-02-09'") if key == "dateesc" else ("500", "1000", "1500")
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                db.run(f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                       f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO ({b[0]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM ({b[0]}) TO ({b[1]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM ({b[1]}) TO ({b[2]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM ({b[2]}) TO (MAXVALUE) USING {am}")
+        for key in last_files:
+            r[f"2202 {key} heap"] = _esc_reading(db, f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}")
+        for key in last_files:
+            for w in (2, 4):
+                db.run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    db, f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})", f"t_{key}")
+        r["2202 premise 4"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in ("hexlower", "dateesc", "nullkeylast")]
+            + [last_files["dateesc"][1].split(b"\n")[1199].split(b"\t")[0].hex(),
+               str(db.value("SELECT count(*) FROM h_dateesc WHERE id = date '2023-04-15'")),
+               " ".join(str((datetime.date.fromisoformat(x) - day0).days)
+                        for x in ("2021-05-15", "2022-09-27", "2024-02-09"))])
+
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
         # t_uk's second, non-unique index comes after its primary key, so the
@@ -1168,6 +2007,18 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{REMOTE_S3}', 2)", timeout="10s")
         r["unique dedup"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{f}', 2, dedup => true)", timeout="10s")
+        # A heap target with a primary key gets 42809 first (#2209), and the
+        # refusal comes before the file is opened, so a missing file on a table
+        # with a primary key gets 0A000. With 1 worker the same call gets 58P01.
+        r["heap pk premise"] = db.value(
+            "SELECT count(*) FROM pg_index WHERE indrelid = 't_heaptgt'::regclass AND indisprimary")
+        r["heap pk"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '{f}', 2)", timeout="10s")
+        r["missing path"] = str(d / "nope.txt")
+        r["unique missing"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{d / 'nope.txt'}', 2)", timeout="10s")
+        r["unique missing 1"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{d / 'nope.txt'}', 1)", timeout="10s")
         # An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY
         # fails on a columnar table and leaves the index invalid but ready, and a
         # ready unique index still checks every insert. The keys are distinct, so
@@ -1215,13 +2066,16 @@ def pcopy(pgc_cluster, server_dir):
         r["unique late empty"] = db.value("SELECT count(*) FROM t_ur")
         # The same with 4 workers, where every loader must refuse. A row trigger
         # that calls nextval records any insert, because a sequence does not roll
-        # back: no loader may insert a row.
+        # back: no loader may insert a row. The trigger arrives with the index,
+        # after the calling backend's check, which would refuse the trigger
+        # itself (#2187). Each loader checks the index first.
         db.run("CREATE TABLE t_ur4 (id int, txt text) USING pgcolumnar; "
                "CREATE SEQUENCE t_ur4_rows; "
                "CREATE FUNCTION t_ur4_row() RETURNS trigger LANGUAGE plpgsql "
-               "AS $$ BEGIN PERFORM nextval('t_ur4_rows'); RETURN NEW; END $$; "
-               "CREATE TRIGGER t_ur4_row BEFORE INSERT ON t_ur4 FOR EACH ROW EXECUTE FUNCTION t_ur4_row()")
-        late4 = db.unique_index_after_check(f, "t_ur4", 4)
+               "AS $$ BEGIN PERFORM nextval('t_ur4_rows'); RETURN NEW; END $$")
+        late4 = db.unique_index_after_check(f, "t_ur4", 4, ddl=[
+            "CREATE UNIQUE INDEX t_ur4_id ON t_ur4 (id)",
+            "CREATE TRIGGER t_ur4_row BEFORE INSERT ON t_ur4 FOR EACH ROW EXECUTE FUNCTION t_ur4_row()"])
         inserted = db.value("SELECT CASE WHEN is_called THEN 'a loader inserted a row' "
                             "ELSE 'no row inserted' END FROM t_ur4_rows")
         r["unique late 4"] = f"{late4} | {inserted}"
@@ -1250,6 +2104,73 @@ def pcopy(pgc_cluster, server_dir):
                     f"SELECT pgcolumnar.parallel_copy('t_utp'::regclass, '{tpk}', 2)", timeout="10s")
                 r["temporal pk"] = f"{refusal} | {db.value('SELECT count(*) FROM t_utp')} rows"
 
+        # ---- #2187: a lock queued between the loaders, a trigger, a cancel ---------
+        # 1. CREATE INDEX queued after the first loader's lock and before the others'.
+        db.run("CREATE TABLE t_mo (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_mo4 (id int, txt text) USING pgcolumnar")
+        r["mid open seen"], r["mid open"] = db.index_mid_open(f, "t_mo", 2, "CREATE UNIQUE INDEX t_mo_id ON t_mo (id)")
+        r["mid open 4 seen"], r["mid open 4"] = db.index_mid_open(f, "t_mo4", 4, "CREATE INDEX t_mo4_id ON t_mo4 (id)")
+        # A loader that exits before it opens the table.
+        db.run("CREATE TABLE t_gone (id int, txt text) USING pgcolumnar")
+        r["gone"] = db.gone_load(f, "t_gone")
+        # 2. A cancelled load, with one loader prepared and one waiting on a row.
+        db.run("CREATE TABLE t_cx_ref (id int PRIMARY KEY); "
+               "INSERT INTO t_cx_ref SELECT generate_series(1, 5000); "
+               "CREATE TABLE t_cx (id int REFERENCES t_cx_ref, txt text) USING pgcolumnar; "
+               "CREATE FUNCTION t_cx_load(f text) RETURNS text LANGUAGE plpgsql AS $$ "
+               "BEGIN PERFORM pgcolumnar.parallel_copy('t_cx'::regclass, f, 2); RETURN 'no error'; "
+               "EXCEPTION WHEN query_canceled THEN RETURN SQLSTATE || ' ' || SQLERRM || ' | same session ' || "
+               "(SELECT count(*) FROM pg_prepared_xacts WHERE database = current_database()); END $$")
+        r["cancel seen"], cancelled = db.cancelled_load(f, "t_cx", "t_cx_ref")
+        r["cancel"] = f"{cancelled} | after {db.value(LEAK)}"
+        # 3. Triggers on INSERT.
+        db.run("CREATE TABLE t_tgk (id int PRIMARY KEY) USING pgcolumnar; "
+               "CREATE FUNCTION t_tg_row() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN INSERT INTO t_tgk VALUES (NEW.id); RETURN NEW; END $$; "
+               "CREATE FUNCTION t_tg_stmt() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN INSERT INTO t_tgk SELECT -pg_backend_pid(); RETURN NULL; END $$; "
+               "CREATE TABLE t_tga (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tga_k AFTER INSERT ON t_tga FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "CREATE TABLE t_tgb (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgb_k BEFORE INSERT ON t_tgb FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "CREATE TABLE t_tgs (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgs_k AFTER INSERT ON t_tgs FOR EACH STATEMENT EXECUTE FUNCTION t_tg_stmt()")
+        r["trigger after"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '{f}', 2)", timeout="10s")
+        r["trigger before"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgb'::regclass, '{f}', 2)", timeout="10s")
+        r["trigger stmt"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgs'::regclass, '{f}', 4)", timeout="10s")
+        # A trigger that writes a columnar table with no index and no storage row yet.
+        db.run("CREATE TABLE t_tgn_log (id int) USING pgcolumnar; "
+               "CREATE FUNCTION t_tg_fresh() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN INSERT INTO t_tgn_log VALUES (NEW.id); RETURN NEW; END $$; "
+               "CREATE TABLE t_tgn (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgn_k AFTER INSERT ON t_tgn FOR EACH ROW EXECUTE FUNCTION t_tg_fresh()")
+        fresh = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgn'::regclass, '{f}', 2)", timeout="10s")
+        r["trigger fresh"] = (f"{fresh} | {db.value('SELECT count(*) FROM t_tgn')} "
+                              f"{db.value('SELECT count(*) FROM t_tgn_log')} | leak {db.value(LEAK)}")
+        r["trigger empty"] = (f"{db.value('SELECT count(*) FROM t_tga')} {db.value('SELECT count(*) FROM t_tgb')} "
+                              f"{db.value('SELECT count(*) FROM t_tgs')} | {db.value('SELECT count(*) FROM t_tgk')} | "
+                              f"leak {db.value(LEAK)}")
+        db.run("CREATE TABLE t_tgl (id int, txt text) USING pgcolumnar")
+        late_tg = db.unique_index_after_check(f, "t_tgl", 2, ddl=[
+            "CREATE TRIGGER t_tgl_k AFTER INSERT ON t_tgl FOR EACH ROW EXECUTE FUNCTION t_tg_row()"])
+        r["trigger late"] = (f"{late_tg} | {db.value('SELECT count(*) FROM t_tgl')} "
+                             f"{db.value('SELECT count(*) FROM t_tgk')}")
+        db.run("CREATE TABLE t_tg1 (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tg1_k AFTER INSERT ON t_tg1 FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "CREATE TABLE t_tgd (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgd_k AFTER INSERT ON t_tgd FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "ALTER TABLE t_tgd DISABLE TRIGGER t_tgd_k; "
+               "CREATE TABLE t_tgf_ref (id int PRIMARY KEY); "
+               "INSERT INTO t_tgf_ref SELECT generate_series(1, 5000); "
+               "CREATE TABLE t_tgf (id int REFERENCES t_tgf_ref, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_tgu (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgu_k AFTER UPDATE ON t_tgu FOR EACH ROW EXECUTE FUNCTION t_tg_row()")
+        one = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tg1'::regclass, '{f}', 1)", timeout="30s")
+        r["trigger one"] = f"{one} | {db.value('SELECT count(*) FROM t_tgk')}"
+        for key, t in (("trigger disabled", "t_tgd"), ("trigger fk", "t_tgf"), ("trigger update", "t_tgu")):
+            got = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('{t}'::regclass, '{f}', 2)", timeout="30s")
+            r[key] = f"{got} | {db.value(f'SELECT count(*) FROM {t}')}"
+
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
         r["projection leak"] = db.value(LEAK)
@@ -1274,6 +2195,14 @@ def pcopy(pgc_cluster, server_dir):
                "GRANT SELECT, UPDATE ON t_lko TO pcopy_noins")
         r["lk order unique"] = _self_lock_copy(db.dsn, "LOCK TABLE t_lko IN SHARE MODE", "t_lko", f)
         r["lk order acl"] = _self_lock_copy(db.dsn, "SET ROLE pcopy_noins; LOCK TABLE t_lko IN SHARE MODE", "t_lko", f)
+        # the trigger refusal (#2187) after the lock refusal and after the unique-index one
+        db.run("CREATE TABLE t_lkt (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_lkt_k AFTER INSERT ON t_lkt FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "CREATE TABLE t_tgpk (id int PRIMARY KEY, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgpk_k AFTER INSERT ON t_tgpk FOR EACH ROW EXECUTE FUNCTION t_tg_row()")
+        r["lk order trigger"] = _self_lock_copy(db.dsn, "LOCK TABLE t_lkt IN SHARE MODE", "t_lkt", f)
+        r["order trigger unique"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_tgpk'::regclass, '{f}', 2)", timeout="10s")
         # the rest of the conflict table, and the partition tree in depth (#2212 review)
         db.run("CREATE TABLE t_lk2 (id int, txt text) PARTITION BY RANGE (id); "
                "CREATE TABLE t_lk2_a PARTITION OF t_lk2 FOR VALUES FROM (MINVALUE) TO (2501) PARTITION BY RANGE (id); "
@@ -1336,10 +2265,183 @@ def pcopy(pgc_cluster, server_dir):
         r["ep race premise"], r["ep race"] = _projection_during_load(db, f)
         r["ep trigger"] = _trigger_side_load(db, f)
         r["ep after"] = f"leak {db.value(LEAK)} | survived {_survived(db, pgc_cluster, before)}"
+        # the trigger refusal (#2187) after the own-write refusal too
+        db.run("CREATE TABLE t_owntg (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_owntg_k AFTER INSERT ON t_owntg FOR EACH ROW EXECUTE FUNCTION t_tg_row()")
+        r["ownw order trigger"] = _self_lock_copy(db.dsn, "INSERT INTO t_owntg VALUES (-7, 'pre')", "t_owntg", f)
+        # ---- #2187, the review of #2219 ----
+        db.run("CREATE TABLE t_ddl (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_shw (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_tgl2 (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_tgalw (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgalw_k AFTER INSERT ON t_tgalw FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "ALTER TABLE t_tgalw ENABLE ALWAYS TRIGGER t_tgalw_k; "
+               "CREATE TABLE t_tgrep (id int, txt text) USING pgcolumnar; "
+               "CREATE TRIGGER t_tgrep_k AFTER INSERT ON t_tgrep FOR EACH ROW EXECUTE FUNCTION t_tg_row(); "
+               "ALTER TABLE t_tgrep ENABLE REPLICA TRIGGER t_tgrep_k; "
+               "CREATE TABLE t_lost3 (id int, txt text) USING pgcolumnar")
+        r["dedup lock"] = db.dedup_lock_probe(f, "t_ddl")
+        r["share wait"] = db.share_wait_probe(f, "t_shw")
+        r["late trigger detail"] = db.unique_index_after_check(f, "t_tgl2", 2, ddl=[
+            "CREATE TRIGGER t_tgl2_k AFTER INSERT ON t_tgl2 FOR EACH ROW EXECUTE FUNCTION t_tg_row()"],
+            reader=db.remote_detail)
+        r["trigger always"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_tgalw'::regclass, '{f}', 2)", timeout="10s")
+        tgk_before = db.value("SELECT count(*) FROM t_tgk")
+        rep2 = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgrep'::regclass, '{f}', 2)", timeout="30s")
+        tgk_after = db.value("SELECT count(*) FROM t_tgk")
+        added = tgk_after - tgk_before if isinstance(tgk_before, int) and isinstance(tgk_after, int) else "?"
+        r["trigger replica"] = f"{rep2} | {db.value('SELECT count(*) FROM t_tgrep')} | trigger rows added {added}"
+        r["hold guc"] = db.ddl_outcome("SET pgcolumnar.parallel_copy_open_hold_ms = 1",
+                                       options="-c role=pcopy_noins")
+        r["lost one of three"] = db.lost_one_of_three(f, "t_lost3")
+        db.run("CREATE TABLE t_rec (id int, txt text) USING pgcolumnar")
+        r["dedup retry"] = db.dedup_retry_probe(f, "t_rec")
+        db.run("CREATE TABLE t_rb (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_ra (id int, txt text) USING pgcolumnar")
+        r["record caller lock"] = db.caller_lock_record_probe(f, "t_rb")
+        r["record other lock"] = db.other_lock_record_probe(f, "t_ra")
+
+        # ---- #2189: every range keeps the file's newline style ---------------------
+        # The shell gives the layout: each file puts its event on a range start of the
+        # single-table split and of the partitioned one, at the range the check names.
+        nl = {}
+        for name, kind, n, s_ in (("mark2", "mark", 3998, 2001), ("mark3", "mark", 3748, 2501),
+                                  ("mark4", "mark", 3332, 2501), ("lfcr2", "lfcr", 3749, 2001),
+                                  ("lfcr3", "lfcr", 3593, 2501), ("lfcr4", "lfcr", 3228, 2501),
+                                  ("crlf2", "crlf", 3212, 1501), ("crlf3", "crlf", 3142, 2001),
+                                  ("crlf4", "crlf", 3451, 2501), ("crmark2", "crmark", 3998, 2001),
+                                  ("crmark3", "crmark", 3748, 2501), ("crmark4", "crmark", 3332, 2501),
+                                  ("lf", "lf", 4000, 0), ("crall", "crall", 4000, 0),
+                                  ("midmark", "midmark", 4000, 1234), ("esc", "esc", 4000, 0)):
+            nl[name] = d / f"nl_{name}.txt"
+            nl[name].write_bytes(_nl_bytes(kind, n, s_))
+            os.chmod(nl[name], 0o644)
+        for case, byte in (("mark", (14000, 17500, 17500)), ("lfcr", (14000, 17500, 17500)),
+                           ("crlf", (12000, 16000, 20000))):
+            r[f"2189 premise {case}"] = " ; ".join(
+                f"{_nl_heap(db, nl[f'{case}{w}'])} @{_nl_at(db, nl[f'{case}{w}'], w, b)}"
+                for w, b in zip((2, 3, 4), byte))
+        r["2189 premise crmark midmark"] = " ".join(
+            [_nl_at(db, nl[f"crmark{w}"], w, b) for w, b in ((2, 16000), (3, 20000), (4, 20000))]
+            + [_nl_at(db, nl["midmark"], w, 8631)[:4] for w in (2, 3, 4)])
+        for name, target, w, rng in (
+                ("mark2", "single", 2, 1), ("mark3", "single", 3, 2), ("mark4", "single", 4, 3),
+                ("mark2", "part", 2, 1), ("mark3", "part", 3, 2), ("mark4", "part", 4, 3),
+                ("lfcr2", "single", 2, 1), ("lfcr3", "single", 3, 2), ("lfcr4", "single", 4, 3),
+                ("lfcr2", "part", 2, 1), ("lfcr3", "part", 3, 2), ("lfcr4", "part", 4, 3),
+                ("crlf2", "single", 2, 1), ("crlf3", "single", 3, 2), ("crlf4", "single", 4, 3),
+                ("crlf2", "part", 2, 1), ("crlf3", "part", 3, 2), ("crlf4", "part", 4, 3)):
+            r[f"2189 {name} {target}"] = _nl_refused(db, nl[name], target, w, rng)
+        for name in ("lf", "crall", "midmark", "esc"):
+            for target in ("single", "part"):
+                r[f"2189 control {name} {target}"] = _nl_loads(db, nl[name], target)
+        r["2189 control crmark single"] = " ".join(
+            _nl_loads(db, nl[f"crmark{w}"], "single", (w,)) for w in (2, 3, 4))
+        r["2189 premise heap rows"] = " ".join(
+            str(_nl_heap(db, nl[name])).split("|")[1] for name in
+            ("lf", "crall", "esc", "midmark", "crmark2", "crmark3", "crmark4"))
+
+        # ---- #2189, review of #2221: the first-line scan, probe by probe --------------
+        pr = {}
+        for kind in ("p1", "p2", "p3", "p4", "p5", "p5b"):
+            pr[kind] = d / f"nl_{kind}.txt"
+            pr[kind].write_bytes(_nl_probe_bytes(kind))
+            os.chmod(pr[kind], 0o644)
+
+        def probe_heap(path, cols):
+            db.run(f"DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl ({cols})")
+            return str(db.nl_outcome(f"COPY h_nl FROM '{path}'", "h_nl"))
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "columnar_parallel_copy.c").read_text()
+        raw = {k: _read(pr[k]) for k in ("p1", "p2", "p4")}
+        r["2189 probe premise"] = (
+            f"{sum(1 for ln in src.splitlines() if ln == '#define COLUMNAR_SPLIT_SCAN_CHUNK 65536')} "
+            + " ".join(raw[k][65535:65537].hex() if isinstance(raw[k], bytes) else str(raw[k]) for k in raw)
+            + f" ; {probe_heap(pr['p1'], 'id int, txt text')} ; "
+            + " ".join([probe_heap(pr[k], "id int, txt text").split("|")[1] for k in ("p2", "p3", "p4")]
+                       + [probe_heap(pr["p5b"], "txt text, id int").split("|")[1],
+                          probe_heap(pr["p5"], "t text").split("|")[1]]))
+        for kind, target, cols in (("p1", "single", "id int, txt text"), ("p1", "part", "id int, txt text"),
+                                   ("p2", "single", "id int, txt text"), ("p2", "part", "id int, txt text"),
+                                   ("p3", "single", "id int, txt text"), ("p3", "part", "id int, txt text"),
+                                   ("p4", "single", "id int, txt text"), ("p4", "part", "id int, txt text"),
+                                   ("p5", "single", "t text"),
+                                   ("p5b", "single", "txt text, id int"), ("p5b", "part", "txt text, id int")):
+            r[f"2189 probe {kind} {target}"] = _nl_same(db, pr[kind], target, cols)
+
+        # ---- #2188: the caller's client_encoding, and characters that hold 0x5C ------
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            for name, enc in ((ENC_DB, "UTF8"), (ENC_ASCII, "SQL_ASCII")):
+                a.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+                a.execute(f"CREATE DATABASE {name} ENCODING '{enc}' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")
+        edb = _Db(pgc_cluster.dsn(dbname=ENC_DB))
+        adb = _Db(pgc_cluster.dsn(dbname=ENC_ASCII))
+        edb.run("CREATE EXTENSION pgcolumnar")
+        adb.run("CREATE EXTENSION pgcolumnar")
+        ef, erows = {}, {}
+        for kind, n in (("sjis", 2000), ("big5", 2000), ("sjisbs", 2000), ("sjiseol", 2000), ("chunknl", 9363),
+                        ("chunkcr", 4000), ("gb18030", 2000), ("gbk", 2000), ("sjistk", 2000), ("utf8txt", 2000), ("latin1", 2000), ("utf8", 2000), ("ascii", 2000)):
+            erows[kind] = _enc_rows(kind, n)
+            ef[kind] = d / f"enc_{kind}.txt"
+            ef[kind].write_bytes(b"".join(erows[kind]))
+            os.chmod(ef[kind], 0o644)
+
+        def rows_of(dbx, ce, kind):
+            return str(_enc_heap(dbx, ce, ef[kind])).split("|")[1]
+
+        def dbenc(dbx):
+            return _enc_str(dbx.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                                     "WHERE datname = current_database()"))
+        r["2188 premise sjis big5"] = " ".join([
+            dbenc(edb), dbenc(adb), rows_of(edb, "SJIS", "sjisbs"), rows_of(edb, "SJIS", "sjis"),
+            _enc_rowhex(edb, 1), _enc_rowhex(edb, 2), rows_of(edb, "BIG5", "big5"), _enc_rowhex(edb, 1),
+            str(_enc_heap(edb, "SJIS", ef["sjistk"], "txt text, id int")).split("|")[1], _enc_rowhex(edb, 1)])
+        raw = {k: _read(ef[k]) for k in ("chunknl", "chunkcr")}
+        r["2188 premise eol chunk"] = " ".join([
+            rows_of(edb, "SJIS", "sjiseol"), _enc_rowhex(edb, 1),
+            rows_of(edb, "SJIS", "chunknl"),
+            raw["chunknl"][65535:65539].hex() if isinstance(raw["chunknl"], bytes) else str(raw["chunknl"]),
+            rows_of(edb, "SJIS", "chunkcr"),
+            raw["chunkcr"][65535:65540].hex() if isinstance(raw["chunkcr"], bytes) else str(raw["chunkcr"])])
+        for key, ce, kind, target, workers in (
+                ("sjis single", "SJIS", "sjis", "single", (2, 3, 4)), ("sjis part", "SJIS", "sjis", "part", (2, 3, 4)),
+                ("big5 single", "BIG5", "big5", "single", (2, 3, 4)), ("big5 part", "BIG5", "big5", "part", (2, 3, 4)),
+                ("sjisbs single", "SJIS", "sjisbs", "single", (2, 3, 4)),
+                ("sjiseol single", "SJIS", "sjiseol", "single", (2, 3, 4)),
+                ("sjiseol part", "SJIS", "sjiseol", "part", (2, 3, 4)),
+                ("chunknl single", "SJIS", "chunknl", "single", (2,)),
+                ("chunkcr single", "SJIS", "chunkcr", "single", (2, 3, 4))):
+            r[f"2188 {key}"] = _enc_same(edb, ce, ef[kind], target, workers)
+        r["2188 premise gb18030 gbk"] = " ".join([
+            rows_of(edb, "GB18030", "gb18030"), _enc_rowhex(edb, 1), _enc_rowhex(edb, 2),
+            rows_of(edb, "GBK", "gbk"), _enc_rowhex(edb, 1)])
+        for kind, ce in (("gb18030", "GB18030"), ("gbk", "GBK")):
+            for target in ("single", "part"):
+                r[f"2188 {kind} {target}"] = _enc_same(edb, ce, ef[kind], target)
+        r["2188 sjistk part"] = _enc_same(edb, "SJIS", ef["sjistk"], "part", cols="txt text, id int")
+        r["2188 cuts"] = " ; ".join([_enc_cuts(edb, "SJIS", ef["sjis"], erows["sjis"]),
+                                     _enc_cuts(edb, "SJIS", ef["sjisbs"], erows["sjisbs"]),
+                                     _enc_cuts(edb, "BIG5", ef["big5"], erows["big5"])])
+        edb.run(f"ALTER DATABASE {ENC_DB} SET client_encoding = 'SJIS'")
+        r["2188 premise default sjis"] = " ".join([
+            str(edb.value("SHOW client_encoding")), rows_of(edb, "UTF8", "utf8txt"), _enc_rowhex(edb, 1)])
+        for target in ("single", "part"):
+            r[f"2188 default sjis {target}"] = _enc_same(edb, "UTF8", ef["utf8txt"], target)
+        edb.run(f"ALTER DATABASE {ENC_DB} RESET client_encoding")
+        r["2188 premise controls"] = " ".join([
+            rows_of(edb, "LATIN1", "latin1"), _enc_rowhex(edb, 1), rows_of(edb, "UTF8", "utf8"), _enc_rowhex(edb, 1),
+            rows_of(adb, "SJIS", "ascii"), _enc_rowhex(adb, 1)])
+        for target in ("single", "part"):
+            r[f"2188 control latin1 {target}"] = _enc_same(edb, "LATIN1", ef["latin1"], target)
+            r[f"2188 control utf8 {target}"] = _enc_same(edb, "UTF8", ef["utf8"], target)
+            r[f"2188 control ascii {target}"] = _enc_same(adb, "SJIS", ef["ascii"], target)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {DB_UTF8} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {ENC_DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {ENC_ASCII} WITH (FORCE)")
 
 
 # ---- the splitter ---------------------------------------------------------------
@@ -1879,6 +2981,161 @@ def test_parallel_copy_marker_in_the_first_range_leaves_no_prepared_transaction(
     expect.num(pcopy["2084 eodearly leak"], 0,
                "#2084 end-of-data marker in the first range / single table, 4 workers: no prepared-transaction leak")
 
+# ---- #2202: the key parser reads COPY escapes as COPY does ------------------------
+# Each file is loaded by heap COPY into a heap table partitioned the same way and by
+# parallel_copy with 2 and 4 workers; the outcome, the rows per partition bound and the
+# rows with their bound must be heap COPY's. The fixture and the shell list the files.
+
+def test_parallel_copy_key_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise"],
+                "2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 23514 2000 "
+                "615c0962 5c303631",
+                "premise: heap COPY loads esctab, octkey, hexkey, namedkey, escfield, bsbs, plainkt and plaintk"
+                " 2000 rows each and refuses nullkey with 23514; esctab's t is a, TAB, b<id> on every row; the files"
+                " start 61 5c 09 62 (esctab) and 5c 30 36 31 (octkey) (#2202)")
+
+
+KEY_ESCAPES = (
+    ("esctab 2", "#2202 a backslash before a raw TAB in the field before the key / partitioned, 2 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("esctab 4", "#2202 a backslash before a raw TAB in the field before the key / partitioned, 4 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("octkey 2", "#2202 a key written in octal escapes / partitioned, 2 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("octkey 4", "#2202 a key written in octal escapes / partitioned, 4 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("hexkey 2", "#2202 a key written in hex escapes / partitioned, 2 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("hexkey 4", "#2202 a key written in hex escapes / partitioned, 4 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("namedkey 2", "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 2 workers:"
+                   " outcome, rows per partition and rows == heap COPY's"),
+    ("namedkey 4", "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 4 workers:"
+                   " outcome, rows per partition and rows == heap COPY's"),
+    ("escfield 2", "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key"
+                   " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("escfield 4", "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key"
+                   " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bsbs 2", "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned,"
+               " 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bsbs 4", "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned,"
+               " 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("nullkey 2", "#2202 a NULL marker key / partitioned, 2 workers: outcome (23514), rows per partition and rows"
+                  " == heap COPY's"),
+    ("nullkey 4", "#2202 a NULL marker key / partitioned, 4 workers: outcome (23514), rows per partition and rows"
+                  " == heap COPY's"),
+    ("plainkt 2", "#2202 control, plain keys, key first / partitioned, 2 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("plainkt 4", "#2202 control, plain keys, key first / partitioned, 4 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("plaintk 2", "#2202 control, plain keys, key last / partitioned, 2 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("plaintk 4", "#2202 control, plain keys, key last / partitioned, 4 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("nprefkey 2", "#2202 a key that starts with the NULL marker but is longer (\\N5)"
+     " / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("nprefkey 4", "#2202 a key that starts with the NULL marker but is longer (\\N5)"
+     " / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("bsnkey 2", "#2202 a key whose decoded value is backslash N, not the NULL marker"
+     " / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("bsnkey 4", "#2202 a key whose decoded value is backslash N, not the NULL marker"
+     " / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("escother 2", "#2202 a key with escaped digits 8 and 9, which are not escapes"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("escother 4", "#2202 a key with escaped digits 8 and 9, which are not escapes"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlit 2", "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlit 4", "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlitkey 2", "#2202 a key that ends in a hex escape with no hex digit"
+     " / partitioned, 2 workers: outcome (22P02), rows per partition and rows == heap COPY's"),
+    ("hexlitkey 4", "#2202 a key that ends in a hex escape with no hex digit"
+     " / partitioned, 4 workers: outcome (22P02), rows per partition and rows == heap COPY's"),
+    ("nulkey 2", "#2202 a key that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("nulkey 4", "#2202 a key that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("highbit 2", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("highbit 4", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("crtk 2", "#2202 CR-only line ends"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("crtk 4", "#2202 CR-only line ends"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("barecr 2", "#2202 a raw CR in the middle of the key's line"
+     " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("barecr 4", "#2202 a raw CR in the middle of the key's line"
+     " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("bseof 2", "#2202 a lone backslash at the end of the file, after the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bseof 4", "#2202 a lone backslash at the end of the file, after the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hex3 2", "#2202 a hex escape followed by a third hex digit in the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hex3 4", "#2202 a hex escape followed by a third hex digit in the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexspc 2", "#2202 a key between two hex-escaped spaces"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexspc 4", "#2202 a key between two hex-escaped spaces"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("oct400 2", "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("oct400 4", "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("hexupper 2", "#2202 a key with an uppercase hex escape"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexupper 4", "#2202 a key with an uppercase hex escape"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("toofew 2", "#2202 a row with too few fields for the key"
+     " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("toofew 4", "#2202 a row with too few fields for the key"
+     " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("nullkeylast 2", "#2202 a NULL marker key in the last column"
+     " / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's"),
+    ("nullkeylast 4", "#2202 a NULL marker key in the last column"
+     " / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's"),
+    ("hexlower 2", "#2202 a key with a lowercase hex escape"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlower 4", "#2202 a key with a lowercase hex escape"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("dateesc 2", "#2202 a date key written with octal and lowercase hex escapes"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("dateesc 4", "#2202 a date key written with octal and lowercase hex escapes"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+)
+
+
+def test_parallel_copy_over_applied_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 2"],
+                '2000 rows 2000 rows 22P02: invalid input syntax for type integer: "N5" '
+                '22P02: invalid input syntax for type integer: "\\N" 22P02 22021 22021 2000 UTF8',
+                "premise: heap COPY loads escother and hexlit 2000 rows each, refuses nprefkey with 22P02 on N5,"
+                " bsnkey with 22P02 on backslash N, hexlitkey with 22P02 and nulkey and highbit with 22021; hexlit's"
+                " t is a<id>x or a<id>xg; the database nulkey and highbit load in is UTF8 (#2202)")
+
+
+def test_parallel_copy_review_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 3"],
+                "2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 22P04 22P04 22021 0 305c",
+                "premise: heap COPY loads crtk, bseof, hex3, hexspc and hexupper 2000 rows each and refuses barecr"
+                " and toofew with 22P04 and oct400 with 22021; crtk.txt holds no LF byte and bseof.txt ends in"
+                " 30 5c (#2202)")
+
+
+def test_parallel_copy_rereview_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 4"], "2000 rows 2000 rows 23514 323032335c30353530345c7832643135 1 500 1000 1500",
+                "premise: heap COPY loads hexlower and dateesc 2000 rows each and refuses nullkeylast with 23514;"
+                " dateesc.txt's line 1200 is 2023, 5c 30 35 35, 04, 5c 78 32 64, 15, and heap COPY reads it as"
+                " 2023-04-15; the date bounds are 500, 1000 and 1500 days after 2020-01-01 (#2202)")
+
+
+@pytest.mark.parametrize("key,name", KEY_ESCAPES, ids=[k for k, _ in KEY_ESCAPES])
+def test_parallel_copy_reads_key_escapes_as_heap_copy_does(pcopy, expect, key, name):
+    expect.text(pcopy[f"2202 {key}"], pcopy[f"2202 {key.split()[0]} heap"], name)
+
+
 # ---- #2080: a single table with a unique index needs one worker --------------------
 
 def test_parallel_copy_refuses_a_primary_key_table_with_two_workers(pcopy, expect):
@@ -1941,6 +3198,26 @@ def test_parallel_copy_refuses_a_primary_key_table_with_dedup(pcopy, expect):
                 "parallel_copy refuses a single table with a primary key, 2 workers and dedup => true with 0A000 and the hint (#2080)")
 
 
+def test_parallel_copy_heap_target_has_a_primary_key(pcopy, expect):
+    expect.num(pcopy["heap pk premise"], 1, "premise: t_heaptgt, the heap target, has a primary key (#2209)")
+
+
+def test_parallel_copy_gives_a_heap_target_with_a_primary_key_42809_before_the_unique_refusal(pcopy, expect):
+    expect.text(pcopy["heap pk"], '42809 "t_heaptgt" is not a pgcolumnar table or a partitioned table | no hint',
+                "parallel_copy gives a heap target with a primary key and 2 workers 42809 before the unique-index refusal (#2209)")
+
+
+def test_parallel_copy_refuses_a_missing_file_for_a_primary_key_table_before_opening_it(pcopy, expect):
+    expect.text(pcopy["unique missing"], _want_unique("t_uk"),
+                "parallel_copy refuses a missing file for a single table with a primary key and 2 workers with 0A000, before it opens the file (#2209)")
+
+
+def test_parallel_copy_gives_a_missing_file_for_a_primary_key_table_with_one_worker_58P01(pcopy, expect):
+    expect.text(pcopy["unique missing 1"],
+                f'58P01 could not open file "{pcopy["missing path"]}" for reading: No such file or directory | no hint',
+                "control: parallel_copy gives a missing file for a single table with a primary key and 1 worker 58P01 (#2209)")
+
+
 def test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index(pcopy, expect):
     expect.text(pcopy["invalid premise"], "t|f|t",
                 "premise: CREATE UNIQUE INDEX CONCURRENTLY leaves a columnar table an invalid, ready unique index (#2080)")
@@ -1982,7 +3259,8 @@ def test_parallel_copy_still_loads_a_partitioned_primary_key_table_with_four_wor
 def test_parallel_copy_refuses_a_unique_index_created_after_its_check(pcopy, expect):
     expect.text(pcopy["unique late"],
                 '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" '
-                'with more than one worker, because it has a unique or exclusion index | no hint',
+                'with more than one worker, because it has a unique or exclusion index '
+                '| Load it with workers => 1, or with COPY.',
                 "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)")
 
 
@@ -1993,9 +3271,109 @@ def test_parallel_copy_late_unique_refusal_loads_nothing(pcopy, expect):
 def test_parallel_copy_refuses_a_late_unique_index_in_every_loader(pcopy, expect):
     expect.text(pcopy["unique late 4"],
                 '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" '
-                'with more than one worker, because it has a unique or exclusion index | no hint | no row inserted',
+                'with more than one worker, because it has a unique or exclusion index '
+                '| Load it with workers => 1, or with COPY. | no row inserted',
                 "parallel_copy refuses 4 workers when a unique index appears after its check, "
                 "before any loader inserts a row (#2080)")
+
+
+# ---- #2187: a lock queued between the loaders, a trigger, a cancel ------------------
+
+def test_parallel_copy_premise_unique_index_queued_between_two_loaders(pcopy, expect):
+    expect.text(pcopy["mid open seen"], "loaders 1 held, 0 waiting, index 1 waiting",
+                "premise: CREATE UNIQUE INDEX queued while 1 of 2 loaders held the table and the other had not asked (#2187)")
+
+
+def test_parallel_copy_finishes_when_a_unique_index_queues_between_two_loaders(pcopy, expect):
+    expect.text(pcopy["mid open"], "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | leak 0",
+                "parallel_copy with 2 workers finishes when CREATE UNIQUE INDEX queues between its loaders' locks, "
+                "and the index builds after it (#2187)")
+
+
+def test_parallel_copy_premise_index_queued_between_four_loaders(pcopy, expect):
+    expect.text(pcopy["mid open 4 seen"], "loaders 1 held, 0 waiting, index 1 waiting",
+                "premise: CREATE INDEX queued while 1 of 4 loaders held the table and the others had not asked (#2187)")
+
+
+def test_parallel_copy_finishes_when_an_index_queues_between_four_loaders(pcopy, expect):
+    expect.text(pcopy["mid open 4"], "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | leak 0",
+                "parallel_copy with 4 workers finishes when CREATE INDEX queues between its loaders' locks, "
+                "and the index builds after it (#2187)")
+
+
+def test_parallel_copy_fails_when_a_loader_exits_before_it_opens_the_table(pcopy, expect):
+    expect.text(pcopy["gone"],
+                "XX000 pgcolumnar.parallel_copy worker 1 failed: loader exited without reporting a result | no hint "
+                "| 0 | leak 0",
+                "a loader terminated before it opens the table fails the load instead of hanging its sibling (#2187)")
+
+
+def test_parallel_copy_a_loader_prepared_before_the_cancel(pcopy, expect):
+    expect.text(pcopy["cancel seen"], "prepared 1, loaders waiting on a row 1",
+                "before the cancel, one loader had prepared and the other waited on a locked row (#2187)")
+
+
+def test_parallel_copy_cancelled_load_leaves_no_prepared_transaction(pcopy, expect):
+    expect.text(pcopy["cancel"], "57014 canceling statement due to statement timeout | same session 0 | after 0",
+                "a cancelled parallel_copy leaves no prepared transaction for the caller's next statement (#2187)")
+
+
+def test_parallel_copy_refuses_an_after_row_trigger_with_two_workers(pcopy, expect):
+    expect.text(pcopy["trigger after"], _want_trigger("t_tga", "t_tga_k"),
+                "parallel_copy refuses a single table with an AFTER INSERT row trigger and 2 workers with 0A000, "
+                "not a deadlock (#2187)")
+
+
+def test_parallel_copy_refuses_a_before_row_trigger_with_two_workers(pcopy, expect):
+    expect.text(pcopy["trigger before"], _want_trigger("t_tgb", "t_tgb_k"),
+                "parallel_copy refuses a single table with a BEFORE INSERT row trigger and 2 workers with 0A000, "
+                "not a deadlock (#2187)")
+
+
+def test_parallel_copy_refuses_a_statement_trigger_with_four_workers(pcopy, expect):
+    expect.text(pcopy["trigger stmt"], _want_trigger("t_tgs", "t_tgs_k"),
+                "parallel_copy refuses a single table with an AFTER INSERT statement trigger and 4 workers with 0A000, "
+                "not a hang (#2187)")
+
+
+def test_parallel_copy_refuses_a_trigger_that_writes_a_fresh_columnar_table(pcopy, expect):
+    expect.text(pcopy["trigger fresh"], f"{_want_trigger('t_tgn', 't_tgn_k')} | 0 0 | leak 0",
+                "parallel_copy refuses a single table whose AFTER INSERT row trigger writes a fresh columnar table "
+                "with no index, 2 workers, with 0A000, not a hang (#2187)")
+
+def test_parallel_copy_trigger_refusals_load_and_write_nothing(pcopy, expect):
+    expect.text(pcopy["trigger empty"], "0 0 0 | 0 | leak 0",
+                "the trigger refusals load nothing, write nothing through the trigger and leave no prepared "
+                "transaction (#2187)")
+
+
+def test_parallel_copy_refuses_a_trigger_created_after_its_check(pcopy, expect):
+    expect.text(pcopy["trigger late"],
+                '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_tgl" '
+                'with more than one worker, because it has trigger "t_tgl_k" on INSERT '
+                '| Load it with workers => 1, or with COPY. | 0 0',
+                "parallel_copy refuses 2 workers when an INSERT trigger appears after its check, with the hint (#2187)")
+
+
+def test_parallel_copy_still_loads_a_trigger_table_with_one_worker(pcopy, expect):
+    expect.text(pcopy["trigger one"], "no error (5000) | 5000",
+                "control: parallel_copy with 1 worker still loads a single table with an INSERT trigger, "
+                "and the trigger runs (#2187)")
+
+
+def test_parallel_copy_still_loads_a_disabled_trigger_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["trigger disabled"], "no error (5000) | 5000",
+                "control: parallel_copy with 2 workers still loads a single table whose INSERT trigger is disabled (#2187)")
+
+
+def test_parallel_copy_still_loads_a_foreign_key_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["trigger fk"], "no error (5000) | 5000",
+                "control: parallel_copy with 2 workers still loads a single table with a foreign key (#2187)")
+
+
+def test_parallel_copy_still_loads_an_update_trigger_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["trigger update"], "no error (5000) | 5000",
+                "control: parallel_copy with 2 workers still loads a single table with an UPDATE-only trigger (#2187)")
 
 
 def test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers(pcopy, expect):
@@ -2077,6 +3455,23 @@ def test_parallel_copy_refusal_order_with_a_lock_the_caller_holds(pcopy, expect,
     (0A000). The unique-index hint says "workers => 1", which would only lead a caller
     holding SHARE to the lock refusal, so that refusal comes first."""
     expect.text(pcopy[key], want, name)
+
+
+def test_parallel_copy_lock_refusal_before_the_trigger_refusal(pcopy, expect):
+    """#2187 with #2183: a caller holding SHARE on a table with an INSERT trigger gets the
+    lock refusal (55000), whose cause holds for every worker count, not the trigger's."""
+    expect.text(pcopy["lk order trigger"],
+                '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkt"',
+                "parallel_copy into a table with an INSERT trigger under the caller's SHARE lock gets the lock refusal"
+                " (55000) before the trigger refusal (#2187)")
+
+
+def test_parallel_copy_unique_refusal_before_the_trigger_refusal(pcopy, expect):
+    """#2187 with #2080: a primary-key table with an INSERT trigger gets the unique-index
+    refusal; the trigger refusal comes after it."""
+    expect.text(pcopy["order trigger unique"], _want_unique("t_tgpk"),
+                "parallel_copy into a primary-key table with an INSERT trigger gets the unique-index refusal before"
+                " the trigger refusal (#2187)")
 
 
 @pytest.mark.parametrize("key,want,name", [
@@ -2278,3 +3673,404 @@ def test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads(pco
     expect.text(pcopy["ep trigger"], "5000|5000|5000",
                 "parallel_copy with 1 worker into a table whose trigger writes another empty columnar table still"
                 " loads (#2161)")
+
+
+def test_parallel_copy_own_write_refusal_before_the_trigger_refusal(pcopy, expect):
+    """#2187 with #2211: the caller's own INSERT into a table with an INSERT trigger, then
+    2 workers, gets the own-write refusal (55000), not the trigger refusal."""
+    expect.text(pcopy["ownw order trigger"],
+                '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_owntg"',
+                "parallel_copy into a table with an INSERT trigger after the caller's own INSERT with 2 workers gets"
+                " the #2211 refusal (55000) before the trigger refusal (#2187)")
+
+
+# ---- #2187, the review of #2219 ---------------------------------------------------
+
+def test_parallel_copy_dedup_under_a_fingerprint_lock_returns_its_timeout(pcopy, expect):
+    """The caller waits for the coordinator after a cancel; with dedup the coordinator
+    waited on the caller's lock on pgcolumnar.load_fingerprint with no end. Its SIGTERM
+    now raises a cancel, so the wait ends and the load rolls back."""
+    expect.text(pcopy["dedup lock"], "57014 canceling statement due to statement timeout | under 10 s | 0 rows | 0 prepared",
+                "parallel_copy with dedup under the caller's ACCESS EXCLUSIVE lock on pgcolumnar.load_fingerprint returns"
+                " its statement_timeout within 10 s, loads nothing and leaves no prepared transaction (#2187)")
+
+
+def test_parallel_copy_coordinator_waiting_on_share_returns_its_timeout(pcopy, expect):
+    expect.text(pcopy["share wait"], "57014 canceling statement due to statement timeout | under 5 s | 0 prepared",
+                "parallel_copy whose coordinator waits on another session's SHARE lock returns its 2 s"
+                " statement_timeout within 5 s, not when the lock is released (#2187)")
+
+
+def test_parallel_copy_late_trigger_refusal_carries_its_detail(pcopy, expect):
+    expect.text(pcopy["late trigger detail"],
+                "0A000 | Each worker runs the trigger in its own prepared transaction, so writes the trigger makes can"
+                " wait on another worker until the load is cancelled.",
+                "the loaders' refusal of an INSERT trigger created after the caller's check carries its DETAIL to the"
+                " caller (#2187)")
+
+
+def test_parallel_copy_refuses_an_enable_always_trigger(pcopy, expect):
+    expect.text(pcopy["trigger always"], _want_trigger("t_tgalw", "t_tgalw_k"),
+                "parallel_copy refuses a single table with an ENABLE ALWAYS INSERT trigger and 2 workers with 0A000"
+                " (#2187)")
+
+
+def test_parallel_copy_still_loads_an_enable_replica_trigger_table(pcopy, expect):
+    expect.text(pcopy["trigger replica"], "no error (5000) | 5000 | trigger rows added 0",
+                "control: parallel_copy with 2 workers still loads a single table whose INSERT trigger is ENABLE"
+                " REPLICA, and the trigger does not fire (#2187)")
+
+
+def test_parallel_copy_hold_setting_is_superuser_only(pcopy, expect):
+    expect.text(pcopy["hold guc"],
+                '42501 permission denied to set parameter "pgcolumnar.parallel_copy_open_hold_ms" | no hint',
+                "a role without superuser cannot set pgcolumnar.parallel_copy_open_hold_ms (#2187)")
+
+
+def test_parallel_copy_one_lost_loader_keeps_the_wait_for_the_others(pcopy, expect):
+    expect.text(pcopy["lost one of three"],
+                "XX000 pgcolumnar.parallel_copy worker N failed: loader exited without reporting a result | no hint"
+                " | no error (CREATE INDEX) | 0 | leak 0",
+                "with 3 workers, one loader lost before it opens the table and a CREATE INDEX queued after the first,"
+                " the load fails promptly instead of hanging (#2187)")
+
+
+def test_parallel_copy_dedup_record_survives_a_cancel_after_commit(pcopy, expect):
+    """The second review of #2219: a cancel that arrives after the rows commit must not
+    stop the fingerprint record, or a dedup retry loads the file twice."""
+    expect.text(pcopy["dedup retry"], "first 57014 | retry 0 with the skip NOTICE | 5000 rows | 0 prepared",
+                "a dedup load cancelled after its rows commit still records the fingerprint: a retry of the same file"
+                " returns 0 with the skip NOTICE and the table holds the file once (#2187)")
+
+
+def test_parallel_copy_dedup_record_waits_for_the_callers_own_lock(pcopy, expect):
+    """The third review of #2219: the caller holds SHARE on pgcolumnar.load_fingerprint.
+    It must return near its timeout, and the fingerprint is recorded after its
+    ROLLBACK frees the lock."""
+    expect.text(pcopy["record caller lock"],
+                "57014 canceling statement due to statement timeout | under 8 s | 5000 rows | 1 fingerprint | 0 prepared",
+                "a dedup load whose caller holds SHARE on pgcolumnar.load_fingerprint returns its statement_timeout"
+                " within 8 s and records the fingerprint once the caller's ROLLBACK frees the lock (#2187)")
+
+
+def test_parallel_copy_dedup_record_waits_out_a_long_lock(pcopy, expect):
+    expect.text(pcopy["record other lock"],
+                "57014 canceling statement due to statement timeout | under 6 s | 1 fingerprint | retry skipped | 5000 rows",
+                "a dedup load cancelled while another session holds load_fingerprint for 16 s returns within 6 s,"
+                " records the fingerprint when the lock frees, and its retry is skipped (#2187)")
+# ---- #2189: every range keeps the file's newline style -----------------------------
+
+def test_parallel_copy_newline_premise_marker_files(pcopy, expect):
+    """Heap COPY refuses each mark file, and its \\.\\r\\n line is the split offset the
+    single-table refusal checks name."""
+    m = "22P04|end-of-copy marker does not match previous newline style|0 rows|0 prepared"
+    expect.text(pcopy["2189 premise mark"], f"{m} @1 ; {m} @2 ; {m} @3",
+                "#2189 premise: heap COPY refuses mark2, mark3 and mark4 with 22P04 'end-of-copy marker does not"
+                " match previous newline style', and the marker line is split offset 1 of 2, 2 of 3 and 3 of 4")
+
+
+def test_parallel_copy_newline_premise_lf_to_crlf_files(pcopy, expect):
+    m = "22P04|literal carriage return found in data|0 rows|0 prepared"
+    expect.text(pcopy["2189 premise lfcr"], f"{m} @1 ; {m} @2 ; {m} @3",
+                "#2189 premise: heap COPY refuses lfcr2, lfcr3 and lfcr4 with 22P04 'literal carriage return found"
+                " in data', and the first CRLF line is split offset 1 of 2, 2 of 3 and 3 of 4")
+
+
+def test_parallel_copy_newline_premise_crlf_to_lf_files(pcopy, expect):
+    m = "22P04|literal newline found in data|0 rows|0 prepared"
+    expect.text(pcopy["2189 premise crlf"], f"{m} @1 ; {m} @2 ; {m} @3",
+                "#2189 premise: heap COPY refuses crlf2, crlf3 and crlf4 with 22P04 'literal newline found in data',"
+                " and the first LF line is split offset 1 of 2, 2 of 3 and 3 of 4")
+
+
+def test_parallel_copy_newline_premise_control_markers(pcopy, expect):
+    expect.text(pcopy["2189 premise crmark midmark"], "1 2 3 none none none",
+                "#2189 premise: the \\.\\r\\n line of crmark2, crmark3 and crmark4 is split offset 1 of 2, 2 of 3"
+                " and 3 of 4, and midmark's \\.\\n line is no split offset for 2, 3 or 4 workers")
+
+
+def test_parallel_copy_newline_premise_control_rows(pcopy, expect):
+    expect.text(pcopy["2189 premise heap rows"],
+                "4000 rows 4000 rows 4000 rows 1233 rows 2000 rows 2500 rows 2500 rows",
+                "#2189 premise: heap COPY loads 4000 rows from lf, crall, esc, 1233 from midmark, and 2000, 2500 and"
+                " 2500 from crmark2, crmark3 and crmark4")
+
+
+NL_REFUSED = (
+    ("2189 mark2 single", "#2189 \\.\\r\\n at the start of range 1 of 2 in an LF file / single table: refused with"
+     " heap COPY's SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 mark3 single", "#2189 \\.\\r\\n at the start of range 2 of 3 in an LF file / single table: refused with"
+     " heap COPY's SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 mark4 single", "#2189 \\.\\r\\n at the start of range 3 of 4 in an LF file / single table: refused with"
+     " heap COPY's SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 mark2 part", "#2189 \\.\\r\\n in an LF file, 2 workers / partitioned: refused with heap COPY's SQLSTATE"
+     " and message, 0 rows, no prepared transaction"),
+    ("2189 mark3 part", "#2189 \\.\\r\\n in an LF file, 3 workers / partitioned: refused with heap COPY's SQLSTATE"
+     " and message, 0 rows, no prepared transaction"),
+    ("2189 mark4 part", "#2189 \\.\\r\\n in an LF file, 4 workers / partitioned: refused with heap COPY's SQLSTATE"
+     " and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr2 single", "#2189 LF to CRLF at the start of range 1 of 2 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr3 single", "#2189 LF to CRLF at the start of range 2 of 3 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr4 single", "#2189 LF to CRLF at the start of range 3 of 4 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr2 part", "#2189 LF to CRLF at the start of range 1 of 2 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr3 part", "#2189 LF to CRLF at the start of range 2 of 3 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr4 part", "#2189 LF to CRLF at the start of range 3 of 4 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf2 single", "#2189 CRLF to LF at the start of range 1 of 2 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf3 single", "#2189 CRLF to LF at the start of range 2 of 3 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf4 single", "#2189 CRLF to LF at the start of range 3 of 4 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf2 part", "#2189 CRLF to LF at the start of range 1 of 2 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf3 part", "#2189 CRLF to LF at the start of range 2 of 3 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf4 part", "#2189 CRLF to LF at the start of range 3 of 4 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+)
+
+
+@pytest.mark.parametrize("key,name", NL_REFUSED, ids=[k[5:].replace(" ", "-") for k, _ in NL_REFUSED])
+def test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it(
+        pcopy, expect, key, name):
+    """#2189: a range that starts where the file's newline style changes, or with a
+    \\.\\r\\n line in an LF file, is refused with heap COPY's SQLSTATE and message after
+    "worker N failed: ", N being that range, and loads nothing. Before the fix each
+    single-table and LF/CRLF load went through. The partitioned \\.\\r\\n loads were
+    refused already: that splitter keeps the marker line at the end of a range."""
+    expect.text(pcopy[key], "ok", name)
+
+
+NL_CONTROLS = (
+    ("2189 control lf single", "#2189 control: a consistent LF file / single table, 2, 3 and 4 workers: loads heap"
+     " COPY's rows"),
+    ("2189 control lf part", "#2189 control: a consistent LF file / partitioned, 2, 3 and 4 workers: loads heap"
+     " COPY's rows"),
+    ("2189 control crall single", "#2189 control: a consistent CRLF file / single table, 2, 3 and 4 workers: loads"
+     " heap COPY's rows"),
+    ("2189 control crall part", "#2189 control: a consistent CRLF file / partitioned, 2, 3 and 4 workers: loads heap"
+     " COPY's rows"),
+    ("2189 control crmark single", "#2189 control: \\.\\r\\n at a range start in a CRLF file / single table, 2, 3"
+     " and 4 workers: loads heap COPY's rows"),
+    ("2189 control midmark single", "#2189 control: \\.\\n in the middle of a range in an LF file / single table,"
+     " 2, 3 and 4 workers: loads heap COPY's rows"),
+    ("2189 control midmark part", "#2189 control: \\.\\n in the middle of a range in an LF file / partitioned, 2,"
+     " 3 and 4 workers: loads heap COPY's rows"),
+    ("2189 control esc single", "#2189 control: a CRLF file whose first record holds an escaped LF and ends in an escaped backslash / single table, 2,"
+     " 3 and 4 workers: loads heap COPY's rows"),
+    ("2189 control esc part", "#2189 control: a CRLF file whose first record holds an escaped LF and ends in an escaped backslash / partitioned, 2, 3"
+     " and 4 workers: loads heap COPY's rows"),
+)
+
+
+@pytest.mark.parametrize("key,name", NL_CONTROLS, ids=[k[13:].replace(" ", "-") for k, _ in NL_CONTROLS])
+def test_parallel_copy_a_consistent_newline_style_still_loads(pcopy, expect, key, name):
+    """#2189 controls: a file that keeps one style loads with 2, 3 and 4 workers as heap
+    COPY loads it, rows and values. That includes a CRLF file with \\.\\r\\n at a range
+    start, \\.\\n in the middle of a range, and a CRLF file whose first record holds an
+    escaped LF, which does not end the first line, and ends in an escaped backslash, an
+    even run, so the CR after it does."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+# ---- #2189, review of #2221: the first-line scan, probe by probe -------------------
+
+def test_parallel_copy_newline_probe_premise(pcopy, expect):
+    """The probes depend on the 64 KiB scan read: the source defines it as 65536, and
+    the bytes either side of offset 65536 are the CR and LF (p1, p2) or the backslash
+    and CR (p4). Heap COPY refuses p1 and loads the others."""
+    expect.text(pcopy["2189 probe premise"],
+                "1 0d0a 0d0a 5c0d ; 22P04|literal newline found in data|0 rows|0 prepared ; "
+                "40 rows 40 rows 40 rows 40 rows 41 rows",
+                "#2189 premise: COLUMNAR_SPLIT_SCAN_CHUNK is 65536; p1 and p2 hold 0d 0a at bytes 65535-65536 and"
+                " p4 5c 0d; heap COPY refuses p1 with 22P04 'literal newline found in data' and loads 40 rows from"
+                " p2, p3, p4, p5b and 41 from p5")
+
+
+NL_PROBES = (
+    ("2189 probe p1 single", "#2189 probe P1, a CRLF first line longer than one 64 KiB scan read, then LF lines /"
+     " single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p1 part", "#2189 probe P1, a CRLF first line longer than one 64 KiB scan read, then LF lines /"
+     " partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p2 single", "#2189 probe P2, the first line's CR ends one 64 KiB scan read and its LF starts the"
+     " next, a CRLF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p2 part", "#2189 probe P2, the first line's CR ends one 64 KiB scan read and its LF starts the"
+     " next, a CRLF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p3 single", "#2189 probe P3, an escaped CR on the first line of an LF file / single table, 2, 3"
+     " and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p3 part", "#2189 probe P3, an escaped CR on the first line of an LF file / partitioned, 2, 3 and"
+     " 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p4 single", "#2189 probe P4, a backslash ending one 64 KiB scan read escapes a CR starting the"
+     " next, an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p4 part", "#2189 probe P4, a backslash ending one 64 KiB scan read escapes a CR starting the"
+     " next, an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p5 single", "#2189 probe P5, a CRLF file whose first line is empty / single table of one text"
+     " column, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p5b single", "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR / single"
+     " table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p5b part", "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR /"
+     " partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+)
+
+
+@pytest.mark.parametrize("key,name", NL_PROBES, ids=[k[11:].replace(" ", "-") for k, _ in NL_PROBES])
+def test_parallel_copy_newline_probe_matches_heap_copy(pcopy, expect, key, name):
+    """#2189, review of #2221: five mutants of the first-line scan passed every other
+    check (one 64 KiB read only, the CR flag or the escape flag reset per read, a
+    backslash that does not escape a CR, a scan that starts at byte 1). Each probe
+    file tells one apart: the load must give heap COPY's outcome, its message after
+    "worker N failed: ", and its rows, with 2, 3 and 4 workers."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+# ---- #2188: the caller's client_encoding, and characters that hold 0x5C ------------
+
+def test_parallel_copy_encoding_premise_sjis_and_big5(pcopy, expect):
+    """#2188 premise: the scratch databases have the encodings the checks need, and heap
+    COPY under SJIS and BIG5 reads 83 5c and a5 5c as one character each, so the
+    newline after the next backslash is data."""
+    expect.text(pcopy["2188 premise sjis big5"],
+                "UTF8 SQL_ASCII 2000 rows 2000 rows 6131e382bd0a62 6132e382bd 2000 rows 6131e58a9f0a62"
+                " 2000 rows 6131e382bd",
+                "#2188 premise: the scratch databases are UTF8 and SQL_ASCII; under client_encoding SJIS heap COPY"
+                " loads 2000 rows from sjis and from sjisbs and stores sjis row 1 as 61 31 e3 82 bd 0a 62 and row 2"
+                " as 61 32 e3 82 bd; under BIG5 2000 rows from big5, row 1 61 31 e5 8a 9f 0a 62; under SJIS 2000"
+                " rows from sjistk, row 1 61 31 e3 82 bd")
+
+
+def test_parallel_copy_encoding_premise_first_line_and_chunk_files(pcopy, expect):
+    expect.text(pcopy["2188 premise eol chunk"], "2000 rows 61e382bd0d 9363 rows 835c5c0a 4000 rows 835c5c0d0a",
+                "#2188 premise: under client_encoding SJIS heap COPY loads 2000 rows from sjiseol and stores row 1"
+                " as 61 e3 82 bd 0d; 9363 rows from chunknl, whose bytes 65535-65538 are 83 5c 5c 0a, and 4000 from"
+                " chunkcr, whose bytes 65535-65539 are 83 5c 5c 0d 0a")
+
+
+def test_parallel_copy_encoding_premise_gb18030_and_gbk(pcopy, expect):
+    expect.text(pcopy["2188 premise gb18030 gbk"], "2000 rows 61c280e4b9977a0a62 61e5958a7a0a79 2000 rows 61e4b9977a0a62",
+                "#2188 premise: under client_encoding GB18030 heap COPY loads 2000 rows from gb18030 and stores row 1"
+                " as 61 c2 80 e4 b9 97 7a 0a 62 and row 2 as 61 e5 95 8a 7a 0a 79; under GBK 2000 rows from gbk, row 1"
+                " 61 e4 b9 97 7a 0a 62")
+
+
+ENC_LOADS = (
+    ("2188 gb18030 single", "2:ok 3:ok 4:ok", "#2188 GB18030, a four-byte character next to a two-byte character"
+     " whose second byte is 0x5C, then a byte and an escaped newline / single table, 2, 3 and 4 workers: heap"
+     " COPY's outcome, rows and content"),
+    ("2188 gb18030 part", "2:ok 3:ok 4:ok", "#2188 GB18030, a four-byte character next to a two-byte character"
+     " whose second byte is 0x5C, then a byte and an escaped newline / partitioned, 2, 3 and 4 workers: heap"
+     " COPY's outcome, rows and content"),
+    ("2188 gbk single", "2:ok 3:ok 4:ok", "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte"
+     " and an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 gbk part", "2:ok 3:ok 4:ok", "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte"
+     " and an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 sjis single", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 sjis part", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / partitioned, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 big5 single", "2:ok 3:ok 4:ok", "#2188 BIG5, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 big5 part", "2:ok 3:ok 4:ok", "#2188 BIG5, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / partitioned, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 sjistk part", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C right"
+     " before the TAB that ends the field before the key / partitioned, 2, 3 and 4 workers: heap COPY's outcome,"
+     " rows and content"),
+    ("2188 sjisbs single", "2:ok 3:ok 4:ok", "#2188 SJIS, a backslash before a two-byte character whose second"
+     " byte is 0x5C, right before every newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and"
+     " content"),
+    ("2188 sjiseol single", "2:ok 3:ok 4:ok", "#2188 SJIS, the first line's two-byte character whose second byte"
+     " is 0x5C before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, rows"
+     " and content"),
+    ("2188 sjiseol part", "2:ok 3:ok 4:ok", "#2188 SJIS, the first line's two-byte character whose second byte"
+     " is 0x5C before an escaped CR, in an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows"
+     " and content"),
+    ("2188 chunknl single", "2:ok", "#2188 SJIS, a two-byte character split across two 64 KiB scan reads, before"
+     " an escaped newline / single table, 2 workers: heap COPY's outcome, rows and content"),
+    ("2188 chunkcr single", "2:ok 3:ok 4:ok", "#2188 SJIS, the first line's two-byte character split across two"
+     " 64 KiB scan reads, before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,want,name", ENC_LOADS, ids=[k[5:].replace(" ", "-") for k, _, _ in ENC_LOADS])
+def test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash(pcopy, expect, key, want, name):
+    """#2188: under SJIS and BIG5 the second byte of a character can be 0x5c. The
+    splitters, the first-line scan and the loaders must read it as COPY FROM does,
+    part of a character and not a backslash, so the load gives heap COPY's outcome,
+    rows and row hash. chunknl and chunkcr put the character across the edge of the
+    first 64 KiB scan read."""
+    expect.text(pcopy[key], want, name)
+
+
+def test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c(pcopy, expect):
+    """#2188: file_split_offsets reads the file in the session's client_encoding, so it
+    cuts only where a record starts, and a backslash before a character that ends in
+    0x5c does not hide every newline (no empty range)."""
+    expect.text(pcopy["2188 cuts"], "2:ok 3:ok 4:ok ; 2:ok 3:ok 4:ok ; 2:ok 3:ok 4:ok",
+                "#2188 SJIS and BIG5: file_split_offsets cuts sjis, sjisbs and big5 only at record starts, with no"
+                " range empty, for 2, 3 and 4 workers")
+
+
+def test_parallel_copy_encoding_premise_database_default(pcopy, expect):
+    expect.text(pcopy["2188 premise default sjis"], "SJIS 2000 rows 636166c3a931",
+                "#2188 premise: with the database's default client_encoding set to SJIS a new session's is SJIS,"
+                " and heap COPY under the caller's UTF8 loads 2000 rows from utf8txt and stores row 1 as 63 61 66"
+                " c3 a9 31")
+
+
+ENC_DEFAULT = (
+    ("2188 default sjis single", "#2188 the database's default client_encoding SJIS and the caller's UTF8, UTF8"
+     " text / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 default sjis part", "#2188 the database's default client_encoding SJIS and the caller's UTF8, UTF8"
+     " text / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", ENC_DEFAULT, ids=[k[18:] for k, _ in ENC_DEFAULT])
+def test_parallel_copy_loaders_read_the_callers_client_encoding(pcopy, expect, key, name):
+    """#2188: the loaders read the file in the caller's client_encoding, not in their
+    own, which is the database's default (SJIS here), so they store the text the
+    caller's COPY FROM stores."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+def test_parallel_copy_encoding_premise_controls(pcopy, expect):
+    expect.text(pcopy["2188 premise controls"], "2000 rows 61c3a90a62 2000 rows 61c3a90a62 2000 rows 61830a62",
+                "#2188 premise: heap COPY loads 2000 rows each from latin1 under LATIN1, utf8 under UTF8 and, in the"
+                " SQL_ASCII database, ascii under SJIS, storing row 1 as 61 c3 a9 0a 62, 61 c3 a9 0a 62 and 61 83"
+                " 0a 62")
+
+
+ENC_CONTROLS = (
+    ("2188 control latin1 single", "#2188 control: LATIN1, a high-bit byte before an escaped newline / single"
+     " table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control latin1 part", "#2188 control: LATIN1, a high-bit byte before an escaped newline / partitioned,"
+     " 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control utf8 single", "#2188 control: UTF8, a two-byte character before an escaped newline / single"
+     " table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control utf8 part", "#2188 control: UTF8, a two-byte character before an escaped newline /"
+     " partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control ascii single", "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a"
+     " newline, which COPY reads as an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome,"
+     " rows and content"),
+    ("2188 control ascii part", "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a"
+     " newline, which COPY reads as an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome,"
+     " rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", ENC_CONTROLS, ids=[k[13:].replace(" ", "-") for k, _ in ENC_CONTROLS])
+def test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so(pcopy, expect, key, name):
+    """#2188 controls: where 0x5c after a high-bit byte IS a backslash -- LATIN1, UTF8,
+    and SJIS in a SQL_ASCII database, which core does not convert -- the load still
+    gives heap COPY's outcome, rows and row hash."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)

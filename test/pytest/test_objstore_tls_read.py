@@ -45,6 +45,9 @@ TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
 G, NCOLS, ROWS_PER_GROUP = 3, 8, 8000
 COLDEFS = ", ".join(f"c{i} int8" for i in range(NCOLS))
+# pgc_reads (#2198): count(*), sum(c3) and sum(c7) of the fixture, c3 = 4v and c7 = 8v for row v
+_N = G * ROWS_PER_GROUP
+READS_WANT = f"{_N} {4 * _N * (_N - 1) // 2} {8 * _N * (_N - 1) // 2}"
 # label -> (foreign table, server, OpenSSL's verification reason)
 REFUSED = {
     "wrong-host": ("fwrong", "wronghost", "IP address mismatch"),
@@ -296,6 +299,28 @@ def otr(pgc_cluster, server_dir):
         r["D elapsed"] = time.monotonic() - t0
         _wait_up(dsn)
 
+        # F (#2198): a reset on a kept-alive TLS connection, as the shell's
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE FUNCTION pgc_reads(url text, n int) RETURNS text "
+                      "LANGUAGE plpgsql AS $f$ "
+                      "DECLARE ok int := 0; bad int := 0; c text; last text := ''; BEGIN "
+                      "FOR i IN 1..n LOOP BEGIN "
+                      "EXECUTE format('SELECT count(*) || '' '' || sum(c3) || '' '' || sum(c7) FROM pgcolumnar.read_parquet(%L) "
+                      f"AS t({COLDEFS})', url) INTO c; "
+                      f"IF c = '{READS_WANT}' THEN ok := ok + 1; "
+                      "ELSE bad := bad + 1; last := 'rows sum(c3) sum(c7)=' || c; END IF; "
+                      "EXCEPTION WHEN others THEN bad := bad + 1; "
+                      "last := SQLSTATE || ': ' || SQLERRM; END; END LOOP; "
+                      "RETURN 'ok=' || ok || ' failed=' || bad || "
+                      "CASE WHEN bad > 0 THEN ' last=' || last ELSE '' END; END $f$")
+        r["F rstka"] = _one(dsn, f"SELECT pgc_reads('{url('good', 'rstka/')}', 30)")
+        _wait_up(dsn)
+        r["F rsthead url"] = url("good", "rsthead/")
+        got = _refusal(dsn, "SET statement_timeout = '20s'",
+                       f"SELECT count(*) FROM pgcolumnar.read_parquet('{r['F rsthead url']}') AS t({COLDEFS})")
+        r["F rsthead"] = f"{got['state']}: {got['message']}"
+        _wait_up(dsn)
+
         _restart(cluster, datadir, log, {"SSL_CERT_DIR": str(pki / "cadir")})
         r["E count"] = _one(dsn, "SELECT count(*) FROM fgood")
 
@@ -401,6 +426,20 @@ def test_the_cancel_latency_is_bounded(otr, expect):
         return
     got = "bounded" if otr["D elapsed"] <= 10 else f"slow({otr['D elapsed']:.0f}s)"
     expect.text(got, "bounded", "D: cancel latency bounded (<=10s)")
+
+
+def test_reads_over_tls_from_a_server_that_resets_each_kept_alive_connection_all_succeed(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["F rstka"], "ok=30 failed=0",
+                "F: 30 reads over TLS from a server that resets each kept-alive connection all succeed")
+
+
+def test_a_reset_over_tls_after_part_of_a_status_line_is_refused(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["F rsthead"], f'08006: columnar: TLS read from "{otr["F rsthead url"]}" failed',
+                "F: a reset over TLS after part of a status line is refused")
 
 
 def test_ssl_cert_dir_alone_trusts_the_ca(otr, expect):
