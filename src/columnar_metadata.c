@@ -1866,6 +1866,72 @@ PgColumnarLockChunkGroup(uint64 storageId, uint64 groupNumber)
 	delete_vector_lock_chunk_group(storageId, groupNumber, 0);
 }
 
+/* the advisory tag of one chunk group's lock (class 101), as delete_vector_lock_chunk_group sets it */
+static void
+chunk_group_lock_tag(LOCKTAG *tag, uint64 storageId, uint64 groupNumber)
+{
+	uint64		key = delete_vector_chunk_lock_key(storageId, groupNumber, 0);
+
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId,
+						 (uint32) (key >> 32), (uint32) (key & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_DELETE_VECTOR);
+}
+
+/* the advisory tag of a storage's storage-row lock (class 102), as PgColumnarInsertNativeStorageRow sets it */
+static void
+storage_row_lock_tag(LOCKTAG *tag, uint64 storageId)
+{
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+}
+
+/*
+ * PgColumnarConditionalLockChunkGroup / PgColumnarUnlockChunkGroup
+ * PgColumnarLockStorageRow / PgColumnarUnlockStorageRow
+ *		The two lock classes an online rewrite needs, taken without waiting or
+ *		given back, so the rewrite never waits for one while it holds the other
+ *		(#2074; see lock_rewrite_groups in columnar_vacuum.c). An unlock undoes
+ *		one lock call only: a lock this transaction already held before stays
+ *		held to commit, as PostgreSQL counts each acquisition.
+ */
+bool
+PgColumnarConditionalLockChunkGroup(uint64 storageId, uint64 groupNumber)
+{
+	LOCKTAG		tag;
+
+	chunk_group_lock_tag(&tag, storageId, groupNumber);
+	return LockAcquire(&tag, ExclusiveLock, false, true) != LOCKACQUIRE_NOT_AVAIL;
+}
+
+void
+PgColumnarUnlockChunkGroup(uint64 storageId, uint64 groupNumber)
+{
+	LOCKTAG		tag;
+
+	chunk_group_lock_tag(&tag, storageId, groupNumber);
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
+void
+PgColumnarLockStorageRow(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+	(void) LockAcquire(&tag, ExclusiveLock, false, false);
+}
+
+void
+PgColumnarUnlockStorageRow(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
 void
 PgColumnarUpsertDeleteVector(uint64 storageId, DeleteVectorMetadata *rm)
 {
@@ -2333,10 +2399,7 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 		goto insert_row;
 	}
 
-	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
-						 (uint32) (s->storageId >> 32),
-						 (uint32) (s->storageId & 0xFFFFFFFF),
-						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+	storage_row_lock_tag(&tag, s->storageId);
 	(void) LockAcquire(&tag, ExclusiveLock, false /* transaction lock */ ,
 					   false /* wait */ );
 
@@ -2392,6 +2455,34 @@ insert_row:
 	metadata_flush_insert(rel, tuple);
 	heap_freetuple(tuple);
 	metadata_flush_close(rel, RowExclusiveLock);
+}
+
+/*
+ * PgColumnarStorageRowLockHeldByMe
+ *		True when this transaction holds the storage-row lock that
+ *		PgColumnarInsertNativeStorageRow takes for storageId (#2211).
+ *
+ * The writer takes it on every row-group flush, whether or not the storage row
+ * is committed already, and holds it to transaction end; only a relation
+ * created in this transaction, and a bulk loader that finds the row committed,
+ * skip it. parallel_copy's coordinator and loaders take it in their own
+ * transactions, so a caller holding it would leave them waiting on it while
+ * the caller waits on them. Reads this backend's local lock table only.
+ */
+bool
+PgColumnarStorageRowLockHeldByMe(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+#if PG_VERSION_NUM >= 170000
+	return LockHeldByMe(&tag, ExclusiveLock, false);
+#else
+	return LockHeldByMe(&tag, ExclusiveLock);
+#endif
 }
 
 /*

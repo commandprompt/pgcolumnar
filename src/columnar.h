@@ -309,6 +309,7 @@ extern double pgcolumnar_autovacuum_recluster_threshold;
 extern bool pgcolumnar_autovacuum_expire;
 extern void PgColumnarAutovacuumRegister(void);
 extern int	pgcolumnar_maintenance_hold_ms;	/* dev/test: hold SUEL this long in a maintenance verb */
+extern int	pgcolumnar_rewrite_lock_timeout;	/* ms a rewrite may spend taking its locks (#2074) */
 extern int	pgcolumnar_vm_set_hold_ms;	/* dev/test: pause lazy VACUUM between VM compute and set */
 
 /* Phase 6 GUCs (spec 8.3) */
@@ -594,6 +595,8 @@ extern void PgColumnarRequireNoRowSecurity(Oid relid);
 /* refuse when this transaction holds a lock its workers would wait on (#2183) */
 extern void PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid,
 											LOCKMODE workerlock);
+/* does this transaction hold the storage-row lock of storageId? (#2211) */
+extern bool PgColumnarStorageRowLockHeldByMe(uint64 storageId);
 
 /*
  * Assert-only invariant: a storage's live row-group footprints and its

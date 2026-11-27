@@ -605,6 +605,71 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
+  with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
+  two locks to commit: the delete-vector lock of each row group it deletes
+  from, and the storage-row lock, which every flush of new rows takes. It can
+  take them in either order. Both verbs used to take the delete-vector locks first and then wait
+  for the storage-row lock, so a single-row `UPDATE` deadlocked with them and
+  one side failed with `deadlock detected` (40P01). The maintenance daemon
+  runs both verbs, so turning it on could make application `UPDATE`s fail this
+  way. Both verbs now take the storage-row lock first and try the
+  delete-vector locks without waiting. When a writer holds one, the verb gives
+  back its locks, waits for that writer to finish, and tries again. So the
+  verb never waits while it holds a lock a writer may need. The waiting has a
+  bound: after the new setting `pgcolumnar.rewrite_lock_timeout` (default
+  10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
+  logs a skip. Writers no longer queue behind a rewrite, so under a steady
+  stream of deletes the verb can reach that limit where it used to finish
+  (#2185). Two plain writers can still deadlock with each other (#2184).
+  When both verbs are due on one table, the daemon still runs them in one
+  transaction, and a writer can deadlock with that pair (#2194). An `UPDATE` that
+  meets a rewrite of its group still gets the documented retryable `row group
+  was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
+  from the start of its read, not only from the start of its write.
+  `compact_rewrite` now takes all its groups' locks before it rewrites the
+  first, so a `DELETE` on a later group waits from that point.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
+  that the verb gives back its locks before and after each wait, counts a lock
+  its own transaction holds as taken, and stops within its limit under steady
+  deletes and behind a deleter or an inserter that stays open. They also check
+  that the verb gives the session's `lock_timeout` back on success and after
+  55P03, and that a shorter user `lock_timeout` still wins. A longer user
+  `lock_timeout` does not replace the limit. The rewrite keeps the
+  storage-row lock while it holds its group locks, so a writer that inserts
+  and then deletes beside it commits. A limit of `0` waits without a limit,
+  and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+  A session that does not set the limit gets the 10 s default. The tests
+  also cover a delete in `recluster`'s last group, a busy last group, which
+  the verb waits on holding no group lock, and a limit of `0` under a user
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error. They
+  also check that the limit counts from the call, not from the statement or
+  transaction start.
+- `read_parquet`, `import_parquet` and the Parquet foreign table now read a
+  REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
+  pyarrow does (#2079, #1916). They returned wrong values with no error: an
+  empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
+  values, a REQUIRED struct with a NULL field read as NULL, a NULL list
+  inside a present struct read as `{}`, and an empty list inside a present
+  struct read as `{NULL}`. The reader assumed that definition level 0 always
+  meant a NULL list or struct and level 1 an empty list. That holds only for a
+  nullable list or struct with no nullable parent. The reader now takes both
+  levels from the file's schema. A composite is NULL only when the struct that
+  holds all its leaves is NULL, so a NULL sub-struct no longer hides a sibling
+  field. A composite over leaves that no one struct holds, such as two
+  top-level columns, is now an error: it read as NULL whenever any one field
+  was NULL. A one-field composite over one top-level column is now an error
+  too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
+  `test_parquet_nested_import.py`, which also read composites whose leaves sit
+  two levels below their struct. Every statement in their pyarrow arm runs
+  under a 60-second client-side bound, so a reader that loops fails the check
+  instead of hanging the suite.
+- `read_parquet` now reads a legacy two-level list, a REPEATED leaf with no
+  LIST group such as `repeated int64 l`, as its values (#1916). It read every
+  row as an empty array, `{}`, with no error. The #2079 fix above corrected
+  this, and `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py` now read `twolevel.parquet`, with one empty
+  row, to pin it.
 - `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
   text-format file holds a backslash before a raw newline, or a `\.`
   end-of-data line (#2084). The splitter cut the file at any newline byte. In
@@ -694,6 +759,11 @@ true until the next version shipped.
   and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
   INSERT still gets 42501 first, a URL still gets the refusal for remote files
   first, and `dedup => true` still gets the refusal and its hint.
+  On PostgreSQL 18 and later a check also covers a temporal primary key,
+  `PRIMARY KEY (id, during WITHOUT OVERLAPS)`, whose one index is both unique
+  and exclusion (#2200); it needs btree_gist and is a skip before 18. With the
+  refusal testing `indisunique != indisexclusion`, every other check passed and
+  that load ran into a 10 s statement_timeout (57014).
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data
@@ -773,6 +843,23 @@ true until the next version shipped.
   and a table with no projection are the controls. `parallel_copy.sh` and
   `test_parallel_copy.py`; the race with `add_projection` is forced by a
   trigger that holds the loaders until the projection has committed.
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
+  calling transaction has already written to the target, or to one of its
+  partitions, for example with an `INSERT` earlier in the same transaction
+  (#2211). The write holds the storage-row lock that serializes a storage's first
+  writers until the transaction ends, whether or not the storage row was
+  committed already. The coordinator takes that lock to pre-create a single
+  table's storage row, and a loader takes it on its first flush into a
+  partition, each in its own transaction, while the caller waits for them on a
+  latch, so the deadlock detector could not see the wait. It hung with 1 worker
+  as with 2. Such a call is now refused up front with 55000
+  (`object_not_in_prerequisite_state`), naming the written relation, after
+  #2183's lock refusal and before #2080's unique-index refusal. Every columnar
+  partition is checked, at any depth of the partition tree. A write to
+  another table, or none, still loads. The refused, rolled-back call no longer
+  leaves a committed, empty `pgcolumnar.storage` row behind, which the
+  coordinator created once the caller's rollback released the lock.
+  `parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's
