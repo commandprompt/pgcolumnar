@@ -62,6 +62,7 @@ G_REFUSED = {
     "an EOF over TLS on a fresh connection": (
         "finfresh", '08006: columnar: connection to "{url}" failed before a response', 1),
     "a TLS record error on a kept-alive connection": ("garbka", '08006: columnar: TLS read from "{url}" failed', 1),
+    "a bad record MAC on a kept-alive connection": ("badmac", '08006: columnar: TLS read from "{url}" failed', 1),
 }
 
 

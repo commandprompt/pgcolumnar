@@ -99,7 +99,11 @@
 #   /garbka/<file>   answer the first request on a connection; answer a later
 #                    GET with bytes that are not a TLS record, written to the
 #                    raw socket, then close. The client's SSL_read fails with
-#                    SSL_ERROR_SSL for a reason other than an unexpected EOF.
+#                    SSL_ERROR_SSL for a reason other than an unexpected EOF
+#                    (OpenSSL 3.5 names it "packet length too long").
+#   /badmac/<file>   as /garbka/, but the bytes are a well-formed TLS 1.2/1.3
+#                    application-data record header and 64 random bytes, so
+#                    SSL_read fails with "decryption failed or bad record mac".
 #
 # --reset-all resets every request, of any method and on every connection, once
 # its head is read and before any answer: a read, a LIST, a write and a REST
@@ -356,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _reset_mode_later(self, mode):
         """True when a reset mode's request is a later one on its connection."""
-        return mode in ("rsthead", "rstbody", "finka", "finbody", "garbka") and \
+        return mode in ("rsthead", "rstbody", "finka", "finbody", "garbka", "badmac") and \
             getattr(self, "_served", 0) > 0
 
     def handle_expect_100(self):
@@ -452,7 +456,8 @@ class Handler(BaseHTTPRequestHandler):
                        "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
                        "/hswap/", "/vhswap/", "/whswap/",
                        "/closeka/", "/rstka/", "/rsthead/", "/rstbody/", "/rstall/",
-                       "/rstfin/", "/finka/", "/finbody/", "/finfresh/", "/garbka/"):
+                       "/rstfin/", "/finka/", "/finbody/", "/finfresh/", "/garbka/",
+                       "/badmac/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -826,6 +831,11 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "garbka" and self._reset_mode_later(mode):
             self.wfile.flush()
             os.write(self.connection.fileno(), b"HTTP/1.1 206 Partial Content\r\n\r\n")
+            self._after = "close"
+            return
+        if mode == "badmac" and self._reset_mode_later(mode):
+            self.wfile.flush()
+            os.write(self.connection.fileno(), b"\x17\x03\x03\x00\x40" + os.urandom(64))
             self._after = "close"
             return
         if mode == "rsthead" and self._reset_mode_later(mode):

@@ -34,7 +34,8 @@
 #       connection; OpenSSL 3 reports that as SSL_ERROR_SSL with the reason
 #       SSL_R_UNEXPECTED_EOF_WHILE_READING (#2246). The same EOF after half a
 #       body, the same EOF on a fresh connection, and a TLS error of another
-#       reason on a kept-alive connection each fail 08006 and are not retried.
+#       reason on a kept-alive connection (bytes that are not a record, or a
+#       record whose MAC does not verify) each fail 08006 and are not retried.
 #   No arm may crash a backend: the server log's "terminated by signal" count
 #   is read at the end, and every refusal waits for the server to answer
 #   SELECT 1 again, so a crash fails its own checks and not the next arm's.
@@ -306,6 +307,10 @@ g_arm "an EOF over TLS on a fresh connection" finfresh \
 # Bytes that are not a TLS record: SSL_ERROR_SSL for another reason, which no
 # reconnect can fix, so it is not taken for the keep-alive race.
 g_arm "a TLS record error on a kept-alive connection" garbka \
+	'08006: columnar: TLS read from "@URL@" failed' 1
+# A record whose MAC does not verify: another SSL_ERROR_SSL reason that is
+# not the race, the one closest to an EOF in what it says about the peer.
+g_arm "a bad record MAC on a kept-alive connection" badmac \
 	'08006: columnar: TLS read from "@URL@" failed' 1
 
 # ---- arm E: the CA from SSL_CERT_DIR alone ---------------------------------
