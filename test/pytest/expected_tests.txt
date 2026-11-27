@@ -372,6 +372,8 @@
 # guard_tests 897 -> 899 for #2232's test_ci_cluster_timeout.py, two tests (the reader on a fixture, and both
 # workflows' pytest-cluster timeouts within 1.5 to 2 times the slowest measured job), by collection over
 # NO_CLUSTER: 899 tests collected.
+# guard_tests 899 -> 900 for #2201's test_the_subset_runs_export_sink in test_sanitizer_gate.py: the sanitizer
+# subset runs export_sink, by collection over NO_CLUSTER: 900 tests collected.
 # guard_tests 899 -> 902 for #2165's three tests in test_runshape.py (four shell pickers with one seed get
 # four ports, two twin runs asking one slot get two, a shell suite and a twin never share one and reserve
 # in one directory), by collection over NO_CLUSTER (900 when written, on main 2e3fea7a plus #2195).
@@ -386,7 +388,8 @@
 # the shell. Two tests out (four shell pickers from one seed; a shell suite and a twin), three in (a pick waits
 # for a picker that holds the lock; the reservation names the picker's pid and the time; the default
 # directory), and the twin collision arm now runs four pickers rather than two (renamed).
-guard_tests 909
+# All of #2165's ten restated on main 0da8ea00 by the merge of it: 900 + 10 = 910, by collection.
+guard_tests 910
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2578,4 +2581,14 @@ guard_tests 909
 # export over http and over https, and a REST catalog request reset before any answer each name the errno), by
 # collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
-cluster_tests 6181
+# cluster_tests 6181 -> 6239 for #2202's tests in test_parallel_copy.py, restated on main bd082bdc (6027 ->
+# 6085 on the branch before its merges with #2228 and main): parallel_copy into a partitioned target reads
+# the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
+# each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
+# not name, as ci.yml selects them.
+# cluster_tests 6239 -> 6243 for #2209's four tests in test_parallel_copy.py: a premise that the heap target has a
+# primary key, that heap target with 2 workers gets 42809 before the unique-index refusal, a missing file into a
+# primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
+# call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6243
