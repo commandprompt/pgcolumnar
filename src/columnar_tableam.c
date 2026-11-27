@@ -3700,6 +3700,109 @@ pgcolumnar_forget_changed_collations(List *before)
 	}
 }
 
+/*
+ * pgcolumnar_follow_column_rename
+ *		Carry a column rename on relid through pgcolumnar's name-keyed
+ *		catalogs, for relid and every descendant: the ordering mark (#778),
+ *		the declared sort_by, sketch_columns and ttl_column (#2070), and the
+ *		projection declarations. Called after the rename has executed, from
+ *		ALTER TABLE ... RENAME COLUMN and, for each typed table, from ALTER
+ *		TYPE ... RENAME ATTRIBUTE (#2177).
+ *
+ * Every INHERITANCE CHILD and PARTITION too, not just the
+ * relation named in the statement. A column rename cascades to
+ * descendants, which are separate relations with their own
+ * storage and their own marks, and PostgreSQL REFUSES
+ * "ALTER TABLE child RENAME COLUMN" with "cannot rename
+ * inherited column" -- so for a columnar partition the parent is
+ * the only route, and a hook that looked only at the named
+ * relation would never fire for it at all.
+ *
+ * Not gated on the named relation being columnar, deliberately:
+ * a partitioned parent is not itself a columnar relation, and
+ * testing it here would close the door before the columnar
+ * children are reached. The per-descendant test below is the
+ * one that decides.
+ *
+ * And the walk cannot be too WIDE, which is the natural worry
+ * about it -- moving a mark for a descendant whose column never
+ * changed. PostgreSQL refuses both halves of that. A child
+ * alone is refused with "cannot rename inherited column", and
+ * the parent alone is refused too: ALTER TABLE ONLY p RENAME
+ * COLUMN gives "inherited column must be renamed in child
+ * tables too". So every rename that reaches this hook has
+ * already cascaded to the whole hierarchy, and walking it
+ * unconditionally is CORRECT rather than merely safe.
+ *
+ * That is the argument to keep. Without it the walk reads as
+ * over-broad and invites a later condition that reintroduces
+ * the bug (OffgridwithJD, #779 review).
+ *
+ * The rename already holds the locks it needs on the whole
+ * hierarchy, so NoLock here takes no new lock and cannot race.
+ */
+static void
+pgcolumnar_follow_column_rename(Oid relid, const char *oldName, const char *newName)
+{
+	List	   *kin = find_all_inheritors(relid, NoLock, NULL);
+	ListCell   *lc;
+
+	foreach(lc, kin)
+	{
+		Oid			kid = lfirst_oid(lc);
+
+		if (!PgColumnarIsColumnarRelation(kid))
+			continue;
+
+		{
+			Relation	rel = relation_open(kid, NoLock);
+
+			PgColumnarRenameSortKeyColumn(PgColumnarStorageId(rel),
+										  oldName, newName);
+			relation_close(rel, NoLock);
+		}
+
+		/*
+		 * And the DECLARED key, which vacuum_sorted(t) resolves when called
+		 * with no columns. Maintaining the mark without this would make the
+		 * two catalogs name different columns, so the same call with the same
+		 * declared intent would silently rewrite on a different physical key.
+		 */
+		PgColumnarRenameDeclaredSortByColumn(kid, oldName, newName);
+		PgColumnarRenameProjectionDeclarationColumn(kid, oldName, newName);
+	}
+	list_free(kin);
+}
+
+/*
+ * pgcolumnar_typed_tables
+ *		The tables whose row type is typeOid (pg_class.reloftype), found as
+ *		PostgreSQL's own find_typed_table_dependencies finds them: pg_class has
+ *		no index on reloftype. The rename that calls this already holds
+ *		AccessExclusiveLock on each of them.
+ */
+static List *
+pgcolumnar_typed_tables(Oid typeOid)
+{
+	Relation	classRel;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	List	   *result = NIL;
+
+	if (!OidIsValid(typeOid))
+		return NIL;
+	classRel = table_open(RelationRelationId, AccessShareLock);
+	ScanKeyInit(&key[0], Anum_pg_class_reloftype, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(typeOid));
+	scan = systable_beginscan(classRel, InvalidOid, false, NULL, 1, key);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+		result = lappend_oid(result, ((Form_pg_class) GETSTRUCT(tuple))->oid);
+	systable_endscan(scan);
+	table_close(classRel, AccessShareLock);
+	return result;
+}
+
 static void
 pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 						 bool readOnlyTree, ProcessUtilityContext context,
@@ -3932,73 +4035,39 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 			Oid			relid = RangeVarGetRelid(rs->relation, NoLock, true);
 
 			if (OidIsValid(relid))
+				pgcolumnar_follow_column_rename(relid, rs->subname, rs->newname);
+		}
+
+		/*
+		 * A TYPED table's column is renamed through its type (#2177):
+		 * PostgreSQL refuses ALTER TABLE ... RENAME COLUMN on a typed table
+		 * (42809), and ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE renames the
+		 * column in every table of that type instead. It arrives here as
+		 * OBJECT_ATTRIBUTE, naming the composite type. Without this branch
+		 * the mark, sort_by, sketch_columns and ttl_column all kept the old
+		 * name, and expire() later cut on whichever column took it.
+		 *
+		 * The typed tables are found as PostgreSQL finds them, by
+		 * pg_class.reloftype. Their partitions and inheritors are walked by
+		 * pgcolumnar_follow_column_rename, because the rename recurses into
+		 * them as well (renameatt_internal, recurse = true). Without CASCADE
+		 * the statement fails before reaching here when a typed table exists.
+		 */
+		if (rs->renameType == OBJECT_ATTRIBUTE && rs->relation != NULL &&
+			rs->subname != NULL && rs->newname != NULL)
+		{
+			Oid			typrel = RangeVarGetRelid(rs->relation, NoLock, true);
+
+			if (OidIsValid(typrel) &&
+				get_rel_relkind(typrel) == RELKIND_COMPOSITE_TYPE)
 			{
-				List	   *kin;
+				List	   *typed = pgcolumnar_typed_tables(get_rel_type_id(typrel));
 				ListCell   *lc;
 
-				/*
-				 * Every INHERITANCE CHILD and PARTITION too, not just the
-				 * relation named in the statement. A column rename cascades to
-				 * descendants, which are separate relations with their own
-				 * storage and their own marks, and PostgreSQL REFUSES
-				 * "ALTER TABLE child RENAME COLUMN" with "cannot rename
-				 * inherited column" -- so for a columnar partition the parent is
-				 * the only route, and a hook that looked only at the named
-				 * relation would never fire for it at all.
-				 *
-				 * Not gated on the named relation being columnar, deliberately:
-				 * a partitioned parent is not itself a columnar relation, and
-				 * testing it here would close the door before the columnar
-				 * children are reached. The per-descendant test below is the
-				 * one that decides.
-				 *
-				 * And the walk cannot be too WIDE, which is the natural worry
-				 * about it -- moving a mark for a descendant whose column never
-				 * changed. PostgreSQL refuses both halves of that. A child
-				 * alone is refused with "cannot rename inherited column", and
-				 * the parent alone is refused too: ALTER TABLE ONLY p RENAME
-				 * COLUMN gives "inherited column must be renamed in child
-				 * tables too". So every rename that reaches this hook has
-				 * already cascaded to the whole hierarchy, and walking it
-				 * unconditionally is CORRECT rather than merely safe.
-				 *
-				 * That is the argument to keep. Without it the walk reads as
-				 * over-broad and invites a later condition that reintroduces
-				 * the bug (OffgridwithJD, #779 review).
-				 *
-				 * The rename already holds the locks it needs on the whole
-				 * hierarchy, so NoLock here takes no new lock and cannot race.
-				 */
-				kin = find_all_inheritors(relid, NoLock, NULL);
-				foreach(lc, kin)
-				{
-					Oid			kid = lfirst_oid(lc);
-
-					if (!PgColumnarIsColumnarRelation(kid))
-						continue;
-
-					{
-						Relation	rel = relation_open(kid, NoLock);
-
-						PgColumnarRenameSortKeyColumn(PgColumnarStorageId(rel),
-													  rs->subname, rs->newname);
-						relation_close(rel, NoLock);
-					}
-
-					/*
-					 * And the DECLARED key, which vacuum_sorted(t) resolves
-					 * when called with no columns. Maintaining the mark without
-					 * this would make the two catalogs name different columns,
-					 * so the same call with the same declared intent would
-					 * silently rewrite on a different physical key.
-					 */
-					PgColumnarRenameDeclaredSortByColumn(kid, rs->subname,
-														 rs->newname);
-					PgColumnarRenameProjectionDeclarationColumn(kid,
-																rs->subname,
-																rs->newname);
-				}
-				list_free(kin);
+				foreach(lc, typed)
+					pgcolumnar_follow_column_rename(lfirst_oid(lc), rs->subname,
+													rs->newname);
+				list_free(typed);
 			}
 		}
 	}
@@ -4173,7 +4242,8 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 
 	/*
 	 * A dropped column frees its name, so the ordering mark must stop naming
-	 * it (#2069). See PgColumnarForgetSortKeyColumn. The object-access hook
+	 * it (#2069), and so must the declared retention (#2070). See
+	 * PgColumnarForgetSortKeyColumn and PgColumnarForgetRetentionColumn. The object-access hook
 	 * sees every column drop: ALTER TABLE ... DROP COLUMN, its recursion into
 	 * inheritance children and partitions, and a drop that cascades from
 	 * another object. The column still has its name here, because the hook
@@ -4195,6 +4265,14 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 
 			PgColumnarForgetSortKeyColumn(PgColumnarStorageId(rel), attname);
 			relation_close(rel, NoLock);
+
+			/*
+			 * The declared retention names its column the same way, and a
+			 * stale ttl_column is worse than a stale mark: once another time
+			 * column takes the name, expire() cuts on it (#2070). See
+			 * PgColumnarForgetRetentionColumn.
+			 */
+			PgColumnarForgetRetentionColumn(objectId, attname);
 		}
 		return;
 	}
