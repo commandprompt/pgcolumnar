@@ -10148,7 +10148,7 @@ One module fixture writes every metadata file into `server_dir` and reads every 
 
 ## 233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry
 
-The twin of `test/iceberg_name_mapping_memory.sh` (#731). The peak memory of a scan over a padded name mapping, less core's own parse of the byte-identical mapping, as a slope across two sizes, stays under 30 bytes an entry, and the padded mapping still binds every row with the same values.
+The twin of `test/iceberg_name_mapping_memory.sh` (#731). The peak memory of a scan over a padded name mapping, less core's own parse of the byte-identical mapping, as a slope across two sizes, stays under 30 bytes an entry, and the padded mapping still binds every row with the same values. A scan peak below core's floor is not a measurement (#2199): the three tests that compare readings then decline as `UNMET_PRECONDITION` instead of failing or passing on it. `PGC_NMMEM_READINGS_<N>` ("core scan" in kB), read by both harnesses, replaces an arm's two peaks to show this.
 
 ### Every test
 
