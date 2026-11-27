@@ -911,14 +911,14 @@ def _wait_count(db, where, want, tries=200):
 def _projection_during_load(db, path):
     """-> (premise, outcome) for a 2-worker parallel_copy that a projection reaches after
     the coordinator's pre-create (#2161, #2213 review). add_projection releases its table
-    lock before it commits (#2215). A BEFORE INSERT trigger holds both loaders on an
-    advisory lock while add_projection's transaction commits; then they insert, which is
-    when a loader lists the projections. The outcome is "SQLSTATE|message | rows N |
-    prepared N", with the worker number and storage id replaced by N."""
-    db.run("CREATE TABLE t_epr (id int, txt text) USING pgcolumnar")
-    db.run("CREATE FUNCTION epr_gate() RETURNS trigger LANGUAGE plpgsql "
-           "AS $$ BEGIN PERFORM pg_advisory_xact_lock_shared(2161); RETURN NEW; END $$")
-    db.run("CREATE TRIGGER epr_gate BEFORE INSERT ON t_epr FOR EACH ROW EXECUTE FUNCTION epr_gate()")
+    lock before it commits (#2215). A CHECK constraint holds both loaders on an advisory
+    lock while add_projection's transaction commits; then they insert, which is when a
+    loader lists the projections. (A BEFORE INSERT trigger did this until #2187 refused
+    an INSERT trigger with more than one worker.) The outcome is "SQLSTATE|message |
+    rows N | prepared N", with the worker number and storage id replaced by N."""
+    db.run("CREATE FUNCTION epr_gate(int) RETURNS boolean LANGUAGE plpgsql "
+           "AS $$ BEGIN PERFORM pg_advisory_xact_lock_shared(2161); RETURN true; END $$")
+    db.run("CREATE TABLE t_epr (id int CONSTRAINT epr_gate CHECK (epr_gate(id)), txt text) USING pgcolumnar")
     out = {}
 
     def load():
@@ -3668,8 +3668,8 @@ def test_parallel_copy_projection_committed_during_the_load_fails_cleanly(pcopy,
 def test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads(pcopy, expect):
     """#2161: the loader refuses an absent storage row of its target only. A trigger that
     writes another, empty, columnar table needs that table's row created, and with one
-    worker the load must go through. (Two or more workers into such a trigger still wait
-    on each other; that is not asserted here.)"""
+    worker the load must go through. (Two or more workers into such a trigger are refused
+    before the load starts, by #2187's trigger refusal.)"""
     expect.text(pcopy["ep trigger"], "5000|5000|5000",
                 "parallel_copy with 1 worker into a table whose trigger writes another empty columnar table still"
                 " loads (#2161)")

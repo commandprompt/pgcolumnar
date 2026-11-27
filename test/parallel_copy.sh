@@ -2174,14 +2174,15 @@ check "parallel_copy with 2 workers into a table with three empty projections fi
 # through PREPARE TRANSACTION, and the next loader would wait on it until
 # statement_timeout, which is #2161 again. A loader now fails on such a row with
 # 55000, and the coordinator rolls every range back. The race is forced, not
-# timed: a BEFORE INSERT trigger holds both loaders on an advisory lock until
+# timed: a CHECK constraint holds both loaders on an advisory lock until
 # add_projection's transaction has committed, and only then lets them insert,
-# which is when a loader lists the projections.
-psql_run "CREATE TABLE t_epr (id int, txt text) USING pgcolumnar;
-	CREATE TABLE epr_go (step int);
-	CREATE FUNCTION epr_gate() RETURNS trigger LANGUAGE plpgsql
-	  AS \$\$ BEGIN PERFORM pg_advisory_xact_lock_shared(2161); RETURN NEW; END \$\$;
-	CREATE TRIGGER epr_gate BEFORE INSERT ON t_epr FOR EACH ROW EXECUTE FUNCTION epr_gate();" >/dev/null
+# which is when a loader lists the projections. COPY checks the constraint
+# before it hands the row to the table. (A BEFORE INSERT trigger did this until
+# #2187 refused a table with an INSERT trigger with more than one worker.)
+psql_run "CREATE TABLE epr_go (step int);
+	CREATE FUNCTION epr_gate(int) RETURNS boolean LANGUAGE plpgsql
+	  AS \$\$ BEGIN PERFORM pg_advisory_xact_lock_shared(2161); RETURN true; END \$\$;
+	CREATE TABLE t_epr (id int CONSTRAINT epr_gate CHECK (epr_gate(id)), txt text) USING pgcolumnar;" >/dev/null
 epr_psql() { timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA "$@"; }
 epr_psql -c "SELECT pg_advisory_lock(2161); SET application_name = 'epr_gate';
 	DO \$\$ BEGIN WHILE NOT EXISTS (SELECT 1 FROM epr_go WHERE step >= 2) LOOP PERFORM pg_sleep(0.05); END LOOP; END \$\$;
@@ -2212,8 +2213,7 @@ check "parallel_copy fails with 55000, not 57014, when a projection committed du
 # The loader refuses an absent storage row of its TARGET only. A trigger may write
 # another columnar table, whose row the coordinator never pre-created; with one
 # worker that load must still go through. (Two or more workers into such a
-# trigger still wait on each other's storage-row lock for the other table; that is
-# a sibling of #2187's trigger case and is not asserted here.)
+# trigger are refused before the load starts, by #2187's trigger refusal.)
 psql_run "CREATE TABLE t_ept (id int, txt text) USING pgcolumnar;
 	CREATE TABLE t_ept_side (id int, txt text) USING pgcolumnar;
 	CREATE FUNCTION t_ept_copy() RETURNS trigger LANGUAGE plpgsql
