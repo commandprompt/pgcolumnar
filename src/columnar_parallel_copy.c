@@ -2004,11 +2004,45 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		 * whose cause holds for every worker count comes first.
 		 */
 		{
+			List	   *rels = find_all_inheritors(relid, NoLock, NULL);
 			ListCell   *lc;
 
-			foreach(lc, find_all_inheritors(relid, NoLock, NULL))
+			foreach(lc, rels)
 				PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_copy",
 												lfirst_oid(lc), RowExclusiveLock);
+
+			/*
+			 * Nor may this transaction have written to the target or to one of
+			 * its partitions (#2211). The write took the storage's storage-row
+			 * lock (PgColumnarInsertNativeStorageRow), held to transaction end.
+			 * The coordinator takes it to pre-create a single table's storage
+			 * row, and a loader takes it on its first flush into a partition,
+			 * each in its own transaction, so they waited on it while this
+			 * backend waited on them on a latch, until statement_timeout. A
+			 * refusal, like #2183's: the workers could not see the caller's
+			 * uncommitted rows or storage row anyway. Checked for every columnar
+			 * partition, because which ones the file reaches is not known yet.
+			 */
+			foreach(lc, rels)
+			{
+				Oid			partid = lfirst_oid(lc);
+				Relation	part;
+				uint64		storageId;
+
+				if (!PgColumnarIsColumnarRelation(partid))
+					continue;
+				part = table_open(partid, AccessShareLock);
+				storageId = PgColumnarStorageId(part);
+				table_close(part, AccessShareLock);
+				if (PgColumnarStorageRowLockHeldByMe(storageId))
+					ereport(ERROR,
+							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+							 errmsg("pgcolumnar.parallel_copy cannot run after this transaction has written to \"%s\"",
+									get_rel_name(partid)),
+							 errdetail("The write holds the lock that serializes the first writers of \"%s\" until this transaction ends, and the background workers take that lock in their own transactions, so they would wait for this transaction to end.",
+									   get_rel_name(partid)),
+							 errhint("Commit the write first, or load the file with COPY in this transaction.")));
+			}
 		}
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)

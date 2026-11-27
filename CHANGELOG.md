@@ -715,6 +715,11 @@ true until the next version shipped.
   and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
   INSERT still gets 42501 first, a URL still gets the refusal for remote files
   first, and `dedup => true` still gets the refusal and its hint.
+  On PostgreSQL 18 and later a check also covers a temporal primary key,
+  `PRIMARY KEY (id, during WITHOUT OVERLAPS)`, whose one index is both unique
+  and exclusion (#2200); it needs btree_gist and is a skip before 18. With the
+  refusal testing `indisunique != indisexclusion`, every other check passed and
+  that load ran into a 10 s statement_timeout (57014).
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data
@@ -771,6 +776,23 @@ true until the next version shipped.
   no cluster and no race: a descriptor listed but gone by its readlink no
   longer hides the lock, and a pid that does not exist reads 0 of 0. The
   `flock -F` check's own descriptor count skips a vanished descriptor too.
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
+  calling transaction has already written to the target, or to one of its
+  partitions, for example with an `INSERT` earlier in the same transaction
+  (#2211). The write holds the storage-row lock that serializes a storage's first
+  writers until the transaction ends, whether or not the storage row was
+  committed already. The coordinator takes that lock to pre-create a single
+  table's storage row, and a loader takes it on its first flush into a
+  partition, each in its own transaction, while the caller waits for them on a
+  latch, so the deadlock detector could not see the wait. It hung with 1 worker
+  as with 2. Such a call is now refused up front with 55000
+  (`object_not_in_prerequisite_state`), naming the written relation, after
+  #2183's lock refusal and before #2080's unique-index refusal. Every columnar
+  partition is checked, at any depth of the partition tree. A write to
+  another table, or none, still loads. The refused, rolled-back call no longer
+  leaves a committed, empty `pgcolumnar.storage` row behind, which the
+  coordinator created once the caller's rollback released the lock.
+  `parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's
