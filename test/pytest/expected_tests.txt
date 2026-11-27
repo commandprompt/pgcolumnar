@@ -2564,6 +2564,11 @@ guard_tests 899
 # export over http and over https, and a REST catalog request reset before any answer each name the errno), by
 # collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
-# cluster_tests 6181 -> 6197 for #2167: test_rewrite_snapshot.py, the twin of the new rewrite_snapshot.sh
+# cluster_tests 6181 -> 6239 for #2202's tests in test_parallel_copy.py, restated on main bd082bdc (6027 ->
+# 6085 on the branch before its merges with #2228 and main): parallel_copy into a partitioned target reads
+# the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
+# each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
+# not name, as ci.yml selects them.
+# cluster_tests 6239 -> 6255 for #2167: test_rewrite_snapshot.py, the twin of the new rewrite_snapshot.sh
 # (16 tests), by collection over the cluster files.
-cluster_tests 6197
+cluster_tests 6255
