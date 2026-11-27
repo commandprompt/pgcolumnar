@@ -87,4 +87,152 @@ check "an INSERT in a WITH clause reading its own table returns the rows it inse
 	         SELECT count(*) FROM w")" "same"
 check "and the table holds them once, as heap does" "$(same "SELECT count(*) FROM %t")" "same"
 
+# ---- a later command, or another part of the same command (#2064) -------------
+# A cursor reads the table as it was when it was declared, even when it is
+# fetched after a later INSERT, UPDATE or DELETE in the same transaction. The
+# outer query of a data-modifying CTE does not see the CTE's changes. Both are
+# PostgreSQL rules, and heap is the answer. Each shape runs with the custom scan
+# on and off, and ends in ROLLBACK, so the tables stay as fresh made them.
+fresh
+for cs in on off; do
+	C="SET pgcolumnar.enable_custom_scan = $cs;"
+	check "a cursor fetched after a later INSERT counts only the rows there at DECLARE, as heap does (custom scan $cs)" \
+		"$(same "$C BEGIN; DECLARE c CURSOR FOR SELECT count(*) || '|' || sum(id) FROM %t;
+		         INSERT INTO %t SELECT g, 0 FROM generate_series(9001, 9050) g;
+		         FETCH ALL FROM c; ROLLBACK;")" "same"
+	check "a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE, as heap does (custom scan $cs)" \
+		"$(same "$C BEGIN; DECLARE c CURSOR FOR SELECT count(*) || '|' || sum(v) FROM %t;
+		         UPDATE %t SET v = 1 WHERE id % 4 = 1; DELETE FROM %t WHERE id % 4 = 2;
+		         FETCH ALL FROM c; ROLLBACK;")" "same"
+	check "the outer query of a DELETE in a WITH clause does not see the delete, as heap does (custom scan $cs)" \
+		"$(same "$C BEGIN; WITH d AS (DELETE FROM %t WHERE id % 4 = 0 RETURNING 1)
+		         SELECT (SELECT count(*) FROM d) || '|' || (SELECT count(*) FROM %t); ROLLBACK;")" "same"
+	check "the outer query of an UPDATE in a WITH clause does not see the update, as heap does (custom scan $cs)" \
+		"$(same "$C BEGIN; WITH u AS (UPDATE %t SET v = 1 WHERE id % 4 = 1 RETURNING 1)
+		         SELECT (SELECT count(*) FROM u) || '|' || (SELECT count(*) FROM %t) || '|' || (SELECT sum(v) FROM %t);
+		         ROLLBACK;")" "same"
+done
+
+# ---- a statement reading through an index the rows it wrote (#2247) ------------
+# A self-join UPDATE, DELETE or INSERT SELECT reads its own table on the inner side
+# of a join, or in a subquery, while it writes. Heap's inner scan sees the table as
+# it was when the statement started. A columnar index fetch used to see the
+# statement's own new row versions, from the write buffer or from row groups the
+# statement flushed, and to lose the old versions it had marked deleted. Heap is
+# the answer. Each shape ends in ROLLBACK, so the tables stay as fresh_pk made them.
+# The tables hold 40000 rows with a primary key and a covering index; the suite's
+# SET writes row groups of 1000 rows, so a statement that writes more than that
+# flushes part-way through.
+fresh_pk() {	# both tables, (id PRIMARY KEY, pad) holding pad = id for 1..40000
+	local am
+	for am in pgcolumnar heap; do
+		psql_run "$SET DROP TABLE IF EXISTS sv_$am CASCADE; DROP FUNCTION IF EXISTS seen_sv_$am();
+		          CREATE TABLE sv_$am (id int PRIMARY KEY, pad bigint) USING $am;
+		          INSERT INTO sv_$am SELECT g, g FROM generate_series(1, 40000) g;
+		          CREATE UNIQUE INDEX sv_${am}_cover ON sv_$am (id) INCLUDE (pad);
+		          CREATE FUNCTION seen_sv_$am() RETURNS bigint VOLATILE LANGUAGE sql
+		            AS 'SELECT count(*) FROM sv_$am WHERE id > 100000';"
+		psql_run "VACUUM ANALYZE sv_$am;"
+	done
+}
+plan_has() {	# plan_has SQL PATTERN -> yes when the columnar plan of SQL matches PATTERN
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAt -c "$SET ${1//%t/sv_pgcolumnar}" 2>&1)"
+	grep -qE "$2" <<<"$out" && echo yes || echo "no: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+}
+NL="SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off;"
+IDX="SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;"
+SEQIN="SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+       SET LOCAL enable_material = off; SET LOCAL enable_memoize = off;"
+CSOFF="SET LOCAL pgcolumnar.enable_custom_scan = off;"
+UPD="UPDATE %t SET pad = t2.pad + 1000000 FROM %t t2 WHERE t2.id = %t.id - 1 AND %t.id <= 10;"
+SHOW="SELECT string_agg(id || ':' || pad, ' ' ORDER BY id) FROM %t WHERE id <= 11;"
+BIG="UPDATE %t SET pad = t2.pad + 1000000 FROM %t t2 WHERE t2.id = %t.id - 1 AND %t.id <= 3000;
+     SELECT count(*) FILTER (WHERE pad <> id + 999999) || '|' || min(pad) || '|' || max(pad) FROM %t WHERE id BETWEEN 2 AND 3000;"
+SUBQ="UPDATE %t SET pad = (SELECT t2.pad FROM %t t2 WHERE t2.id = %t.id - 1) + 1000000 WHERE %t.id BETWEEN 2 AND 10;"
+fresh_pk
+for cs in off on; do
+	check "premise: the self-join UPDATE runs as a nested loop over index scans (custom scan $cs)" \
+		"$(plan_has "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $NL $IDX EXPLAIN (COSTS OFF) $UPD ROLLBACK;" \
+			'Nested Loop')" "yes"
+	check "a self-join UPDATE through index scans reads each row's old value, as heap does (custom scan $cs)" \
+		"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $NL $IDX $UPD $SHOW ROLLBACK;")" "same"
+done
+check "premise: the self-join UPDATE runs as a merge join" \
+	"$(plan_has "BEGIN; $CSOFF SET LOCAL enable_hashjoin = off; SET LOCAL enable_nestloop = off; EXPLAIN (COSTS OFF) $UPD ROLLBACK;" \
+		'Merge Join')" "yes"
+check "a self-join UPDATE through a merge join reads each row's old value, as heap does" \
+	"$(same "BEGIN; $CSOFF SET LOCAL enable_hashjoin = off; SET LOCAL enable_nestloop = off; $UPD $SHOW ROLLBACK;")" "same"
+check "a self-join DELETE through index scans deletes the rows heap deletes" \
+	"$(same "BEGIN; $CSOFF $NL $IDX DELETE FROM %t USING %t t2 WHERE t2.id = %t.id - 1 AND %t.id <= 10;
+	         SELECT count(*) || '|' || string_agg(id::text, ',' ORDER BY id) FROM %t WHERE id <= 11; ROLLBACK;")" "same"
+# Bounded by id < 200000, so a scan that fed on its own output stops after one more
+# pass instead of running until the statement_timeout.
+for limit in 150000 1000; do
+	check "an INSERT SELECT from its own table through an index range scan inserts each row once, as heap does (stripe_row_limit $limit)" \
+		"$(same "BEGIN; SET LOCAL statement_timeout = '20s'; SET LOCAL pgcolumnar.stripe_row_limit = $limit; $CSOFF $IDX
+		         INSERT INTO %t SELECT id + 100000, pad FROM %t WHERE id > 30000 AND id < 200000;
+		         SELECT count(*) || '|' || max(id) FROM %t; ROLLBACK;")" "same"
+done
+check "an UPDATE with a correlated subquery through an index scan reads the old value, as heap does" \
+	"$(same "BEGIN; $CSOFF $IDX SET LOCAL enable_indexonlyscan = off; $SUBQ $SHOW ROLLBACK;")" "same"
+check "premise: the correlated subquery runs as an index-only scan" \
+	"$(plan_has "BEGIN; $CSOFF $IDX EXPLAIN (COSTS OFF) $SUBQ ROLLBACK;" 'Index Only Scan')" "yes"
+check "an UPDATE with a correlated subquery through an index-only scan reads the old value, as heap does" \
+	"$(same "BEGIN; $CSOFF $IDX $SUBQ $SHOW ROLLBACK;")" "same"
+check "a self-join UPDATE chained across row groups reads each row's old value, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL $IDX UPDATE %t SET pad = t2.pad + 1000000 FROM %t t2 WHERE t2.id = %t.id - 10000 AND %t.id % 10000 = 5;
+	         SELECT string_agg(id || ':' || pad, ' ' ORDER BY id) FROM %t WHERE id % 10000 = 5; ROLLBACK;")" "same"
+check "a 3000-row self-join UPDATE through index scans reads each row's old value, with row groups flushed part-way, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL $IDX $BIG ROLLBACK;")" "same"
+check "a 3000-row self-join UPDATE through index scans reads each row's old value, with every new row still buffered, as heap does" \
+	"$(same "BEGIN; SET LOCAL pgcolumnar.stripe_row_limit = 150000; $CSOFF $NL $IDX $BIG ROLLBACK;")" "same"
+check "after an earlier UPDATE in the same transaction, a self-join UPDATE sees that UPDATE but not its own rows, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL $IDX UPDATE %t SET pad = pad + 7 WHERE id <= 10; $UPD $SHOW ROLLBACK;")" "same"
+check "an UPDATE that joins the same target row twice through an index changes it once, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL $IDX UPDATE %t SET pad = pad + 1 FROM (VALUES (1), (1), (2)) v(x) WHERE %t.id = v.x;
+	         SELECT string_agg(id || ':' || pad, ' ' ORDER BY id) FROM %t WHERE id <= 3; ROLLBACK;")" "same"
+check "a cursor fetched after a later UPDATE reads the old values through an index scan, as heap does" \
+	"$(same "BEGIN; $CSOFF $IDX DECLARE c CURSOR FOR SELECT sum(pad) FROM %t WHERE id <= 10;
+	         UPDATE %t SET pad = 0 WHERE id <= 10; FETCH ALL FROM c; ROLLBACK;")" "same"
+# A sequential inner scan restarts for every outer row and rebuilds its row-group
+# list each time, so it met the stripe the statement flushed a moment before.
+# UPDATE ... FROM takes the first match and hid that; count and sum show it.
+for cs in off on; do
+	check "a correlated count and sum through a sequential scan see one version of each row across a stripe boundary, as heap does (custom scan $cs)" \
+		"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $SEQIN
+		         UPDATE %t SET pad = (SELECT count(*) * 10000000 + sum(t2.pad) FROM %t t2 WHERE t2.id = %t.id - 1) WHERE %t.id BETWEEN 2 AND 3000;
+		         SELECT count(*) FILTER (WHERE pad <> 10000000 + id - 1) || '|' || min(pad) || '|' || max(pad) FROM %t WHERE id BETWEEN 2 AND 3000;
+		         ROLLBACK;")" "same"
+done
+
+# ---- shapes that must keep working (#2247 guards) ------------------------------
+# A plan that reads the inner side once, a nested read of earlier rows, and a
+# parallel scan after this transaction's flushed writes. All match heap before the
+# fix; the fix must not break them.
+check "a VOLATILE function that reads the table inside an INSERT on it sees the statement's earlier rows, as heap does" \
+	"$(same "BEGIN; $CSOFF INSERT INTO %t SELECT g, seen_%t() FROM generate_series(100001, 100005) g;
+	         SELECT string_agg(pad::text, ',' ORDER BY id) FROM %t WHERE id > 100000; ROLLBACK;")" "same"
+check "a self-join UPDATE through a hash join reads each row's old value, as heap does" \
+	"$(same "BEGIN; $CSOFF SET LOCAL enable_mergejoin = off; SET LOCAL enable_nestloop = off; $UPD $SHOW ROLLBACK;")" "same"
+check "a self-join UPDATE through a materialized sequential inner scan reads each row's old value, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+	         $UPD $SHOW ROLLBACK;")" "same"
+check "an INSERT SELECT from its own table through a sequential scan inserts each row once, as heap does" \
+	"$(same "BEGIN; $CSOFF INSERT INTO %t SELECT id + 100000, pad FROM %t; SELECT count(*) || '|' || max(id) FROM %t; ROLLBACK;")" "same"
+PAR="SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;
+     SET LOCAL min_parallel_table_scan_size = 0; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off;
+     SET LOCAL enable_bitmapscan = off;"
+PARW="UPDATE %t SET pad = pad + 1 WHERE id % 3 = 0; INSERT INTO %t SELECT g, g FROM generate_series(40001, 50000) g;"
+for cs in off on; do
+	check "premise: the count after this transaction's writes runs in parallel workers (custom scan $cs)" \
+		"$(plan_has "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $PARW $PAR
+		             EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*), sum(pad) FROM %t; ROLLBACK;" \
+			'Workers Launched: [1-9]')" "yes"
+	check "a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan $cs)" \
+		"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $PARW $PAR
+		         SELECT count(*) || '|' || sum(pad) FROM %t; ROLLBACK;")" "same"
+done
+
 pgc_summary

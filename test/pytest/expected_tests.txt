@@ -2571,4 +2571,7 @@ guard_tests 900
 # the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
 # each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
 # not name, as ci.yml selects them.
-cluster_tests 6239
+# cluster_tests 6239 -> 6275 for #2247 and #2064 in test_statement_self_visibility.py: #2064's four cursor and
+# writable-CTE shapes by the custom scan on and off (8), #2247's self-read shapes and premises (21) and guard shapes
+# (8), one test per check, by collection of that file (1 on main 728d4217, 37 here). No other file changed.
+cluster_tests 6275

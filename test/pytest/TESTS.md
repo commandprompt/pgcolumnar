@@ -7617,13 +7617,39 @@ The pytest twin of `test/recovery_minimal_wal.sh` (#1341), every check by the sh
 
 ## 119. test_statement_self_visibility.py: a statement does not see its own writes
 
-The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
+The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. It also holds #2064's cursor and writable-CTE checks and #2247's checks of a statement reading through an index, or a restarted sequential scan, the rows it wrote; see the table. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_a_statement_does_not_see_its_own_writes` | the four shapes run to completion and answer as heap does, and the mid-statement flush |
+| `test_a_cursor_does_not_see_a_later_insert` | #2064: a cursor fetched after a later INSERT counts only the rows there at DECLARE (custom scan on and off) |
+| `test_a_cursor_does_not_see_a_later_update_and_delete` | #2064: a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE (custom scan on and off) |
+| `test_the_outer_query_does_not_see_a_delete_in_a_with_clause` | #2064: the outer query of a DELETE in a WITH clause does not see the delete (custom scan on and off) |
+| `test_the_outer_query_does_not_see_an_update_in_a_with_clause` | #2064: the outer query of an UPDATE in a WITH clause does not see the update (custom scan on and off) |
+| `test_premise_the_self_join_runs_as_a_nested_loop` | #2247 premise: the self-join UPDATE plans as a nested loop over index scans (custom scan on and off) |
+| `test_a_self_join_update_through_index_scans` | #2247: a self-join UPDATE through index scans reads each row's old value (custom scan on and off) |
+| `test_premise_the_self_join_runs_as_a_merge_join` | #2247 premise: the self-join UPDATE plans as a merge join |
+| `test_a_self_join_update_through_a_merge_join` | #2247: the same through a merge join |
+| `test_a_self_join_delete_through_index_scans` | #2247: a self-join DELETE through index scans deletes the rows heap deletes |
+| `test_an_insert_select_through_an_index_range_scan` | #2247: an INSERT SELECT from its own table through an index range scan inserts each row once, bounded so a leak cannot loop (stripe_row_limit 150000 and 1000) |
+| `test_a_correlated_subquery_through_an_index_scan` | #2247: an UPDATE with a correlated subquery through an index scan reads the old value |
+| `test_premise_the_subquery_runs_as_an_index_only_scan` | #2247 premise: the correlated subquery plans as an index-only scan on the covering index |
+| `test_a_correlated_subquery_through_an_index_only_scan` | #2247: the same through the index-only scan |
+| `test_a_self_join_chained_across_row_groups` | #2247: a self-join UPDATE chained across row groups (ids 5, 10005, 20005, 30005) |
+| `test_a_big_self_join_flushed_part_way` | #2247: a 3000-row self-join UPDATE with row groups of 1000 rows flushed part-way |
+| `test_a_big_self_join_fully_buffered` | #2247: the same with every new row still in the write buffer |
+| `test_a_self_join_after_an_earlier_update` | #2247: after an earlier UPDATE in the transaction, a self-join UPDATE sees it but not its own rows |
+| `test_a_target_row_joined_twice` | #2247: an UPDATE that joins the same target row twice through an index changes it once |
+| `test_a_cursor_through_an_index_scan` | #2247: a cursor fetched after a later UPDATE reads the old values through an index scan |
+| `test_a_count_and_sum_across_a_stripe_boundary` | #2247: a correlated count and sum through a restarted sequential scan see one version of each row across a stripe boundary (custom scan on and off) |
+| `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
+| `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
+| `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |
+| `test_guard_an_insert_select_by_sequential_scan` | #2247 guard: an INSERT SELECT from its own table by sequential scan inserts each row once |
+| `test_guard_premise_the_count_runs_in_parallel_workers` | #2247 guard premise: the count after the transaction's writes launches parallel workers (custom scan on and off) |
+| `test_guard_a_parallel_scan_after_flushed_writes` | #2247 guard: that parallel scan sees the transaction's flushed writes, as heap does (custom scan on and off) |
 
 ## 120. test_maintenance_rollback.py: a maintenance function that rolls back leaves the table as it was
 
