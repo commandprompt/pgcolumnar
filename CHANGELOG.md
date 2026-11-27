@@ -633,6 +633,16 @@ true until the next version shipped.
   docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
   `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
   one worker.
+- A `pgcolumnar_iceberg` foreign table partitioned by `day()` or `hour()` on a
+  `timestamp` or `timestamptz` column no longer returns no rows for a query
+  such as `ts < '294276-12-31 23:59:59.999999'` (#2230). To prune, the FDW
+  moved the constant from the 2000 epoch to Iceberg's 1970 epoch with no
+  overflow check, so any constant after 294247-01-10 04:00:54.775807 wrapped to
+  a large negative bucket, and `<` or `<=` pruned every file. Such a constant
+  now does not prune, as `infinity` does not, and the query returns the rows
+  `iceberg_scan` returns, with no error. The last value that fits still prunes.
+  `year()` and `month()` were not affected. `test/iceberg_fdw.sh` and
+  `test_iceberg_fdw.py`.
 - `pgcolumnar.export_parquet` now refuses a `timestamp` or `timestamptz` after
   294247-01-10 04:00:54.775807 (#2160). Parquet stores a timestamp as 64-bit
   microseconds since 1970-01-01, and that is the last value it holds. The

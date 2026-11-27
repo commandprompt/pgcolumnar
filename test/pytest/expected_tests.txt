@@ -2554,4 +2554,8 @@ guard_tests 899
 # and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
 # GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6156
+# cluster_tests 6156 -> 6169 for #2230's thirteen tests in test_iceberg_fdw.py: four oracle reads of `< the largest
+# timestamp` on day() and hour() over timestamp and timestamptz, eight pruning counts either side of the epoch-shift
+# limit, and one with the constant on the left, by collection of that file (87 on main 99c46e24, 100 here) and over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6169
