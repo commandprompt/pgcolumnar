@@ -2576,4 +2576,10 @@ guard_tests 900
 # primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
 # call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6277
+# cluster_tests 6277 -> 6284 for #2245's seven tests in test_parallel_export_parquet.py: an ACCESS EXCLUSIVE
+# request queued behind the caller on the table and on a leaf does not hang the export (2), a cycle through the
+# dispatcher's own wait still ends in 40P01 (control), the caller's lock_timeout bounds its wait for the table,
+# the waits on the workers are neither limited by lock_timeout nor logged, and the caller's settings read back
+# unchanged, and a worker picked as the deadlock victim reaches the caller as 40P01 with its detail, by
+# collection of that file (64 on main 0072cd88, 71 here) and over the cluster files.
+cluster_tests 6284
