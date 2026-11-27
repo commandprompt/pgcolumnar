@@ -372,7 +372,9 @@
 # guard_tests 897 -> 899 for #2232's test_ci_cluster_timeout.py, two tests (the reader on a fixture, and both
 # workflows' pytest-cluster timeouts within 1.5 to 2 times the slowest measured job), by collection over
 # NO_CLUSTER: 899 tests collected.
-guard_tests 899
+# guard_tests 899 -> 900 for #2201's test_the_subset_runs_export_sink in test_sanitizer_gate.py: the sanitizer
+# subset runs export_sink, by collection over NO_CLUSTER: 900 tests collected.
+guard_tests 900
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2569,9 +2571,14 @@ guard_tests 899
 # the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
 # each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
 # not name, as ci.yml selects them.
-# cluster_tests 6239 -> 6248 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# cluster_tests 6239 -> 6243 for #2209's four tests in test_parallel_copy.py: a premise that the heap target has a
+# primary key, that heap target with 2 workers gets 42809 before the unique-index refusal, a missing file into a
+# primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
+# call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6243 -> 6252 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
 # a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
 # serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
 # same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
 # workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6248
+cluster_tests 6252
