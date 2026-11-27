@@ -307,9 +307,13 @@ pexport_prepare_dir(const char *dir)
  *
  *		Since #394 the workers write through the sink, so an in-flight part is
  *		part-NNNN.parquet.tmp.<pid>. A worker that ERRORs unlinks its own temp
- *		through the sink's abort, but a worker the dispatcher TERMINATES dies
- *		FATAL, which does not unwind through PG_CATCH, so its temp survives the
- *		worker. It is still ours by construction; remove it here.
+ *		through the sink's abort. A worker the dispatcher TERMINATES dies FATAL,
+ *		which does not unwind through PG_CATCH; since #2075 the sink's exit
+ *		callback unlinks that worker's temp instead. This sweep removes any
+ *		temp a worker's own cleanup missed; every such temp is ours by
+ *		construction. It does not cover a worker killed by SIGKILL or a crash:
+ *		the postmaster then ends every backend, this leader too, so the sweep
+ *		never runs and those temp files stay on disk.
  */
 static void
 pexport_remove_outputs(const char *dir, int nkeys)
@@ -1001,6 +1005,14 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 			}
 			PgColumnarParquetCheckExportable(part);
 			table_close(part, AccessShareLock);
+			/*
+			 * A worker opens each leaf with ACCESS SHARE (#2183). Not in a
+			 * subtransaction: ExportSnapshot below refuses that with 25001
+			 * before any worker starts, and that error says what to change.
+			 */
+			if (!IsSubTransaction())
+				PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_export_parquet",
+												leafoids[i], AccessShareLock);
 		}
 		single_table = false;
 		ntasks = npart;
@@ -1012,6 +1024,10 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		List	   *groups;
 
 		PgColumnarParquetCheckExportable(rel);
+		/* a worker opens the table with ACCESS SHARE (#2183); see the leaf case */
+		if (!IsSubTransaction())
+			PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_export_parquet",
+											relid, AccessShareLock);
 		storageId = PgColumnarStorageId(rel);
 		groups = PgColumnarReadRowGroupList(storageId, PgColumnarCatalogSnapshot(snap));
 		ntasks = list_length(groups);

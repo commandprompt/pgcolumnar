@@ -315,6 +315,11 @@ jobs:
             bash test/build_san.sh "$SAN_PREFIX"
 
       - name: Confirm the build is the expected sanitizer build
+        # pg_config is instrumented too, and it leaks by design at exit. Without
+        # detect_leaks=0, LeakSanitizer reports that leak and fails the step,
+        # before any suite runs (#2195).
+        env:
+          ASAN_OPTIONS: detect_leaks=0:detect_stack_use_after_return=0:abort_on_error=1
         run: |
           set -euo pipefail
           "$SAN_PREFIX/bin/pg_config" --version
@@ -410,6 +415,13 @@ jobs:
       && github.event.inputs.fire_drill != 'true'
     steps:
       - uses: actions/checkout@v4
+
+      # THE RELEASE TAGS, as pytest-cluster fetches them. The corpus holds arms that
+      # compare against a release tag (native_upgrade_converge's fixtures, docs_style's
+      # changelog arms through test_harness_deps). From a tagless checkout they record
+      # UNMET_PRECONDITION, and the unrunnable accounting fails the run (#2054).
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
       # The packages are ~102 MB, of which ~91 MB is the LLVM toolchain that
       # postgresql-server-dev-N depends on. That download is what stalls: every

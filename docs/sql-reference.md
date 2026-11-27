@@ -28,7 +28,10 @@ compression codec and level, encode effort, and the declared `sort_by` key). See
 with no explicit columns. It is not auto-maintained; rows inserted after a sort
 append in insertion order, so re-run `vacuum_sorted` to re-establish it, like
 PostgreSQL `CLUSTER`. Column names must exist and cannot be virtual generated
-columns.
+columns. The declared key follows `RENAME COLUMN`, but `DROP COLUMN` leaves it
+as it is. If you then rename another column to the dropped name, a bare
+`vacuum_sorted` sorts on that column, with no warning. After such a drop, check
+the declared key in `pgcolumnar.options`.
 
 `ttl_column name` and `ttl_interval interval` declare a retention. They are read
 only by [`pgcolumnar.expire`](#pgcolumnarexpiretablename-regclass-returns-bigint).
@@ -988,9 +991,22 @@ Nanoseconds are narrowed to microseconds, the finest resolution PostgreSQL
 stores. Narrowing floors, so an instant before 1970 reports the microsecond it
 falls in. Sub-microsecond precision is lost; nothing else is.
 
-A temporal Arrow type the target column cannot hold is refused with `42804`
-rather than read. A `time64` file does not import into a `date` column. A file
-whose type is not temporal is unaffected.
+An Arrow type from another type family than the target column's is refused
+with `42804` rather than read, and the message names the column (#2082). A
+`time64` file does not import into a `date` column, and a `float64` file does
+not import into a `bigint` column. The reader does not convert values between
+type families. Four pairings across families are read. A signed `int64` reads
+into a `timestamp` or `timestamptz` column as microseconds since 1970-01-01. A
+`Duration` reads into `bigint` as its count, without the unit. A `Utf8` column
+reads into `bytea`. A `Binary` column reads into `text`, `varchar`, `json`,
+`jsonb`, or a `numeric` declared without a precision or with one above 38. It
+does not read into a `numeric(p,s)` with `p` up to 38. A `LargeUtf8`,
+`LargeBinary` or `Null` column is refused for every target.
+
+A `Decimal` column reads only into a `numeric(p,s)` with `p` up to 38. It is
+refused with `42804` for a `numeric` declared without a precision or with one
+above 38. Declare the target as `numeric(p,s)` with `p` up to 38, or cast the
+column to `Utf8` first.
 
 A nested Arrow type the target column cannot hold is refused with `42804`, and
 the message names the column (#1932). An array column reads one `List` level.
@@ -1038,6 +1054,11 @@ The target may be one of two kinds:
 
 - A single columnar table. The workers write the one table together. Any
   record-aligned split of the file is correct, so the file needs no ordering.
+  If the table has a unique or exclusion index, including a primary key, the
+  function refuses more than one worker with `0A000`. Load such a table with
+  `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
+  transaction until every worker has finished. So two workers would wait on each
+  other, and the load would hang or fail with a deadlock error.
 - A RANGE-partitioned table whose partitions are columnar. Each worker loads a
   distinct set of partitions. The file must be sorted ascending by the partition
   key. The key column may sit anywhere in the row, and its type must be numeric
@@ -1299,7 +1320,14 @@ table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
 `parquet_schema` to generate the full list: declare one column for each row it
-reports. A composite column covers all the leaves of its struct.
+reports. A composite column covers all the leaves of its struct. It stands for
+the deepest struct that holds all the leaves it binds. It is NULL only when that
+struct, or a struct around it, is NULL. For example, a composite `(b int, c int)`
+over `s struct<inner struct<b, c>>` stands for `inner`, so it is NULL when
+`inner` is NULL. A composite column whose leaves sit in no one struct is an
+error. Two top-level columns are an example, and so is one top-level column under
+a one-field composite. Nothing in the file says when that composite is NULL
+(#2079).
 
 A string cell read into a `text` or `varchar` column must be valid in the
 server encoding (#1821). A cell with an invalid byte sequence or an embedded
@@ -1569,7 +1597,9 @@ field id to the column names an id-less file may use. Each id-less column is
 bound to the field id whose mapping lists its name. A file that carries field
 ids ignores the mapping. An id-less file with no such property is refused,
 because the specification defines no positional fallback, and the error names
-the property. The mapping is read for top-level scalar columns.
+the property. The mapping is read for top-level scalar columns. Equality
+deletes bind their columns through the same mapping, so an imported table that
+later receives an equality delete still reads (#2088).
 
 Only top-level primitive columns can be read. An output column that names a
 struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
@@ -1623,7 +1653,8 @@ refused rather than ignored. A table using them errors instead of returning
 rows it should have removed. A delete column is refused when its type has no
 supported mapping; the supported types are `int`, `long`, `string`, `boolean`,
 and `date`. A delete column that is no longer in the table's current schema is
-refused. A delete column missing from an older data file is also an error. A
+refused. A delete column missing from an older data file is also an error.
+So is a delete column that an id-less data file's name mapping does not bind. A
 partition value the reader cannot compare exactly, such as a floating-point
 value, is refused. The recorded file paths are rebased
 onto the table's actual location and resolved against a path boundary. A

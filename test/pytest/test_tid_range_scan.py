@@ -20,6 +20,8 @@ counters, and nothing else may be counting there. Independent of
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 ROWS = 260000
 GROUP = 7000
 
@@ -262,3 +264,71 @@ def test_a_parallel_tid_range_scan_returns_what_the_filter_returns(pgc_own_db, e
                 "True|['Workers Launched: 2']",
                 "premise: the range runs as a parallel TID range scan with two workers")
     expect.text(_one(conn, q), want, "a parallel TID range scan returns what the filter returns")
+
+
+def test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row(pgc_conn, expect):
+    """#2058. A TID scan asks the access method whether each ctid is valid.
+
+    The AM said yes to every ctid. On '(0,0)' it then failed an assertion, which
+    restarts every backend of an assert build. On an offset past the 291 a block
+    holds it read another block's row: '(0,295)' was row 294, whose ctid is
+    (1,4). THE ORACLE is the same table copied into heap, where every one of
+    these statements reaches no row.
+    """
+    conn = pgc_conn
+
+    def run(sql, rows_after=None):
+        """The first column of the first row, in a transaction rolled back after.
+
+        Rolled back so that a statement that wrongly reaches a row cannot move
+        or remove it and hide the next statement's fault. `rows_after`, if
+        given, is read inside the transaction and appended.
+        """
+        try:
+            with conn.cursor() as cur:
+                cur.execute("BEGIN")
+                cur.execute(sql)
+                got = str(cur.fetchone()[0])
+                if rows_after:
+                    cur.execute(rows_after)
+                    got += "|" + str(cur.fetchone()[0])
+                cur.execute("ROLLBACK")
+                return got
+        except psycopg.Error as e:
+            return query_error(f"{type(e).__name__}: {str(e).strip().splitlines()[0]}")
+
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE col_t (k int, w int) USING pgcolumnar")
+        cur.execute("INSERT INTO col_t SELECT g, g * 3 FROM generate_series(1, 900) g")
+        cur.execute("CREATE TABLE heap_t (k int, w int) USING heap")
+        cur.execute("INSERT INTO heap_t SELECT g, g * 3 FROM generate_series(1, 900) g")
+    expect.text(run("SELECT k || '@' || ctid::text FROM col_t WHERE k IN (290, 291) ORDER BY k DESC"),
+                "291@(1,1)", "premise: the row after offset 291 of block 0 sits at (1,1)")
+    expect.text("yes" if "Tid Scan" in run("EXPLAIN SELECT k FROM col_t WHERE ctid = '(0,295)'")
+                else "no", "yes", "premise: a single ctid plans a TID scan")
+
+    # The other side of the boundary, so a fix that refused every ctid fails here.
+    expect.text(run("SELECT string_agg(k::text, ',') FROM col_t WHERE ctid = '(0,291)'"), "290",
+                "a TID scan of the last offset a block holds, '(0,291)', still returns its row")
+    expect.text(run("SELECT string_agg(k::text, ',' ORDER BY k) FROM col_t"
+                    " WHERE ctid = ANY (ARRAY['(1,4)', '(0,295)', '(0,5)']::tid[])"), "4,294",
+                "a TID scan of two ctids rows have and one past a block's last offset returns those two rows")
+
+    def both(sql, after=None):
+        """(columnar, heap) for one statement. Heap first: a crash on the columnar
+        side kills the session."""
+        want = run(sql.format(tab="heap_t"), after and after.format(tab="heap_t"))
+        return run(sql.format(tab="col_t"), after and after.format(tab="col_t")), want
+
+    left = "SELECT count(*) || ':' || sum(w) FROM {tab} WHERE w > 0"
+    for t in ("(0,0)", "(2,0)", "(0,295)", "(2,600)"):
+        got, want = both(f"SELECT count(*) FROM {{tab}} WHERE ctid = '{t}'")
+        expect.text(got, want, f"a TID scan of ctid '{t}', which no row has, returns no row, as on heap")
+        got, want = both(f"SELECT count(*) FROM {{tab}} WHERE ctid = ANY (ARRAY['{t}', '{t}']::tid[])")
+        expect.text(got, want, f"a TID scan of ctid '{t}' in an array returns no row, as on heap")
+        got, want = both(f"WITH u AS (UPDATE {{tab}} SET w = -w WHERE ctid = '{t}' RETURNING 1)"
+                         " SELECT count(*) FROM u", left)
+        expect.text(got, want, f"UPDATE ... WHERE ctid = '{t}' changes no row, and every row is unchanged")
+        got, want = both(f"WITH d AS (DELETE FROM {{tab}} WHERE ctid = '{t}' RETURNING 1)"
+                         " SELECT count(*) FROM d", left)
+        expect.text(got, want, f"DELETE ... WHERE ctid = '{t}' deletes no row, and every row is still there")

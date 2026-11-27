@@ -617,6 +617,651 @@ true until the next version shipped.
   `search_path`. The caller's identity and settings come back when it returns.
   `vacuum`, `vacuum_sorted` and `cluster` rebuild indexes through PostgreSQL,
   which already switched. `test_maintenance_runs_as_owner.py`.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
+  with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
+  two locks to commit: the delete-vector lock of each row group it deletes
+  from, and the storage-row lock, which every flush of new rows takes. It can
+  take them in either order. Both verbs used to take the delete-vector locks first and then wait
+  for the storage-row lock, so a single-row `UPDATE` deadlocked with them and
+  one side failed with `deadlock detected` (40P01). The maintenance daemon
+  runs both verbs, so turning it on could make application `UPDATE`s fail this
+  way. Both verbs now take the storage-row lock first and try the
+  delete-vector locks without waiting. When a writer holds one, the verb gives
+  back its locks, waits for that writer to finish, and tries again. So the
+  verb never waits while it holds a lock a writer may need. The waiting has a
+  bound: after the new setting `pgcolumnar.rewrite_lock_timeout` (default
+  10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
+  logs a skip. Writers no longer queue behind a rewrite, so under a steady
+  stream of deletes the verb can reach that limit where it used to finish
+  (#2185). Two plain writers can still deadlock with each other (#2184).
+  When both verbs are due on one table, the daemon still runs them in one
+  transaction, and a writer can deadlock with that pair (#2194). An `UPDATE` that
+  meets a rewrite of its group still gets the documented retryable `row group
+  was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
+  from the start of its read, not only from the start of its write.
+  `compact_rewrite` now takes all its groups' locks before it rewrites the
+  first, so a `DELETE` on a later group waits from that point.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
+  that the verb gives back its locks before and after each wait, counts a lock
+  its own transaction holds as taken, and stops within its limit under steady
+  deletes and behind a deleter or an inserter that stays open. They also check
+  that the verb gives the session's `lock_timeout` back on success and after
+  55P03, and that a shorter user `lock_timeout` still wins. A longer user
+  `lock_timeout` does not replace the limit. The rewrite keeps the
+  storage-row lock while it holds its group locks, so a writer that inserts
+  and then deletes beside it commits. A limit of `0` waits without a limit,
+  and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+  A session that does not set the limit gets the 10 s default. The tests
+  also cover a delete in `recluster`'s last group, a busy last group, which
+  the verb waits on holding no group lock, and a limit of `0` under a user
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error. They
+  also check that the limit counts from the call, not from the statement or
+  transaction start.
+- `read_parquet`, `import_parquet` and the Parquet foreign table now read a
+  REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
+  pyarrow does (#2079, #1916). They returned wrong values with no error: an
+  empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
+  values, a REQUIRED struct with a NULL field read as NULL, a NULL list
+  inside a present struct read as `{}`, and an empty list inside a present
+  struct read as `{NULL}`. The reader assumed that definition level 0 always
+  meant a NULL list or struct and level 1 an empty list. That holds only for a
+  nullable list or struct with no nullable parent. The reader now takes both
+  levels from the file's schema. A composite is NULL only when the struct that
+  holds all its leaves is NULL, so a NULL sub-struct no longer hides a sibling
+  field. A composite over leaves that no one struct holds, such as two
+  top-level columns, is now an error: it read as NULL whenever any one field
+  was NULL. A one-field composite over one top-level column is now an error
+  too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
+  `test_parquet_nested_import.py`, which also read composites whose leaves sit
+  two levels below their struct. Every statement in their pyarrow arm runs
+  under a 60-second client-side bound, so a reader that loops fails the check
+  instead of hanging the suite.
+- `read_parquet` now reads a legacy two-level list, a REPEATED leaf with no
+  LIST group such as `repeated int64 l`, as its values (#1916). It read every
+  row as an empty array, `{}`, with no error. The #2079 fix above corrected
+  this, and `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py` now read `twolevel.parquet`, with one empty
+  row, to pin it.
+- `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
+  text-format file holds a backslash before a raw newline, or a `\.`
+  end-of-data line (#2084). The splitter cut the file at any newline byte. In
+  COPY text format a backslash followed by a raw newline is data inside the
+  field, so a cut there split one value into two rows: 2000 input rows stored
+  2003 with no error. A partitioned target refused the same file with
+  `invalid input syntax for type integer`. A worker whose range started after
+  a `\.` line also loaded rows that `COPY FROM` never reads: 1921 rows instead
+  of 1000. The splitters now cut only at a newline with an even run of
+  backslashes before it. The partitioned splitter ends the load at a `\.`
+  line. A loader whose COPY stops at a `\.` line reports it, and the
+  coordinator rolls back every range after it. `file_split_offsets` uses the
+  same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 54
+  checks, including files whose values end in a backslash (an even run before
+  the newline) and a file whose rows after `\.` are invalid. They also cover
+  runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
+  and 4 lines with the key after them, a file that ends inside a continued
+  record, a `\.\r\n` marker, and which failing row the error names. And they
+  cover an escape of a byte that is not a newline (`\t`), a line made only of
+  backslashes, and a `\.` line that falls exactly on a range start. And
+  they cover a `\.` file loaded twice with dedup on, which must leave no
+  prepared transaction, and a `\.` line inside a continued record, where
+  `parallel_copy` must match heap `COPY` on PG 17 (every row) and on PG 18
+  (refused with 22P04). And they cover a malformed marker in a partitioned
+  load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
+  newline), which must be refused with 22P04 as heap `COPY` refuses it, and
+  a `\.` line in the first range, which must end the load there.
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  or `smallint` column over an Iceberg `boolean`, a `bigint` column over a
+  decimal partitioned by bucket, and a `text` column over an Iceberg `int`
+  partitioned by bucket. The FDW matches the Iceberg field by
+  its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
+  `test_export_sink.py`.
+- `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
+  single columnar table with a unique index or primary key (#2080). With 2 or
+  more workers the load either waited until cancelled or failed with 40P01
+  `deadlock detected`, even when every key in the file was distinct. Each worker
+  keeps its unique-key locks in a prepared transaction until every worker has
+  finished, so the workers waited on each other. The function now refuses that
+  load up front with SQLSTATE 0A000 and the hint
+  `Load it with workers => 1, or with COPY.` An exclusion constraint is refused
+  the same way. Each worker checks again once it holds its lock on the table, so
+  a unique index created after the first check, but before any worker has opened
+  the table, is refused too. One worker still loads such a table, and a
+  partitioned target with a primary key still loads with more than one worker.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`. Each refused table,
+  including the exclusion-constraint table and the table whose unique index
+  appeared late, is checked to stay empty. The tests also cover a deferrable
+  unique index, a partial unique index, a unique index after a non-unique one,
+  and a late unique index with 4 workers, where no loader may insert a row.
+  They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
+  default. They also cover a deferrable exclusion constraint, a gist exclusion
+  constraint, a unique index on an expression, a unique index on two columns,
+  and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
+  INSERT still gets 42501 first, a URL still gets the refusal for remote files
+  first, and `dedup => true` still gets the refusal and its hint.
+  On PostgreSQL 18 and later a check also covers a temporal primary key,
+  `PRIMARY KEY (id, during WITHOUT OVERLAPS)`, whose one index is both unique
+  and exclusion (#2200); it needs btree_gist and is a skip before 18. With the
+  refusal testing `indisunique != indisexclusion`, every other check passed and
+  that load ran into a 10 s statement_timeout (57014).
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
+  table now refuse an Iceberg field that has an `initial-default` (#2087).
+  Format-version 3 lets a column added to a table name the value that older data
+  files must read for it. The reader ignored that value, so every row written
+  before the column existed read as null, even in a required column, with no
+  error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
+  A default of any JSON type is refused, including `""`, `false` and `0`.
+  The refusal covers an output column and every column an equality delete
+  compares, whatever its type, whether it is required, and whether the field
+  also has a `write-default`. A query that leaves
+  the field out still reads, except through a `pgcolumnar_iceberg` foreign
+  table: it refuses any scan when one of its columns has an `initial-default`.
+  A null `initial-default` counts as none, even when the field also has a
+  `write-default`, and so does a field that has only a `write-default`. The
+  refusal also applies in a metadata file whose `format-version` is below 3.
+  Reading the default is not supported yet.
+  docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`;
+  each refusal check matches the message that names the field (`field "qty"`,
+  or `field "k"` for the equality delete), so a message that names the wrong
+  field fails it.
+- `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
+  wait until `statement_timeout` when the calling transaction already holds,
+  on the target or one of its partitions, a lock their workers' lock conflicts
+  with, as after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` or `TRUNCATE` in the
+  same transaction (#2183). Export workers
+  open the table, or each leaf, with ACCESS SHARE; parallel_copy's coordinator and
+  loaders open the target, and the partitions they route to, with ROW EXCLUSIVE.
+  Each worker runs in its own transaction, outside the caller's lock group, and
+  the caller waits for them on a latch, so PostgreSQL's deadlock detector could
+  not see the wait. #2072 fixed the same wait in `parallel_flush` by not opening
+  the table in its workers; these workers read or write the table itself, so
+  both functions now refuse the call up front with 55000
+  (`object_not_in_prerequisite_state`), naming the lock and the relation. Only a
+  conflicting lock is refused: an export still runs under SHARE, and
+  parallel_copy still runs under ROW EXCLUSIVE or SHARE UPDATE EXCLUSIVE, or with
+  any lock on another table. `parallel_copy` checks INSERT (42501) first, then
+  this lock, then its unique-index refusal (#2080), so a caller holding SHARE on
+  a table with a primary key gets 55000. An export in a savepoint still gets
+  25001, as before. A lock on a table the loaders reach only through a foreign
+  key, a trigger or a sequence still makes `parallel_copy` wait; see
+  docs/limitations.md. `parallel_export_parquet.sh`, `parallel_copy.sh`,
+  `test_parallel_export_parquet.py` and `test_parallel_copy.py`.
+- `test_harness_isolation.py::test_control_a_plain_child_under_flock_holds_the_lock`
+  no longer fails with `got '0 held, lock free=1'` (#2193; once in CI).
+  The descriptor count read every link in `/proc/<pid>/fd` and gave up with 0
+  when one readlink failed. The control reads a `sleep` that has just started,
+  and its dynamic loader opens and closes each shared library as fd 4, so that
+  descriptor can vanish between the listing and its readlink. The count now
+  skips a descriptor that vanished, as the shell twin's `find -lname` does. The
+  lock's descriptor is inherited at fork and is never skipped, so a child that
+  does not hold the lock (`flock -o`) still fails the control. Measured on an
+  8-CPU shared dev machine at load 4.8: 88 of 2000 runs of the control's
+  command read 0 before, none of 2000 after. Two new tests pin the count with
+  no cluster and no race: a descriptor listed but gone by its readlink no
+  longer hides the lock, and a pid that does not exist reads 0 of 0. The
+  `flock -F` check's own descriptor count skips a vanished descriptor too.
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
+  calling transaction has already written to the target, or to one of its
+  partitions, for example with an `INSERT` earlier in the same transaction
+  (#2211). The write holds the storage-row lock that serializes a storage's first
+  writers until the transaction ends, whether or not the storage row was
+  committed already. The coordinator takes that lock to pre-create a single
+  table's storage row, and a loader takes it on its first flush into a
+  partition, each in its own transaction, while the caller waits for them on a
+  latch, so the deadlock detector could not see the wait. It hung with 1 worker
+  as with 2. Such a call is now refused up front with 55000
+  (`object_not_in_prerequisite_state`), naming the written relation, after
+  #2183's lock refusal and before #2080's unique-index refusal. Every columnar
+  partition is checked, at any depth of the partition tree. A write to
+  another table, or none, still loads. The refused, rolled-back call no longer
+  leaves a committed, empty `pgcolumnar.storage` row behind, which the
+  coordinator created once the caller's rollback released the lock.
+  `parallel_copy.sh` and `test_parallel_copy.py`.
+- `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
+  carries no Parquet field ids (#2088). Such a file comes from Iceberg
+  `add_files` or a Hive or Spark migration, and is read through the table's
+  `schema.name-mapping.default` property. The pass that finds the deleted rows
+  ignored that mapping, so once the table had an equality delete, the scan
+  failed with `the Parquet file carries no field ids` and a hint asking for the
+  mapping the table already had. That pass now binds the delete columns through
+  the mapping, as the data read does. A delete column the mapping does not bind
+  is still refused (22023), because reading it as null would keep rows the
+  delete removes. The same delete applies once the mapping binds that column,
+  so the refusal comes from the mapping alone. The delete also applies when the
+  query lists the columns in another order than the mapping, so the pass binds
+  through the mapping's field ids, not the query's. It applies to a delete
+  keyed on two columns and to two delete files on different columns, and a
+  two-column delete with one unbound column is refused too.
+  docs/sql-reference.md.
+  `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
+- `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, other
+  readers saw a date before year 0, and `import_arrow` refused the file. Such a
+  value now fails the export with SQLSTATE 22008, naming the table column, and
+  no file is written. For an element of an array column or a field of a
+  composite column, the error names that table column too, at any depth. A
+  timestamp before 1970, down to 4714-11-24 BC, still exports, and so does an
+  in-range timestamp inside an array or a composite. The tests check the
+  SQLSTATE and the DETAIL as well as the message.
+  docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
+- Renaming the retention column with `ALTER TABLE ... RENAME COLUMN` now
+  renames it in `pgcolumnar.options` too (#2070). Before this fix,
+  `ttl_column` kept the old name. `pgcolumnar.expire` then failed with
+  `retention column "..." does not exist`, so retention stopped. If another
+  `date`, `timestamp` or `timestamptz` column later took the old name,
+  `expire` cut on that column and retired row groups whose rows were all
+  inside the retention. The rename already updated `sort_by` and
+  `sketch_columns`; it now updates `ttl_column` in the same catalog row.
+  `DROP COLUMN` of the retention column is unchanged: the declaration keeps
+  the name and `expire` refuses with 42703. If another column later takes
+  the dropped name, `expire` cuts on it and can still delete rows inside the
+  retention; #2070 stays open for that half. `test/ttl_expire.sh` and
+  `test_ttl_expire.py`. More checks pin the name test: a rename leaves a
+  NULL `ttl_column` NULL, and renaming a column whose name is a prefix of the
+  retention column, starts or ends with its name, has its first letter and
+  length, or differs only in case leaves `ttl_column` alone. The rename
+  fixtures also declare `sort_by` and `sketch_columns`: renaming a column held
+  only there leaves `ttl_column` alone, and renaming the retention column moves
+  `sort_by` and `ttl_column` together. A third table declares only
+  retention, as most do: renaming its retention column moves `ttl_column`
+  even though no `sort_by` update writes the row. Each went red under a
+  mutant from @OffgridwithJD's reviews of #2136.
+- A remote read no longer fails when the server or a proxy sends an interim
+  1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
+  (#2090). `read_parquet` and the Parquet foreign table failed with
+  `unexpected HTTP status 103`. An `s3://` glob or prefix failed with
+  `LIST ... returned HTTP 103`. The Iceberg REST catalog functions took the
+  interim answer as the reply; against a server that kept the connection open
+  they waited until the statement timed out. RFC 9110
+  section 15.2 says a client must accept such answers even when it did not ask
+  for them, and CDNs send 103 unasked. The reader now passes over every 1xx
+  answer and reads the final one, as the export path already did. That
+  includes a 1xx no RFC registers, such as 199.
+  `101 Switching Protocols` is now refused with `switched protocols with HTTP
+  101`, on reads and exports alike, because the client never asks to switch.
+  A 101 that follows another 1xx, such as `103` and then `101`, is refused
+  the same way.
+  An export over 1 MiB, which sends `Expect: 100-continue`, also refuses a 101
+  that answers its headers before the body; before, it sent the body and took
+  the next answer.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- Two overlapping inserts can no longer both commit rows that violate an
+  exclusion constraint or a `DEFERRABLE` unique constraint (#2063). A columnar
+  row stays in its backend's buffer until the statement ends, so another
+  backend's constraint check could not see it, did not wait, and let the
+  conflicting row in. Since #5 a transaction-scoped advisory lock closes that
+  window, but it covered only immediate unique indexes. It now also covers
+  deferrable unique indexes, by key, and exclusion constraints, immediate or
+  deferrable, with one lock for the whole index because the operator need not
+  be equality. The second
+  insert now waits for the first and fails with 23P01 or 23505, as on heap.
+  While one insert statement into a table with an exclusion constraint runs, a
+  second insert into that table now waits for it even when the rows do not
+  conflict, unless the second row's key holds a NULL. As before, two
+  transactions that insert into two pgcolumnar tables in opposite order can fail
+  with `deadlock_detected` (40P01) even when no rows conflict; on heap both
+  commit. Retry on 40P01. An `UPDATE` on a table with a
+  deferrable unique index or an exclusion constraint now also serializes each row
+  as it reaches it (#1421), as it already did with an immediate unique index. The
+  loser of two concurrent updates of one row on an exclusion-constrained table
+  now gets `serialization_failure` (40001), not `exclusion_violation` (23P01).
+  Each row inserted into a table with a deferrable unique index now takes a lock,
+  as with an immediate one, so a bulk insert into many such partitions may need a
+  higher `max_locks_per_transaction`.
+  docs/limitations.md.
+  `test/unique_conc.sh` and `test_unique_conc.py`; the exclusion-constraint arm
+  of `test/update_conc.sh` and `test_update_conc.py`.
+- A remote read that fails inside a subtransaction now closes its connection
+  when the subtransaction aborts (#2089). Before, the handle stayed open until
+  the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
+  or undone by `ROLLBACK TO SAVEPOINT`, kept a socket and an external file
+  descriptor. A retry loop that caught about 325 missing objects ran the
+  backend out of file descriptors, and unrelated statements then failed with
+  `Too many open files`. A transaction that committed after caught errors
+  logged one `leaked to commit` WARNING per handle. Each handle now belongs to
+  the resource owner that opened it, so a subtransaction abort closes only its
+  own handles; a scan or cursor of the outer statement keeps reading.
+  This covers all three places a handle opens: a read, an Iceberg REST
+  request and an `s3://` write or listing.
+  A subtransaction commit, such as `RELEASE SAVEPOINT`, hands only its own
+  handles to the enclosing subtransaction, so a cursor opened before it still
+  reads after an enclosing abort.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- `export_parquet`, `parallel_export_parquet`, `export_arrow` and
+  `tier_partition` now export a table that has had a column dropped (#2076).
+  They failed with `does not support dropped columns`, wherever the dropped
+  column was, and nothing in the table could clear it. This included a
+  partition made on its own, given an extra column that was then dropped, and
+  attached. The writers now skip a dropped column and write the live columns
+  in order. `import_arrow` now loads into a table with a dropped column, as
+  `import_parquet` already did; the dropped column is stored as null.
+  `export_arrow`'s limit of 16 columns counts live columns, so a table with 16
+  live columns and a dropped one exports. Tests pin that limit, the refusal of a
+  17th live column (with SQLSTATE `0A000`), and an import into a table whose
+  dropped column is text. Further tests drop the first or the last column, keep
+  1 live column beside 60 dropped ones, put composites after the dropped
+  columns, and cut by bytes beside a dropped column (#2143 review).
+  `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
+- `pgcolumnar.import_arrow` now refuses an Arrow column whose type family does
+  not match the target column (#2082). Before, it copied the file's bytes as the
+  column's type and stored bit patterns with no error: float64 `1.5` into
+  `bigint` stored `4609434218613702656`, int64 `1` into `float8` stored
+  `5e-324`, and a decimal into `uuid` stored `7d000000-...`. When the layouts
+  differed, it raised XX001 `malformed Arrow IPC file` for a valid file. Such a
+  column now fails with SQLSTATE 42804, naming the column, the Arrow type and
+  the target type, and no row is stored. Four pairings still import: a signed
+  int64 into `timestamp` or `timestamptz`, read as microseconds; a duration into
+  `bigint`, read as its count without the unit; a string into `bytea`; and a
+  binary into `text`, `varchar`, `json`, `jsonb` or a `numeric` declared without
+  a precision (or with one above 38). A binary into a `numeric(p,s)` with `p` up
+  to 38 is refused. An int64 into a timestamp column now needs a signed 64-bit
+  carrier. The same refusal closes a second silent corruption: a large string
+  `['a','b']` into `text` stored `''` and `'a'`, and a large binary into `bytea`
+  did the same, because the reader took 64-bit offsets as 32-bit ones. These
+  pairings also change: a duration into `smallint` or `int`, which stored
+  half-width values (`5,6` became `5,0`), is now refused; a Null-type column,
+  and a binary into `numeric(p,s)`, now fail with 42804 instead of XX001. Three
+  more pairings that imported on main are now refused with 42804: an int32 into
+  `date`, which main read as days since 1970; a duration into `timestamp`, which
+  main read as microseconds whatever its unit; and a uint64 into `timestamp` or
+  `timestamptz`. A 16-byte fixed-size binary into `bytea` now fails with 42804
+  instead of XX001. An interval column is now refused for every target with
+  42804. On main, a month_day_nano interval `(1 month, 2 days, 3000 ns)` into
+  `bigint` stored `8589934593`, and into `int` stored `1`, with no error; into
+  `text` it failed with XX001. A decimal into a `numeric` declared without a
+  precision, or with one above 38, now fails with 42804 instead of XX001. It
+  imported nothing on main either: a decimal128(38,10) into `numeric`, and a
+  decimal128(10,2) into `numeric(50,2)`, both failed with XX001 `too few
+  buffers for the schema`.
+  A decimal still reads only into a `numeric(p,s)` with `p` up to 38. The
+  refusal now names the target type with its precision and scale, for example
+  `numeric(5,2)`, not `numeric`. A table-driven check imports one file of each
+  of 19 Arrow types into each of 19 target types and pins every pairing.
+  Two more checks pin the same refusal for a field inside a struct: a struct
+  field of float64, or of decimal128(10,0), is refused for a composite field of
+  type `bigint`. With the type check skipped for struct fields only, the two
+  imported `(4609434218613702656)` and `(7),(0)` and every other check passed.
+  docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
+- `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
+  `virtual` (#2091). The setting was a free-form string, and the object-store
+  module used virtual-host addressing only for `virtual`. So a typo such as
+  `virtaul`, a padded `'VIRTUAL '` or an empty string was accepted, `SHOW` echoed
+  it back, and every request went out path-style without a word. The setting is
+  now an enum, like `pgcolumnar.compression`: such a value fails with
+  `invalid value for parameter`, SQLSTATE 22023. Case still does not matter.
+  `ALTER SYSTEM SET` refuses such a value in the same way. A bad value already
+  in `postgresql.conf` now draws a warning and the server uses `path`, which is
+  what the module did with it before.
+  **Upgrade note.** Check stored values before you upgrade. A bad value stored
+  by `ALTER SYSTEM` or `ALTER ROLE ... SET` draws a warning, and the server or
+  session uses `path`. A bad value in a function's
+  `SET` clause makes every call of that function fail with
+  `invalid value for parameter`. Restoring a dump taken before this release
+  fails at each `ALTER ROLE ... SET` or `CREATE FUNCTION ... SET` line that
+  holds a bad value, and that function is then missing. To find the stored
+  values, run this once per cluster:
+  `SELECT * FROM pg_db_role_setting WHERE array_to_string(setconfig, ',') LIKE '%objstore_s3_addressing%'`
+  and this in each database:
+  `SELECT oid::regprocedure, proconfig FROM pg_proc WHERE array_to_string(proconfig, ',') LIKE '%objstore_s3_addressing%'`.
+  docs/configuration.md. `test/objstore_addressing.sh` and
+  `test_objstore_addressing.py`.
+- A columnar table no longer gives a row the item pointer of a different row
+  once its row numbers run out (#2073). Every transaction that writes reserves
+  `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
+  the space ends after about 8.3 million writing transactions at the default
+  setting, or 582 at the largest. Past the end the block number wrapped: index
+  scans missed the new rows, UPDATE and DELETE through an index changed
+  nothing, and a primary key accepted duplicates. The writer now refuses the
+  reservation with SQLSTATE 54000, `has run out of row numbers`, and changes
+  nothing. `pgcolumnar.vacuum` renumbers the rows and frees the space.
+  `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
+  22003, as it already refused one below 1; it returned a wrapped item pointer.
+  A table that already holds wrapped rows stays readable by a sequential scan
+  until `pgcolumnar.vacuum` renumbers it. The writer refuses to add rows to such
+  a table: it checks only where the new run would end, so a table that an older
+  version pushed past the end is refused too. The tests also reserve a run that
+  ends exactly at the last row number, and one row number more.
+  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
+- An INSERT into a columnar table after a rewrite in the same transaction now
+  keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
+  rewrites the table and keeps its column count. Before this fix, a transaction
+  that inserted, rewrote and inserted again reused the write state from before
+  the rewrite. COMMIT succeeded, and the second INSERT's rows were lost without
+  an error. When the type changed from a by-reference type to a by-value type,
+  such as `text` to `int8`, the backend died with a segmentation fault and
+  PostgreSQL restarted every session. A type or collation change that needs no
+  rewrite, such as `int4` to `oid`, also reused the old state: the rows inserted
+  after it got chunk min and max under the old type or collation, and a filtered
+  read could miss them. The write state now notices the rewrite and starts over
+  for the new storage, and flushes and starts over when a column's type, typmod
+  or collation changed. `test/alter_column_type.sh` and
+  `test_alter_column_type.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
+  after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
+  also no longer waits when another session queues `ALTER TABLE` on the table
+  during the INSERT. Each flush worker opened the table with ACCESS SHARE. The
+  workers are not in the inserting backend's lock group, and the backend waits
+  for them on a latch, so PostgreSQL's deadlock detector could not see the
+  wait. Only `statement_timeout`, `lock_timeout` or a cancel ended it. The
+  workers now take each column's attributes from the inserting backend, through
+  the shared memory segment, and do not open the table. The flush still runs
+  in workers, and the setting is still off by default (#2072). Two cases
+  remain, in #2182: a composite column still hangs when the transaction holds
+  ACCESS EXCLUSIVE on the composite's table, and a column whose type was
+  created in the same transaction is flushed serially after a WARNING.
+  `parallel_flush_optin.sh` arm 7 and `test_parallel_flush_optin.py`. Arm 7
+  also retypes two columns in the same transaction and requires every column
+  encoded in workers, with the serial path's chunks and rows, so a worker that
+  reads the committed column attributes fails it (#2140 review).
+- An `INSERT` of rows whose one column holds more than 1 GiB per row group no
+  longer fails (#2071). The writer closed row groups and chunk groups by row
+  count only, and put each column's values for a row group into one buffer, which
+  PostgreSQL caps at 1 GiB. With the default limits, a column averaging more than
+  about 7 KB per row, such as a `jsonb` document, failed with `string buffer
+  exceeds maximum allowed length (1073741823 bytes)`, even when the values
+  compressed to almost nothing. The writer now also writes a row group before a
+  row would take its values past 256 MiB, summed over its columns, so wide rows
+  make row groups with fewer than `stripe_row_limit` rows. It counts each value
+  at its raw size, so rows copied from heap, which stores them compressed, are
+  bounded too. A single row whose values sum past about 1 GiB still fails
+  (#2178). docs/limitations.md ("Write size limits"). `test/large_values.sh` and
+  `test_large_values.py`, which also check the row-group shape of an 8 KB load.
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order after the
+  sort column is dropped and another column takes its name (#2069). The
+  ordering mark that `vacuum_sorted` and `recluster` record names its key
+  columns by name, and DROP COLUMN left it in place. PostgreSQL frees a
+  dropped column's name, so after `ALTER TABLE ... RENAME COLUMN` onto that
+  name the planner left out the Sort for the new column, and
+  `vacuum_sorted` skipped the rewrite as already done. DROP COLUMN of any
+  column in the key now clears the mark, on the table and on every
+  partition or inheritance child the drop reaches. A drop of any other
+  column keeps it. A column drop on a heap table never reaches this code,
+  in a database with or without the extension; the tests drop a column of
+  an empty and a populated heap table in both. A table whose key column
+  was dropped on an older build keeps its stale mark: run `vacuum_sorted`
+  on it again before renaming another column to the dropped name.
+  `test/sorted_mark_rename.sh` and `test_sorted_mark_rename.py`.
+- `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
+  raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
+  when the conflicting row was committed by another transaction after the
+  snapshot was taken, as heap does (#2060). Before this fix the insert skipped
+  its row and committed: it gave way to a row its snapshot never saw, and the
+  application had no failure to retry. The access method's
+  snapshot check now looks at the row instead of always answering "visible",
+  and the slot reports the row's inserting transaction, which core reads to tell
+  the transaction's own rows from another's. A conflict with a row the snapshot
+  sees, or with a row the transaction inserted itself, still skips the row
+  without error. READ COMMITTED is unchanged. The same answer now reaches
+  deferred foreign keys on a pgcolumnar referencing table: a row inserted and
+  then deleted before commit is no longer checked at commit, as heap does.
+  Before this fix that commit failed with 23503 for a row that no longer
+  existed. Known limitation: the insert also
+  raises 40001, where heap does not, when an online `compact_rewrite` or
+  `recluster` (the autovacuum daemon runs both) moved the conflicting row after
+  the snapshot was taken. The moved copy has a new row number the snapshot cannot
+  see. A retry succeeds. `docs/limitations.md` describes it. Before this fix the
+  insert skipped the row and committed in that case. `test/am_contracts.sh`,
+  `test_am_contracts.py`, `test/fk_referencing.sh` and `test_fk_referencing.py`.
+- An ungrouped aggregate over a join onto a unique dimension no longer returns
+  a wrong count when the join compares text under another collation than the
+  fact column's (#2066). With `pgcolumnar.enable_ungrouped_vector_agg` on, the
+  join fold compared keys under the fact column's own collation. A join onto a
+  case-insensitive key therefore dropped the fact rows that differed only in
+  case, and a byte-wise join over a case-insensitive column counted rows it
+  should not. The fold now runs only when the join's operator and collation are
+  the ones it compares with. Otherwise the plan is a plain hash join, which
+  answers correctly. A join with another equality operator than the type's
+  default, such as one on absolute values, gave the same kind of wrong count
+  and is refused the same way. `test/native_join_vector_agg.sh` and
+  `test_native_join_vector_agg.py` test both refusals, and test that a
+  case-insensitive key joined under one collation still folds.
+- An index-only scan no longer returns rows that a committed DELETE or UPDATE
+  removed, after a VACUUM ran while that statement was still running (#2059).
+  The writer clears a block's all-visible bit when it marks a row, but keeps the
+  mark in memory until the statement ends. A VACUUM in between could not see the
+  mark, so it set the bit again, and nothing cleared it at commit. An index-only
+  scan then skipped the row check and counted the deleted rows until a later
+  write touched the block. Only a manual VACUUM was tested. Autovacuum takes
+  the same lock, which does not block a DELETE or UPDATE, so it can probably hit
+  this too. The writer now clears the bits again after it writes the marks to
+  the catalog, and VACUUM checks the row groups again after it sets bits and
+  clears any that are no longer all-visible. A new test-only setting,
+  `pgcolumnar.vm_set_hold_ms`, pauses VACUUM between those steps so a test can
+  prove the second check. The tests delete inside one block, across two blocks,
+  and across three row groups, for both steps. Inside the writing statement
+  itself, an AFTER trigger can still see the bit set until the statement ends
+  (#2169). `test/index_only.sh` and `test_index_only.py`.
+- `avg()` over a `float8` or `real` column no longer fails with `value out of
+  range: overflow` where heap returns `Infinity`. It failed when one group's
+  values were split into partial results and one of them held a single
+  `Infinity`: past `pgcolumnar.groupagg_max_groups` under a cached plan, with
+  `pgcolumnar.enable_parallel_vector_agg = on`, or in the serial node's merge
+  of its runs. The grouped aggregate kept the sum of squared differences at 0
+  after an infinite first value, where core's `float8_accum` keeps it NaN, so
+  combining that result with a finite one looked like an overflow from finite
+  inputs. It now keeps NaN where core does. The returned average was never
+  affected. `test_native_groupagg.py`, `test/native_groupagg.sh` (#2068).
+- `pgcolumnar.import_arrow` no longer stores wrong values from a large binary or
+  large string column (#2097). It read their 64-bit offsets as 32-bit ones, so a
+  one-row large binary `b'x'` imported into `bytea` as an empty value, and a
+  large string `['hi','there']` imported into `text` as `''` and `'hi'`, with no
+  error. A string view or binary view was refused as a damaged file (XX001). It
+  now refuses all four types with SQLSTATE 42804, naming the column and the
+  Arrow type, at any depth. A plain binary or string column imports as before.
+  Reading these types is a separate feature. docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
+- `pgcolumnar.import_arrow` and `pgcolumnar.import_parquet` no longer abort the
+  backend on a table that has a projection (#2092). The import writes the
+  projection's rows when its statement ends. An import is a `SELECT`, so its
+  statement ends in portal cleanup, where no snapshot is active. The projection
+  write then read the options catalog with a snapshot nobody had registered. On
+  a PostgreSQL 18 or 19 build with assertions, the backend aborted once that
+  catalog held a row for any table, and PostgreSQL restarted every session. The
+  import rolled back. The projection write now sets an active snapshot first, as
+  the base table's write already did. `docs/how-to.md` runs into this once its
+  projection example works (#2093): it adds a projection and later imports an
+  Arrow file. New checks in `test/arrow_import.sh` and `test/parquet_import.sh`,
+  and their pytest twins, cover both functions. A new check in
+  `test/parallel_copy.sh`, and its twin, shows that `parallel_copy` into a table
+  with a projection fills the projection. With 2 or more workers into a
+  projection that holds no rows yet, `parallel_copy` hangs, for another reason
+  (#2161).
+- A `pgcolumnar.parallel_copy` loader that fails now closes its file once
+  (#2083). It closed the file after aborting its transaction, but the abort
+  had already closed it. Each failed loader logged `fd passed to
+  CloseTransientFile was not obtained from OpenTransientFile` and called
+  `close()` on a descriptor number that could by then belong to another file.
+  The loader now closes the file before the abort. `test/parallel_copy.sh`
+  and `test_parallel_copy.py`.
+- `pgcolumnar.import_arrow` now refuses a `decimal256` column for a `numeric`
+  target, instead of storing wrong values (#2081). The reader decodes 16-byte
+  `decimal128` values only, and never read the file's Decimal bit width. A
+  `decimal256` buffer is twice as long, so it passed the length check and was
+  read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50, with
+  no error. Such a file now fails with SQLSTATE 42804, `Arrow field is a
+  decimal of another width`, and no row is stored. A `decimal32` or
+  `decimal64` file gets the same refusal; before, it failed as a malformed
+  file (XX001). pyarrow writes `decimal256` for any precision above 38, and
+  when asked to. `test/arrow_import.sh` and `test_arrow_import.py`.
+- A TID scan of a ctid that no row can have now returns no row, as on heap
+  (#2058). The access method told the executor that every ctid was valid. On
+  `'(0,0)'` the fetch then failed an assertion, and on an assert build
+  PostgreSQL restarted every session. On an offset past the 291 a block holds,
+  the fetch read a row of a later block: `WHERE ctid = '(0,292)'` returned the
+  row at `(1,1)`, and an UPDATE or DELETE with that condition changed or
+  removed it. The access method now refuses offset 0 and any offset past 291,
+  as PostgreSQL's `heapam_tuple_tid_valid` refuses an invalid ctid. A ctid
+  range (`ctid >= ...`) was not affected. `test/tid_range_scan.sh` and
+  `test_tid_range_scan.py`.
+- A join runtime filter under a correlated subquery or a LATERAL join now
+  gives each run its own answer (#2062). Every later run returned the first
+  run's rows, with no error, whenever the outer value changed the build side.
+  The coordinator did not tell its Hash Join, or the Build Tap's source, that a
+  parameter had changed, so the join kept the first hash table. The coordinator
+  and the tap now pass the changed parameters down, and a rescan from the Hash
+  replays the tap's rows instead of discarding them. Before this fix, turning
+  off `pgcolumnar.enable_join_runtime_filter` avoided the fault.
+  `test/native_join_runtime_filter.sh` and `test_native_join_runtime_filter.py`.
+- The ungrouped vectorized aggregate over a unique-key join (the join fold) no
+  longer crashes the backend when a correlated subquery or a LATERAL join reruns
+  it (#2128, found while fixing #2062). The fold ran the dimension plan inside
+  its key memory context. A rescan reset that context, which freed the
+  dimension scan's state, so the second rescan crashed with signal 11. The fold
+  now runs the dimension plan outside that context. It also passes changed
+  parameters to the dimension plan, so a DISTINCT dimension returns the new
+  outer row's keys instead of its first rows. Before this fix, turning off
+  `pgcolumnar.enable_ungrouped_vector_agg` avoided the fault.
+  `test/native_join_vector_agg.sh` and `test_native_join_vector_agg.py`.
+- Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
+  column can be read again (#2061). The encoder stores a run of equal values
+  of any fixed-width type as RLE, but the decoder accepted RLE only for types
+  1, 2, 4 or 8 bytes wide. So the INSERT succeeded, and every later read of
+  the column, `DELETE`, `ANALYZE`, `pgcolumnar.vacuum` and `pg_dump` failed
+  with `corrupt encoded chunk (fixed-width encoding on a non-fixed-width
+  column)`. Three equal uuids were enough. The decoder now accepts RLE at any
+  fixed width. The stored bytes were always correct, so tables written before
+  this fix become readable without a rewrite. `test_native_encoding.py`.
+- CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
+  `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
+  the ledger gate could not find the PR's base and every PR failed
+  `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
+  every suite passed. `.github/workflows/ci.yml`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

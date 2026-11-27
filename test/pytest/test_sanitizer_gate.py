@@ -215,3 +215,72 @@ def test_the_command_line_refuses_what_run_san_sh_refuses(tmp_path, expect):
     expect.text(f"{rc} {out.splitlines()[0] if out else ''}",
                 f"1 FAIL  {plain} is not the expected ASAN+UBSAN build",
                 "an ordinary build is refused")
+
+
+WORKFLOWS = HERE.parent.parent / ".github" / "workflows"
+
+
+def unguarded_san_steps(nightly_text):
+    """Names of the steps in the nightly's `sanitizer` job that run a binary from
+    the instrumented prefix with leak detection left on.
+
+    Every binary in that prefix is instrumented, pg_config and initdb too, and they
+    leak by design at exit. A step that runs one needs `detect_leaks=0` in its
+    ASAN_OPTIONS: in the job's env, the step's env, or the command's own `env`."""
+    lines = nightly_text.splitlines()
+    start = next(i for i, l in enumerate(lines) if l == "  sanitizer:")
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("  ") and not lines[i].startswith("   ")
+                and lines[i].rstrip().endswith(":") and not lines[i].lstrip().startswith("#")),
+               len(lines))
+    job = lines[start:end]
+    first_step = next(i for i, l in enumerate(job) if l.startswith("      - "))
+    job_env_ok = "detect_leaks=0" in "\n".join(job[:first_step])
+    steps, cur = [], None
+    for l in job[first_step:]:
+        if l.startswith("      - "):
+            cur = [l]
+            steps.append(cur)
+        elif cur is not None:
+            cur.append(l)
+    bad = []
+    for step in steps:
+        text = "\n".join(step)
+        code = "\n".join(l for l in step if not l.lstrip().startswith("#"))
+        if "SAN_PREFIX/bin/" not in code.replace("}", "").replace('"', ""):
+            continue
+        if job_env_ok or "detect_leaks=0" in code:
+            continue
+        name = next((l.split("name:", 1)[1].strip() for l in step if "name:" in l), text[:60])
+        bad.append(name)
+    return bad
+
+
+def test_the_reader_names_a_step_that_runs_the_prefix_with_leak_detection_on(expect):
+    """The reader below, on stand-in jobs: a step that runs `$SAN_PREFIX/bin/...`
+    with no `detect_leaks=0` is named; one that sets it in the step's env, in the
+    command, or in the job's env is not; a comment naming the prefix is not a run."""
+    head = "jobs:\n  sanitizer:\n    runs-on: x\n"
+    steps = ("    steps:\n"
+             "      - name: bare\n        run: |\n          \"$SAN_PREFIX/bin/pg_config\" --version\n"
+             "      - name: step env\n        env:\n          ASAN_OPTIONS: detect_leaks=0\n"
+             "        run: |\n          \"$SAN_PREFIX/bin/pg_config\" --version\n"
+             "      - name: inline\n        run: |\n"
+             "          sudo env ASAN_OPTIONS=detect_leaks=0 \"${SAN_PREFIX}/bin/initdb\" -D d\n"
+             "      - name: comment only\n        run: |\n          # $SAN_PREFIX/bin/pg_config\n"
+             "          true\n"
+             "  coverage:\n    steps:\n      - name: other job\n        run: \"$SAN_PREFIX/bin/x\"\n")
+    expect.text(" | ".join(unguarded_san_steps(head + steps)), "bare",
+                "only the step running the prefix with leak detection on is named")
+    job_env = head + "    env:\n      ASAN_OPTIONS: detect_leaks=0\n" + steps
+    expect.text(" | ".join(unguarded_san_steps(job_env)) or "none", "none",
+                "detect_leaks=0 in the job's env covers every step")
+
+
+def test_every_sanitizer_job_step_runs_the_prefix_with_leak_detection_off(expect):
+    """#2195: the nightly's "Confirm the build" step ran the instrumented pg_config
+    with no ASAN_OPTIONS, so LeakSanitizer failed the job at that step every night,
+    before any suite ran."""
+    bad = unguarded_san_steps((WORKFLOWS / "nightly.yml").read_text())
+    expect.text(" | ".join(bad) or "none", "none",
+                "every step of the sanitizer job that runs the instrumented prefix sets detect_leaks=0 (#2195)")

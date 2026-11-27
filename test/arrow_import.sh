@@ -577,6 +577,54 @@ extra = {
     # the reader would take the first half of each value.
     'tu_fsb32': pa.array([b'0123456789abcdef0123456789abcdef'], pa.binary(32)),
     'tu_fsb16': pa.array([b'0123456789abcdef'], pa.binary(16)),
+    # #2082 fixtures: a file whose type family differs from the column's
+    'tu_utf8': pa.array(['10']),
+    'tu_bin': pa.array([b'ab'], pa.binary()),
+    'tu_bool': pa.array([True], pa.bool_()),
+    'tu_lf64': pa.array([[1.5]], pa.list_(pa.float64())),
+    # A struct whose one field is float64, and one whose field is a decimal.
+    # Each goes into a composite (a bigint), where the field must be refused
+    # by its own type, as a top-level column of that type is.
+    'tu_sf64': pa.array([{'a': 1.5}, {'a': -2.0}], pa.struct([('a', pa.float64())])),
+    'tu_sdec': pa.array([{'a': decimal.Decimal(7)}, {'a': decimal.Decimal(-3)}],
+                        pa.struct([('a', pa.decimal128(10, 0))])),
+    # Two rows each, so a reader that takes 64-bit offsets as 32-bit ones
+    # stores a wrong value rather than failing (#2082).
+    'tu_lstr': pa.array(['a', 'b'], pa.large_string()),
+    'tu_lbin': pa.array([b'a', b'b'], pa.large_binary()),
+    'tu_dur': pa.array([5, 6], pa.duration('s')),
+    'tu_null': pa.array([None, None], pa.null()),
+    # The tag-by-target matrix (#2082): one file per Arrow type, two rows each.
+    # Every kept pairing must import, so the values are ones each kept target
+    # accepts: '10' parses as numeric, and int64 rows are valid instants.
+    'mx_i16': pa.array([7, -3], pa.int16()),
+    'mx_i32': pa.array([7, -3], pa.int32()),
+    'mx_i64': pa.array([946684800 * 10**6, 1], pa.int64()),
+    'mx_u64': pa.array([7, 3], pa.uint64()),
+    'mx_f32': pa.array([1.5, -3], pa.float32()),
+    'mx_f64': pa.array([1.5, -3], pa.float64()),
+    'mx_bool': pa.array([True, False], pa.bool_()),
+    'mx_utf8': pa.array(['10', '-3'], pa.string()),
+    'mx_bin': pa.array([b'10', b'-3'], pa.binary()),
+    'mx_lutf8': pa.array(['10', '-3'], pa.large_string()),
+    'mx_lbin': pa.array([b'10', b'-3'], pa.large_binary()),
+    'mx_d32': pa.array([10957, 10958], pa.date32()),
+    'mx_t64': pa.array([43200 * 10**6, 1], pa.time64('us')),
+    'mx_ts': pa.array([946684800 * 10**6, 1], pa.timestamp('us')),
+    'mx_dur': pa.array([5, 6], pa.duration('us')),
+    'mx_dec': pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
+    'mx_fsb16': pa.array([b'0123456789abcdef', b'fedcba9876543210'], pa.binary(16)),
+    'mx_null': pa.array([None, None], pa.null()),
+    # An interval has no kept target. Main read it into bigint as raw bytes:
+    # (1 month, 2 days, 3000 ns) stored 8589934593.
+    'mx_iv': pa.array([(1, 2, 3000), (0, 5, 7000)], pa.month_day_nano_interval()),
+    # #2081: the same three values in every Decimal bit width. The reader's
+    # stride is 16 bytes, so a 32-byte decimal256 buffer is long enough and was
+    # read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50.
+    'tu_dw128': pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal128(10, 2)),
+    'tu_dw256': pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal256(10, 2)),
+    'tu_dw64':  pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal64(10, 2)),
+    'tu_dw32':  pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal32(9, 2)),
 }
 for name, arr in extra.items():
     tab = pa.table({'v': arr})
@@ -666,6 +714,14 @@ PY
 	# store, and in C a signed overflow is undefined behaviour rather than a
 	# wraparound, so each of these has to be refused before the multiply lands.
 	# 22008 is datetime_field_overflow.
+	tu_values() {	# tu_values FIXTURE PGTYPE -> every stored value, sorted, comma-separated
+		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
+			>/dev/null 2>&1
+		psql_run "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/$1.arrows');" \
+			>/dev/null 2>&1 || { echo "IMPORT-FAILED"; return; }
+		q "SELECT string_agg(v::text, ',' ORDER BY v) FROM tu_t;"
+	}
+
 	tu_import_state() {	# tu_import_state FIXTURE PGTYPE -> SQLSTATE, 00000 on success
 		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
 			>/dev/null 2>&1
@@ -784,6 +840,23 @@ PY
 	check "control: a matching decimal imports" \
 		"$(tu_import_state tu_d204 'numeric(20,4)')" "00000"
 
+	# The Decimal bit width (#2081). The reader decodes 16-byte decimal128
+	# values only. A decimal256 file stored every other row as the high half
+	# of the row before, with no error. A decimal64 or decimal32 file was
+	# refused only by the buffer-length check, as "malformed". All three now
+	# get the same 42804 refusal as the other width mismatches. The control
+	# is the same three values as decimal128, read back value by value.
+	check "control: a 3-row decimal128 file imports every value (#2081)" \
+		"$(tu_import_state tu_dw128 'numeric(10,2)')|$(q "SELECT string_agg(v::text, ',') FROM tu_t;")" \
+		"00000|1.25,2.50,-3.75"
+	check "a decimal256 file is refused, not read at a 16-byte stride (#2081)" \
+		"$(tu_import_state tu_dw256 'numeric(10,2)')|$(q "SELECT count(*) FROM tu_t;")" \
+		"42804|0"
+	check "a decimal64 file is refused as a width mismatch (#2081)" \
+		"$(tu_import_state tu_dw64 'numeric(10,2)')" "42804"
+	check "a decimal32 file is refused as a width mismatch (#2081)" \
+		"$(tu_import_state tu_dw32 'numeric(10,2)')" "42804"
+
 	# A refusal must leave nothing behind: an arm that only reads the SQLSTATE
 	# would pass for a fix that errored after writing the row.
 	tu_import_state tu_u64 bigint >/dev/null
@@ -794,6 +867,138 @@ PY
 	# a timestamp column as raw microseconds, exactly as it did before.
 	check "control: a non-temporal tag is not caught by the temporal refusal" \
 		"$(tu_import_state tu_int64_ts timestamp)" "00000"
+
+	# ---- a file of another type family (#2082) -----------------------------
+	#
+	# The #881 checks run only when the file and the column share a family.
+	# Across families the reader copied the file's bytes as the column's type,
+	# so these imported bit patterns with no error on unpatched main:
+	#
+	#     float64 1.5      into bigint   -> 4609434218613702656
+	#     int64   7        into float8   -> 3.5e-323
+	#     decimal 1.25     into uuid     -> 7d000000-0000-...
+	#     list<float64>    into bigint[] -> {4609434218613702656}
+	#
+	# When the buffer layouts differed, the error was XX001 "malformed Arrow IPC
+	# file", which blames a valid file. Each is now refused by type, 42804.
+	check "a float64 file is refused for bigint (#2082)" \
+		"$(tu_import_state tu_f64 bigint)" "42804"
+	check "an int64 file is refused for float8 (#2082)" \
+		"$(tu_import_state tu_i64 float8)" "42804"
+	check "a float32 file is refused for a 4-byte int (#2082)" \
+		"$(tu_import_state tu_f32 int)" "42804"
+	check "a decimal file is refused for uuid (#2082)" \
+		"$(tu_import_state tu_d102 uuid)" "42804"
+	check "a float64 file is refused for timestamp (#2082)" \
+		"$(tu_import_state tu_f64 timestamp)" "42804"
+	check "an int32 file is refused for timestamp (#2082)" \
+		"$(tu_import_state tu_i32 timestamp)" "42804"
+	check "an int32 file is refused for bool (#2082)" \
+		"$(tu_import_state tu_i32 bool)" "42804"
+	check "a string file is refused for bigint, not called malformed (#2082)" \
+		"$(tu_import_state tu_utf8 bigint)" "42804"
+	check "a boolean file is refused for a 4-byte int (#2082)" \
+		"$(tu_import_state tu_bool int)" "42804"
+	check "a list of float64 is refused for a bigint[] column (#2082)" \
+		"$(tu_import_state tu_lf64 'bigint[]')" "42804"
+	# A struct field is checked by its own type too. No check pinned that:
+	# with a two-token change that skips the type check for struct fields
+	# only, every check here stayed green, and these two imported raw bytes:
+	#
+	#     struct<a: float64> 1.5, -2.0     into (a bigint) -> (4609434218613702656),
+	#                                                         (-4611686018427387904)
+	#     struct<a: decimal128(10,0)> 7, -3 into (a bigint) -> (7), (0)
+	psql_run "DROP TYPE IF EXISTS tu_sb CASCADE; CREATE TYPE tu_sb AS (a bigint);" \
+		>/dev/null 2>&1
+	check "a struct field of float64 is refused for a composite (a bigint) field (#2082)" \
+		"$(tu_import_state tu_sf64 tu_sb)" "42804"
+	check "a struct field of decimal128(10,0) is refused for a composite (a bigint) field (#2082)" \
+		"$(tu_import_state tu_sdec tu_sb)" "42804"
+	tu_import_state tu_f64 bigint >/dev/null
+	check "and a cross-family refusal leaves the target empty (#2082)" \
+		"$(q "SELECT count(*) FROM tu_t;")" "0"
+	# The one cross-family pairing that is documented behaviour, and the two
+	# variable-width pairings that carry the same bytes, still import.
+	check "control: an int64 file still imports into timestamp as microseconds (#2082)" \
+		"$(tu_value tu_int64_ts timestamp)" "2000-01-01 00:00:00"
+	check "control: a string file still imports into bytea (#2082)" \
+		"$(tu_value tu_utf8 bytea)" '\x3130'
+	check "control: a binary file still imports into text (#2082)" \
+		"$(tu_value tu_bin text)" "ab"
+
+	# Tags outside the scalar families above. On unpatched main a large string
+	# ['a','b'] into text stored '' and 'a', and a large binary into bytea
+	# stored '\x' and '\x61': the reader took the 64-bit offsets as 32-bit
+	# ones. A duration into a 4-byte int stored 5 and 0, read at half width. A
+	# null-type column failed with XX001, and a binary into numeric(5,2), whose
+	# node is a decimal, did too. Each is now refused by type.
+	check "a large string file is refused for text, not read with short offsets (#2082)" \
+		"$(tu_import_state tu_lstr text)" "42804"
+	check "a large binary file is refused for bytea, not read with short offsets (#2082)" \
+		"$(tu_import_state tu_lbin bytea)" "42804"
+	check "a duration file is refused for a 4-byte int, not read at half width (#2082)" \
+		"$(tu_import_state tu_dur int)" "42804"
+	check "a null-type file is refused for text, not called malformed (#2082)" \
+		"$(tu_import_state tu_null text)" "42804"
+	check "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+		"$(tu_import_state tu_bin 'numeric(5,2)')" "42804"
+	# The message names the declared type with its precision and scale. With
+	# format_type_be it said "type numeric", which hid why a binary that reads
+	# into a plain numeric is refused here.
+	check "the refusal names the target as numeric(5,2), with its typmod (#2082)" \
+		"$(ai_outcome "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/tu_bin.arrows')")" \
+		"42804 Arrow column \"v\" holds a binary, which pgcolumnar.import_arrow cannot read into type numeric(5,2)"
+	# A duration is a signed 64-bit count, so it reads into bigint as that count,
+	# as it did on main. The unit is not stored.
+	check "control: a duration file still imports into bigint as its count (#2082)" \
+		"$(tu_values tu_dur bigint)" "5,6"
+
+	# ---- every Arrow type against every target (#2082) ---------------------
+	#
+	# The checks above sample arrow_tag_fits_kind. These pin each of its rows.
+	# Each of the four below is a row that a one-line mutant could change with
+	# every sampled check still green: the decimal and fixed-size binary rows
+	# could accept bigint and store raw bytes, and the int16 and int64 rows
+	# could drop smallint or timestamptz and refuse a documented pairing.
+	check "a decimal128(10,0) file is refused for bigint (#2082)" \
+		"$(tu_import_state mx_dec bigint)" "42804"
+	check "a 16-byte fixed-size binary is refused for bigint (#2082)" \
+		"$(tu_import_state mx_fsb16 bigint)" "42804"
+	check "control: an int16 file still imports into smallint (#2082)" \
+		"$(tu_values mx_i16 smallint)" "-3,7"
+	check "control: an int64 file still imports into timestamptz as microseconds (#2082)" \
+		"$(PGOPTIONS='-c timezone=UTC' tu_values mx_i64 timestamptz)" \
+		"1970-01-01 00:00:00.000001+00,2000-01-01 00:00:00+00"
+
+	# The whole table. A pair listed here must import; every other pair must be
+	# refused with 42804. The list is the documented one in docs/limitations.md
+	# and docs/sql-reference.md. A mismatch prints as FILE:TYPE=GOT.
+	mx_kept=" mx_i16:smallint mx_i32:int mx_i64:bigint mx_i64:timestamp
+		mx_i64:timestamptz mx_f32:float4 mx_f64:float8 mx_bool:bool
+		mx_utf8:text mx_utf8:bytea mx_utf8:numeric mx_utf8:numeric(50,2)
+		mx_utf8:varchar mx_utf8:json mx_utf8:jsonb
+		mx_bin:text mx_bin:bytea mx_bin:numeric mx_bin:numeric(50,2)
+		mx_bin:varchar mx_bin:json mx_bin:jsonb
+		mx_d32:date mx_t64:time mx_ts:timestamp mx_ts:timestamptz
+		mx_dur:bigint mx_dec:numeric(10,0) mx_fsb16:uuid "
+	mx_kept=" $(printf '%s ' $mx_kept)"
+	mx_bad=""
+	for mx_f in mx_i16 mx_i32 mx_i64 mx_u64 mx_f32 mx_f64 mx_bool mx_utf8 \
+			mx_bin mx_lutf8 mx_lbin mx_d32 mx_t64 mx_ts mx_dur mx_dec mx_fsb16 \
+			mx_null mx_iv; do
+		for mx_t in smallint int bigint float4 float8 bool text bytea date \
+				time timestamp timestamptz uuid 'numeric(10,0)' numeric \
+				'numeric(50,2)' varchar json jsonb; do
+			case "$mx_kept" in
+				*" $mx_f:$mx_t "*) mx_want=00000 ;;
+				*) mx_want=42804 ;;
+			esac
+			mx_got="$(tu_import_state "$mx_f" "$mx_t")"
+			[ "$mx_got" = "$mx_want" ] || mx_bad="${mx_bad:+$mx_bad }$mx_f:$mx_t=$mx_got"
+		done
+	done
+	check "every Arrow type imports into its documented targets and no other (#2082)" \
+		"${mx_bad:-none}" "none"
 
 	# ---- the unit on a nested field ---------------------------------------
 	check "a list element's nanosecond unit is honoured, not just the top level" \
@@ -850,8 +1055,40 @@ else
 			"control: a 16-byte fixed-size binary imports into uuid" \
 			"a decimal at another scale is refused (#881)" \
 			"control: a matching decimal imports" \
+			"control: a 3-row decimal128 file imports every value (#2081)" \
+			"a decimal256 file is refused, not read at a 16-byte stride (#2081)" \
+			"a decimal64 file is refused as a width mismatch (#2081)" \
+			"a decimal32 file is refused as a width mismatch (#2081)" \
 			"and a refused import leaves the target empty" \
 			"control: a non-temporal tag is not caught by the temporal refusal" \
+			"a float64 file is refused for bigint (#2082)" \
+			"an int64 file is refused for float8 (#2082)" \
+			"a float32 file is refused for a 4-byte int (#2082)" \
+			"a decimal file is refused for uuid (#2082)" \
+			"a float64 file is refused for timestamp (#2082)" \
+			"an int32 file is refused for timestamp (#2082)" \
+			"an int32 file is refused for bool (#2082)" \
+			"a string file is refused for bigint, not called malformed (#2082)" \
+			"a boolean file is refused for a 4-byte int (#2082)" \
+			"a list of float64 is refused for a bigint[] column (#2082)" \
+			"a struct field of float64 is refused for a composite (a bigint) field (#2082)" \
+			"a struct field of decimal128(10,0) is refused for a composite (a bigint) field (#2082)" \
+			"and a cross-family refusal leaves the target empty (#2082)" \
+			"control: an int64 file still imports into timestamp as microseconds (#2082)" \
+			"control: a string file still imports into bytea (#2082)" \
+			"control: a binary file still imports into text (#2082)" \
+			"a large string file is refused for text, not read with short offsets (#2082)" \
+			"a large binary file is refused for bytea, not read with short offsets (#2082)" \
+			"a duration file is refused for a 4-byte int, not read at half width (#2082)" \
+			"a null-type file is refused for text, not called malformed (#2082)" \
+			"a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+			"the refusal names the target as numeric(5,2), with its typmod (#2082)" \
+			"control: a duration file still imports into bigint as its count (#2082)" \
+			"a decimal128(10,0) file is refused for bigint (#2082)" \
+			"a 16-byte fixed-size binary is refused for bigint (#2082)" \
+			"control: an int16 file still imports into smallint (#2082)" \
+			"control: an int64 file still imports into timestamptz as microseconds (#2082)" \
+			"every Arrow type imports into its documented targets and no other (#2082)" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
 			"a struct field's nanosecond unit is honoured at child index 1"; do
 		check_skip "$_ai_types" \
@@ -1111,6 +1348,113 @@ else
 			"a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)"; do
 		check_skip "$_ai_nest" \
 			"SKIP  $_ai_nest (pyarrow not available)" \
+			"pyarrow not available"
+	done
+fi
+
+# ---- an import into a table with a projection keeps the server up (#2092) ----
+# The import writes the projection's rows when the statement ends. The import is
+# a SELECT, so its statement ends in portal cleanup, where no snapshot is active.
+# The flush then read the options catalog with a snapshot nobody had registered.
+# An assert build aborted on the first catalog row the read examined, and the
+# postmaster restarted every backend. Any table's options row is enough, so the
+# check gives one to a neighbour table first. Without it, the case without
+# set_options passed on main's code, because it ran before any case had called
+# set_options. The matrix crosses projection with set_options, one table per
+# case. The crash count comes from the server log, not from timing.
+aip_crashes() {	# a number, or nothing when the log can't be read
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+aip_case() {	# aip_case OPT PROJ -> "oOPTpPROJ:imported/rows/projection rows"
+	local t="aip_o$1p$2" f out got i
+	f="$PGC_WORKDIR/$t.arrows"
+	psql_run "CREATE TABLE $t (id bigint, c int) USING pgcolumnar;
+		INSERT INTO $t SELECT g, g % 10 FROM generate_series(1, 1000) g;"
+	[ "$1" = 1 ] && psql_run "SELECT pgcolumnar.set_options('$t', compression => 'zstd');" >/dev/null
+	[ "$2" = 1 ] && psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['c','id'], sort_key => ARRAY['c']);" >/dev/null
+	q "SELECT pgcolumnar.export_arrow('$t', '$f');" >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SELECT pgcolumnar.import_arrow('$t', '$f');" 2>&1)"
+	case "$out" in
+		*ERROR:*) got="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1)" ;;
+		*[!0-9]*|'') got="lost connection" ;;
+		*) got="$out" ;;
+	esac
+	# after a crash the server needs a moment of recovery before it answers
+	for i in $(seq 1 60); do [ "$(q 'SELECT 1;')" = 1 ] && break; sleep 1; done
+	printf 'o%sp%s:%s/%s/%s' "$1" "$2" "$got" "$(q "SELECT count(*) FROM $t;")" \
+		"$([ "$2" = 1 ] && q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p');" || echo -)"
+}
+psql_run "CREATE TABLE aip_neighbour (id int) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('aip_neighbour', compression => 'zstd');" >/dev/null
+_aip_c0="$(aip_crashes)"
+_aip_got="$(aip_case 0 0) $(aip_case 0 1) $(aip_case 1 0) $(aip_case 1 1)"
+_aip_now="$(aip_crashes)"
+if [[ "$_aip_c0" =~ ^[0-9]+$ && "$_aip_now" =~ ^[0-9]+$ ]]; then
+	_aip_got="$_aip_got | $(( _aip_now - _aip_c0 )) backend crashes"
+else
+	_aip_got="$_aip_got | crash count unreadable"
+fi
+check "import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)" \
+	"$_aip_got" \
+	"o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000 | 0 backend crashes"
+
+# --- #2097: 64-bit-offset and view layouts of binary and string -------------
+# A large_binary column holding b'x' IMPORTED into bytea as an empty value, with
+# no error, and a three-row one failed as a malformed file. A large_string file
+# ['hi','there'] imported into text as '' and 'hi'. The reader takes every Binary
+# and Utf8 offset buffer as 32-bit, so the 64-bit offsets [0, 1] read as 0 and 0.
+# The string and binary views have no offset buffer at all and were called
+# malformed (XX001). Until import_arrow reads these layouts it refuses each one
+# with 42804, naming the column and the Arrow type, at any depth. The control is
+# a binary and a string file, which must still import with their values.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- #2097: large and view layouts of binary and string"
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+def write(name, arr):
+    t = pa.table({'v': arr, 'n': pa.array(range(len(arr)), pa.int32())})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), t.schema) as w:
+        w.write_table(t)
+write('lv_lb1', pa.array([b'x'], pa.large_binary()))
+write('lv_lb3', pa.array([b'hello', b'world!', None], pa.large_binary()))
+write('lv_ls', pa.array(['hi', 'there'], pa.large_string()))
+write('lv_lls', pa.array([['hi'], ['there']], pa.list_(pa.large_string())))
+write('lv_sv', pa.array(['hi', 'there'], pa.string_view()))
+write('lv_bv', pa.array([b'hi'], pa.binary_view()))
+write('lv_bin', pa.array([b'x'], pa.binary()))
+write('lv_str', pa.array(['hi', 'there'], pa.string()))
+PY
+	chmod 644 "$PGC_WORKDIR"/lv_*.arrows
+	lv_import() {	# lv_import FIXTURE PGTYPE -> "<import result or SQLSTATE message>|<rows stored>"
+		local t="lv_t_$1"
+		psql_run "CREATE TABLE $t (v $2, n int) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$t', '$PGC_WORKDIR/$1.arrows')")" \
+			"$(q "SELECT count(*) FROM $t;")"
+	}
+	check "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)" \
+		"$(lv_import lv_lb1 bytea) / $(lv_import lv_lb3 bytea)" \
+		'42804 Arrow column "v" holds a large binary, which pgcolumnar.import_arrow cannot read into type bytea|0 / 42804 Arrow column "v" holds a large binary, which pgcolumnar.import_arrow cannot read into type bytea|0'
+	check "import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)" \
+		"$(lv_import lv_ls text) / $(lv_import lv_lls 'text[]')" \
+		'42804 Arrow column "v" holds a large string, which pgcolumnar.import_arrow cannot read into type text|0 / 42804 Arrow column "v" holds a large string, which pgcolumnar.import_arrow cannot read into type text|0'
+	check "import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)" \
+		"$(lv_import lv_sv text) / $(lv_import lv_bv bytea)" \
+		'42804 Arrow column "v" holds a string view, which pgcolumnar.import_arrow cannot read into type text|0 / 42804 Arrow column "v" holds a binary view, which pgcolumnar.import_arrow cannot read into type bytea|0'
+	check "control: a binary and a string file still import into bytea and text, with their values (#2097)" \
+		"$(lv_import lv_bin bytea)|$(q "SELECT v FROM lv_t_lv_bin;") / $(lv_import lv_str text)|$(q "SELECT string_agg(v, ',' ORDER BY n) FROM lv_t_lv_str;")" \
+		'1|1|\x78 / 2|2|hi,there'
+else
+	for _ai_lv in \
+			"import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)" \
+			"import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)" \
+			"import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)" \
+			"control: a binary and a string file still import into bytea and text, with their values (#2097)"; do
+		check_skip "$_ai_lv" \
+			"SKIP  $_ai_lv (pyarrow not available)" \
 			"pyarrow not available"
 	done
 fi

@@ -2584,10 +2584,22 @@ PgColumnarDecodeChunk(const char *enc, uint32 encLen, int encodingType,
 	 * buffers. The fixed-width encodings always produce exactly n * attlen raw
 	 * bytes; NONE stores the raw bytes verbatim. DICT validates internally
 	 * (its raw length is the sum of variable-length dictionary entries).
+	 *
+	 * RLE copies whole values and works at any fixed width, and the encoder
+	 * chooses it for every fixed-width column: uuid (16), interval (16),
+	 * timetz (12), name (64) and the like as well as 1, 2, 4 and 8. Requiring
+	 * 1, 2, 4 or 8 here made every such chunk unreadable after it was written
+	 * (#2061). FOR, DELTA, GORILLA and DOD load each value as an integer of at
+	 * most 8 bytes, so they keep that restriction.
 	 */
 	switch (encodingType)
 	{
 		case COLUMNAR_ENCODING_RLE:
+			if (att->attlen <= 0)
+				DECODE_CORRUPT("fixed-width encoding on a non-fixed-width column");
+			if ((uint64) n * (uint32) att->attlen != rawLen)
+				DECODE_CORRUPT("raw length does not match value count");
+			break;
 		case COLUMNAR_ENCODING_FOR:
 		case COLUMNAR_ENCODING_DELTA:
 		case COLUMNAR_ENCODING_GORILLA:

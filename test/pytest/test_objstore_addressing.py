@@ -513,3 +513,107 @@ def test_gs_with_no_endpoint_goes_to_storage_googleapis_com(osa, expect):
         return
     expect.text(osa["gs no endpoint"], "42501 by the allow-list naming storage.googleapis.com:443",
                 "gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)")
+
+
+# ---- the addressing setting takes only path or virtual (#2091) ----------------
+# A free-form string let a typo through: SET accepted 'virtaul', SHOW echoed it back,
+# and every request then went out path-style without a word. These tests need no
+# fixture server and no private cluster, so they never decline with the rest.
+
+def _set_addressing(dsn, value):
+    """SET the addressing setting to `value` -> "22023 invalid value" when PostgreSQL
+    refused it as an invalid parameter value, else what SHOW reports afterwards."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute("SELECT set_config('pgcolumnar.objstore_s3_addressing', %s, false)",
+                         (value,))
+            return conn.execute("SHOW pgcolumnar.objstore_s3_addressing").fetchone()[0]
+    except psycopg.Error as exc:
+        if exc.sqlstate == "22023" and "invalid value for parameter" in str(exc):
+            return "22023 invalid value"
+        return query_error(_message(exc))
+
+
+@pytest.mark.parametrize("value, name", [
+    ("virtaul", "the addressing setting refuses the typo 'virtaul'"),
+    ("VIRTUAL ", "the addressing setting refuses 'VIRTUAL ' with a trailing space"),
+    ("", "the addressing setting refuses the empty string"),
+], ids=["typo", "trailing-space", "empty"])
+def test_the_addressing_setting_refuses_a_value_other_than_path_or_virtual(
+        pgc_cluster, expect, value, name):
+    expect.text(_set_addressing(pgc_cluster.dsn(), value), "22023 invalid value", name)
+
+
+def test_the_addressing_setting_still_takes_path_and_virtual(pgc_cluster, expect):
+    got = " ".join(str(_set_addressing(pgc_cluster.dsn(), v)).lower()
+                   for v in ("path", "virtual", "VIRTUAL"))
+    expect.text(got, "path virtual virtual",
+                "the addressing setting still takes path, virtual and VIRTUAL")
+
+
+def test_a_role_that_is_not_a_superuser_can_still_set_the_addressing_setting(pgc_cluster, expect):
+    # The setting is per session (PGC_USERSET): SET ROLE drops superuser for the SET.
+    got = _row(pgc_cluster.dsn(), "DROP ROLE IF EXISTS pgc_addr_plain",
+               "CREATE ROLE pgc_addr_plain NOSUPERUSER", "SET ROLE pgc_addr_plain",
+               "SET pgcolumnar.objstore_s3_addressing = 'virtual'",
+               "SHOW pgcolumnar.objstore_s3_addressing")
+    _row(pgc_cluster.dsn(), "DROP ROLE IF EXISTS pgc_addr_plain", "SELECT 1")
+    expect.text(got, "virtual", "a role that is not a superuser can still set the addressing setting")
+
+
+def _alter_system(dsn, value):
+    """ALTER SYSTEM SET the addressing setting to `value` -> "22023 invalid value" when
+    PostgreSQL refused it as an invalid parameter value, else what pg_file_settings
+    holds for the setting. The setting is RESET afterwards, as the cluster is shared."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            try:
+                conn.execute(f"ALTER SYSTEM SET pgcolumnar.objstore_s3_addressing = '{value}'")
+                return conn.execute(
+                    "SELECT coalesce(string_agg(setting || coalesce(' ' || error, ''), ','), 'no row')"
+                    " FROM pg_file_settings WHERE name = 'pgcolumnar.objstore_s3_addressing'"
+                ).fetchone()[0]
+            finally:
+                conn.execute("ALTER SYSTEM RESET pgcolumnar.objstore_s3_addressing")
+    except psycopg.Error as exc:
+        if exc.sqlstate == "22023" and "invalid value for parameter" in str(exc):
+            return "22023 invalid value"
+        return query_error(_message(exc))
+
+
+def test_alter_system_refuses_the_typo(pgc_cluster, expect):
+    expect.text(_alter_system(pgc_cluster.dsn(), "virtaul"), "22023 invalid value",
+                "ALTER SYSTEM refuses the typo 'virtaul'")
+
+
+def test_alter_system_still_takes_virtual(pgc_cluster, expect):
+    expect.text(_alter_system(pgc_cluster.dsn(), "virtual"), "virtual",
+                "ALTER SYSTEM still takes virtual")
+
+
+def test_a_typo_in_postgresql_conf_draws_a_warning_and_the_server_uses_path(pgc_cluster, expect):
+    # The server reads postgresql.conf at start, so it cannot refuse a typo there: it
+    # warns and uses path. A private cluster, because the shared one cannot restart.
+    from pgc_cluster import Cluster, pick_port
+
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-addr-conf-"))
+    os.chmod(work, 0o777)
+    datadir = work / "data"
+    datadir.mkdir()
+    log = str(work / "server.log")
+    cluster = Cluster(pgc_cluster.pg_config, "addrconf", datadir, pick_port(27))
+    try:
+        cluster.initdb()
+        with open(datadir / "postgresql.conf", "a") as fh:
+            fh.write("\npgcolumnar.objstore_s3_addressing = 'virtaul'\n")
+        started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], {})
+        show = _row(cluster.dsn(), "SHOW pgcolumnar.objstore_s3_addressing") \
+            if started.returncode == 0 else query_error(f"the private cluster did not start: {started.stderr}")
+        text = pathlib.Path(log).read_text(errors="replace") if os.path.exists(log) else ""
+        warned = "warned" if ('WARNING:  invalid value for parameter '
+                              '"pgcolumnar.objstore_s3_addressing": "virtaul"') in text else "silent"
+    finally:
+        _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
+        shutil.rmtree(work, ignore_errors=True)
+    expect.text(f"{show} {warned}", "path warned",
+                "a typo in postgresql.conf draws a WARNING and the server uses path")

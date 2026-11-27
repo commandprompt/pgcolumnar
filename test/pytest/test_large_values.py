@@ -7,11 +7,15 @@ two must agree on each value's length and md5: 1 MB and two 16 MB incompressible
 values and a 200 MB compressible one, then an UPDATE that takes a value heap has
 TOASTed.
 
-A chunk over 1 GB is past what one allocation may hold, and is refused with 54000,
-committing nothing, while the server stays up. That arm needs several GB of memory, so
-it is opt-in, as the shell's is: it runs only with PGC_RUN_OVER_1GB=1, and otherwise
-declines as UNMET_PRECONDITION, which expected_unrunnable.txt lists for every major
-(#432, the same shape as test_objstore_s3_read.py's real-S3 arm).
+Rows whose column passes 1 GB in one row group, or in one chunk group, load and are
+stored exactly (#2071), also when they are copied from heap, which stores them
+compressed: the writer closes a row group early instead of building a buffer past
+what one allocation may hold, so the 8 KB rows make row groups just under 256 MiB. An opt-in arm does the same with about
+1.1 GB of incompressible text and compression off; before #2071 that INSERT failed
+with 54000. That arm needs several GB of memory, so it is opt-in, as the shell's is:
+it runs only with PGC_RUN_OVER_1GB=1, and otherwise declines as UNMET_PRECONDITION,
+which expected_unrunnable.txt lists for every major (#432, the same shape as
+test_objstore_s3_read.py's real-S3 arm).
 """
 import os
 
@@ -28,6 +32,7 @@ def _mb(n, salt):
     return f"(SELECT string_agg(md5(g::text || '{salt}'), '') FROM generate_series(1, {n} * 32768) g)"
 
 
+OVER = "1.1 GB of incompressible text in one chunk group's rows loads, and the server stays up"
 DIGEST = "SELECT string_agg(id || ':' || length(big) || ':' || md5(big), ' ' ORDER BY id) FROM "
 
 
@@ -58,14 +63,101 @@ def test_megabyte_values_are_stored_exactly(pgc_conn, expect):
                 "and the other rows are unchanged")
 
 
-def test_a_chunk_over_1gb_is_refused(pgc_cluster, expect):
-    """About 1.1 GB of incompressible text in one chunk group, compression off, so the
-    chunk cannot fit one allocation. The refusal is read as its SQLSTATE, and the table
-    and the server are read on fresh connections, so a crash is not a pass."""
+def _load(conn, sql):
+    """The INSERT's command tag. A failed load raises, so the test fails on the
+    server's own error rather than on a comparison."""
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        return f"INSERT 0 {cur.rowcount}"
+
+
+def _summary(conn, table, value_sql):
+    return _one(conn, f"SELECT count(*) || ',' || sum(id) || ',' || sum(length(t)) || ',' "
+                      f"|| count(*) FILTER (WHERE t <> {value_sql}) FROM {table}")
+
+
+def _premise_default_limits(conn, expect):
+    expect.text(_one(conn, "SELECT current_setting('pgcolumnar.stripe_row_limit') || ',' "
+                           "|| current_setting('pgcolumnar.chunk_group_row_limit')"),
+                "150000,10000",
+                "premise: the row limits are the defaults, 150000 per row group and 10000 per chunk group")
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = '600s'")
+
+
+def test_rows_past_1gb_per_row_group_load(pgc_conn, expect):
+    """#2071. The writer used to cut row groups by row count alone. With the default
+    limits, 150000 rows of 8 KB put 1.2 GB of one column into one buffer, and the
+    INSERT failed with "string buffer exceeds maximum allowed length". The values
+    compress to almost nothing.
+
+    A row of 8 KB measures 8012 bytes (8000, a 4-byte header, a 4-byte int), and
+    33504 x 8012 = 268434048 is the most rows under the 256 MiB cap (268435456). So
+    the row-group shape pins the cap's value, and that the byte count goes back to 0
+    after each flush: without that, every row group after the first holds one row."""
+    _premise_default_limits(pgc_conn, expect)
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE lv_rg (id int, t text) USING pgcolumnar")
+    tag = _load(pgc_conn, "INSERT INTO lv_rg SELECT g, repeat('y', 8000) FROM generate_series(1, 150000) g")
+    got = _summary(pgc_conn, "lv_rg", "repeat('y', 8000)")
+    expect.text(f"{tag}|{got}",
+                "INSERT 0 150000|150000,11250075000,1200000000,0",
+                "150000 rows of 8 KB text, 1.2 GB for one row group, load and are stored exactly")
+    expect.text(_one(pgc_conn, "SELECT count(*) || ',' || min(rowcount) || ',' || max(rowcount) "
+                               "FROM pgcolumnar.stats('lv_rg')"),
+                "5,15984,33504",
+                "the 8 KB rows make 5 row groups of 15984 to 33504 rows: the cap closes each one just under 256 MiB")
+    with pgc_conn.cursor() as cur:
+        cur.execute("DROP TABLE lv_rg")
+
+
+def test_rows_past_1gb_per_chunk_group_load(pgc_conn, expect):
+    """#2071. With the default limits, 10000 rows of 120 KB put 1.2 GB of one column
+    into one chunk group's value stream, and the INSERT failed with "string buffer
+    exceeds maximum allowed length". A test of its own, so a failed 8 KB load does not
+    hide this one."""
+    _premise_default_limits(pgc_conn, expect)
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE lv_cg (id int, t text) USING pgcolumnar")
+    tag = _load(pgc_conn, "INSERT INTO lv_cg SELECT g, repeat('x', 120000) FROM generate_series(1, 10000) g")
+    got = _summary(pgc_conn, "lv_cg", "repeat('x', 120000)")
+    expect.text(f"{tag}|{got}",
+                "INSERT 0 10000|10000,50005000,1200000000,0",
+                "10000 rows of 120 KB text, 1.2 GB for one chunk group, load and are stored exactly")
+    with pgc_conn.cursor() as cur:
+        cur.execute("DROP TABLE lv_cg")
+
+
+def test_compressed_heap_rows_past_1gb_load(pgc_conn, expect):
+    """#2071. The same 1.2 GB copied from heap, which stores each 8 KB value
+    compressed to about 100 bytes. The writer detoasts every value before it encodes
+    it, so the cap must count a value at its raw size, not at the size it is stored
+    at in the source."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("SET statement_timeout = '600s'")
+        cur.execute("CREATE TABLE lv_hz (id int, t text)")
+        cur.execute("INSERT INTO lv_hz SELECT g, repeat('y', 8000) FROM generate_series(1, 150000) g")
+        cur.execute("CREATE TABLE lv_hc (id int, t text) USING pgcolumnar")
+    expect.text(str(_one(pgc_conn, "SELECT sum(pg_column_size(t)) < 20000000 FROM lv_hz")), "True",
+                "premise: heap stores the 150000 values of 8 KB compressed, under 20 MB in all")
+    tag = _load(pgc_conn, "INSERT INTO lv_hc SELECT * FROM lv_hz")
+    got = _summary(pgc_conn, "lv_hc", "repeat('y', 8000)")
+    expect.text(f"{tag}|{got}",
+                "INSERT 0 150000|150000,11250075000,1200000000,0",
+                "150000 rows of 8 KB text that heap stores compressed, copied to columnar, load and are stored exactly")
+    with pgc_conn.cursor() as cur:
+        cur.execute("DROP TABLE lv_hz, lv_hc")
+
+
+def test_incompressible_text_past_1gb_loads(pgc_cluster, expect):
+    """About 1.1 GB of incompressible text in one chunk group's rows, compression off,
+    so no codec makes the data smaller (#2071; before it, the INSERT failed with 54000).
+    A failure is read as its SQLSTATE, and the table and the server are read on fresh
+    connections, so a crash is not a pass."""
     if os.environ.get("PGC_RUN_OVER_1GB", "0") != "1":
         expect.cannot_run("UNMET_PRECONDITION",
                           "PGC_RUN_OVER_1GB is not 1; the arm needs several GB of memory",
-                          name="a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up")
+                          name=OVER)
         return
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
         c.execute("DROP TABLE IF EXISTS lv_huge")
@@ -87,5 +179,5 @@ def test_a_chunk_over_1gb_is_refused(pgc_cluster, expect):
         except psycopg.Error as exc:
             return f"unreachable ({str(exc).splitlines()[0]})"
 
-    expect.text(f"{state}|{fresh('SELECT count(*) FROM lv_huge')}|{fresh('SELECT 1')}", "54000|0|1",
-                "a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up")
+    got = fresh("SELECT count(*) || ',' || sum(length(big)) FROM lv_huge")
+    expect.text(f"{state}|{got}|{fresh('SELECT 1')}", "committed|1100,1153433600|1", OVER)

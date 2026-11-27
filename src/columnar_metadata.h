@@ -25,6 +25,10 @@
 extern void PgColumnarRetireGroup(uint64 storageId, uint64 groupNumber);
 
 extern void PgColumnarLockChunkGroup(uint64 storageId, uint64 groupNumber);
+extern bool PgColumnarConditionalLockChunkGroup(uint64 storageId, uint64 groupNumber);
+extern void PgColumnarUnlockChunkGroup(uint64 storageId, uint64 groupNumber);
+extern void PgColumnarLockStorageRow(uint64 storageId);
+extern void PgColumnarUnlockStorageRow(uint64 storageId);
 
 extern bool PgColumnarAllocateFreeSpace(uint64 storageId, uint64 dataLength,
 									  TransactionId oldestXmin, uint64 *fileOffset);
@@ -51,6 +55,7 @@ extern void PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 												 const char *newName);
 extern void PgColumnarRenameSortKeyColumn(uint64 storageId, const char *oldName,
 										  const char *newName);
+extern void PgColumnarForgetSortKeyColumn(uint64 storageId, const char *dropped);
 extern void PgColumnarGetSortedInfo(uint64 storageId, int64 *firstGroup,
 									int64 *lastGroup, List **sortByNames,
 									char **sortedKind);

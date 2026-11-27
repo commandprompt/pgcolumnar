@@ -181,4 +181,45 @@ for pred in "ctid >= '$LAST'" "ctid >= '$MOVED'" "ctid >= '$MID_A' AND ctid <= '
 		"$(hash "$pred" on)" "$(hash "$pred" off)"
 done
 
+# A single ctid that no row can have (#2058). A TID scan asks the access method
+# whether each listed ctid is valid before it fetches. Offset 0 is never a valid
+# ctid, and no columnar row has an offset past the 291 a block holds. Accepting
+# them all, the AM failed an assertion on '(0,0)', which restarts every backend
+# of an assert build, and read '(0,292)' as row 291, whose ctid is (1,1): a
+# query, a DELETE or an UPDATE reached a row it did not name. Last in the suite,
+# so a crash on unfixed code cannot take down the arms above. Its own table and
+# its own rows. THE ORACLE is a heap table: zero rows for every one of them.
+# A DELETE or UPDATE that reaches a row moves or removes it, which would hide
+# the next statement's fault, so each one gets the table fresh.
+badtid() {
+	q "DROP TABLE IF EXISTS badtid;
+	   CREATE TABLE badtid (id int, v int) USING pgcolumnar;
+	   INSERT INTO badtid SELECT g, g FROM generate_series(1, 700) g;" >/dev/null
+}
+rows_left() { q "SELECT count(*) || '|' || sum(v) FROM badtid WHERE v > 0;"; }
+badtid
+check "premise: the row after offset 291 of block 0 sits at (1,1)" \
+	"$(q "SELECT ctid FROM badtid WHERE id = 291;")" "(1,1)"
+check "premise: a single ctid plans a TID scan" \
+	"$(q "EXPLAIN SELECT id FROM badtid WHERE ctid = '(0,292)';" | grep -c 'Tid Scan on badtid')" "1"
+# The other side of the boundary, so a fix that refused every ctid fails here.
+check "a TID scan of the last offset a block holds, '(0,291)', still returns its row" \
+	"$(q "SELECT string_agg(id::text, ',') FROM badtid WHERE ctid = '(0,291)';")" "290"
+check "a TID scan of two ctids rows have and one past a block's last offset returns those two rows" \
+	"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM badtid WHERE ctid = ANY (ARRAY['(1,1)', '(0,292)', '(0,2)']::tid[]);")" "1,291"
+for t in "(0,292)" "(1,400)" "(0,0)" "(1,0)"; do
+	check "a TID scan of ctid '$t', which no row has, returns no row, as on heap" \
+		"$(q "SELECT 'rows=' || count(*) FROM badtid WHERE ctid = '$t';")" "rows=0"
+	check "a TID scan of ctid '$t' in an array returns no row, as on heap" \
+		"$(q "SELECT 'rows=' || count(*) FROM badtid WHERE ctid = ANY (ARRAY['$t']::tid[]);")" "rows=0"
+	badtid
+	check "UPDATE ... WHERE ctid = '$t' changes no row, and every row is unchanged" \
+		"$(q "WITH u AS (UPDATE badtid SET v = -v WHERE ctid = '$t' RETURNING 1) SELECT 'updated=' || count(*) FROM u;")|$(rows_left)" \
+		"updated=0|700|245350"
+	badtid
+	check "DELETE ... WHERE ctid = '$t' deletes no row, and every row is still there" \
+		"$(q "WITH d AS (DELETE FROM badtid WHERE ctid = '$t' RETURNING 1) SELECT 'deleted=' || count(*) FROM d;")|$(rows_left)" \
+		"deleted=0|700|245350"
+done
+
 pgc_summary

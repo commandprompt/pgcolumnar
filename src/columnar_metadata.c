@@ -1866,6 +1866,72 @@ PgColumnarLockChunkGroup(uint64 storageId, uint64 groupNumber)
 	delete_vector_lock_chunk_group(storageId, groupNumber, 0);
 }
 
+/* the advisory tag of one chunk group's lock (class 101), as delete_vector_lock_chunk_group sets it */
+static void
+chunk_group_lock_tag(LOCKTAG *tag, uint64 storageId, uint64 groupNumber)
+{
+	uint64		key = delete_vector_chunk_lock_key(storageId, groupNumber, 0);
+
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId,
+						 (uint32) (key >> 32), (uint32) (key & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_DELETE_VECTOR);
+}
+
+/* the advisory tag of a storage's storage-row lock (class 102), as PgColumnarInsertNativeStorageRow sets it */
+static void
+storage_row_lock_tag(LOCKTAG *tag, uint64 storageId)
+{
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+}
+
+/*
+ * PgColumnarConditionalLockChunkGroup / PgColumnarUnlockChunkGroup
+ * PgColumnarLockStorageRow / PgColumnarUnlockStorageRow
+ *		The two lock classes an online rewrite needs, taken without waiting or
+ *		given back, so the rewrite never waits for one while it holds the other
+ *		(#2074; see lock_rewrite_groups in columnar_vacuum.c). An unlock undoes
+ *		one lock call only: a lock this transaction already held before stays
+ *		held to commit, as PostgreSQL counts each acquisition.
+ */
+bool
+PgColumnarConditionalLockChunkGroup(uint64 storageId, uint64 groupNumber)
+{
+	LOCKTAG		tag;
+
+	chunk_group_lock_tag(&tag, storageId, groupNumber);
+	return LockAcquire(&tag, ExclusiveLock, false, true) != LOCKACQUIRE_NOT_AVAIL;
+}
+
+void
+PgColumnarUnlockChunkGroup(uint64 storageId, uint64 groupNumber)
+{
+	LOCKTAG		tag;
+
+	chunk_group_lock_tag(&tag, storageId, groupNumber);
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
+void
+PgColumnarLockStorageRow(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+	(void) LockAcquire(&tag, ExclusiveLock, false, false);
+}
+
+void
+PgColumnarUnlockStorageRow(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
 void
 PgColumnarUpsertDeleteVector(uint64 storageId, DeleteVectorMetadata *rm)
 {
@@ -2306,10 +2372,7 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 		goto insert_row;
 	}
 
-	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
-						 (uint32) (s->storageId >> 32),
-						 (uint32) (s->storageId & 0xFFFFFFFF),
-						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+	storage_row_lock_tag(&tag, s->storageId);
 	(void) LockAcquire(&tag, ExclusiveLock, false /* transaction lock */ ,
 					   false /* wait */ );
 
@@ -2365,6 +2428,34 @@ insert_row:
 	metadata_flush_insert(rel, tuple);
 	heap_freetuple(tuple);
 	metadata_flush_close(rel, RowExclusiveLock);
+}
+
+/*
+ * PgColumnarStorageRowLockHeldByMe
+ *		True when this transaction holds the storage-row lock that
+ *		PgColumnarInsertNativeStorageRow takes for storageId (#2211).
+ *
+ * The writer takes it on every row-group flush, whether or not the storage row
+ * is committed already, and holds it to transaction end; only a relation
+ * created in this transaction, and a bulk loader that finds the row committed,
+ * skip it. parallel_copy's coordinator and loaders take it in their own
+ * transactions, so a caller holding it would leave them waiting on it while
+ * the caller waits on them. Reads this backend's local lock table only.
+ */
+bool
+PgColumnarStorageRowLockHeldByMe(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+#if PG_VERSION_NUM >= 170000
+	return LockHeldByMe(&tag, ExclusiveLock, false);
+#else
+	return LockHeldByMe(&tag, ExclusiveLock);
+#endif
 }
 
 /*
@@ -2596,6 +2687,27 @@ PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 			}
 		}
 
+		/*
+		 * #2070: ttl_column is a single NAME, held by name for the same reason,
+		 * and expire() resolves it on every run. Left stale, expire() fails, and
+		 * once another time column takes the old name it cuts on that column and
+		 * retires rows still inside the retention.
+		 */
+		if (tupdesc->natts >= Anum_options_ttl_column)
+		{
+			bool		isnull;
+			Datum		d = heap_getattr(tuple, Anum_options_ttl_column, tupdesc,
+										 &isnull);
+
+			if (!isnull && strcmp(NameStr(*DatumGetName(d)), oldName) == 0)
+			{
+				values[Anum_options_ttl_column - 1] =
+					DirectFunctionCall1(namein, CStringGetDatum((char *) newName));
+				replace[Anum_options_ttl_column - 1] = true;
+				any = true;
+			}
+		}
+
 		/* a rename touching no declared column must not rewrite the row */
 		if (any)
 		{
@@ -2670,6 +2782,45 @@ PgColumnarRenameSortKeyColumn(uint64 storageId, const char *oldName,
 		return;
 
 	PgColumnarSetSortedExtent(storageId, sfrom, sthrough, renamed, skind);
+}
+
+/*
+ * PgColumnarForgetSortKeyColumn
+ *		Clear the ordering mark when one of its key columns is dropped (#2069).
+ *
+ *		PostgreSQL renames a dropped column to "........pg.dropped.N........",
+ *		so its old name comes free. A later RENAME, which writes no rows, can
+ *		give that name to another column. The mark records its key by name, so
+ *		a mark left in place would then claim that other column is ordered: the
+ *		planner would leave out the Sort for ORDER BY on it, and vacuum_sorted's
+ *		gate would skip the rewrite.
+ *
+ *		The key and the kind are both cleared, which every reader takes as
+ *		"order unknown". The run extent is kept, as a type change keeps it
+ *		(#1341 item 19). Clearing the whole mark, not just the dropped name,
+ *		is deliberate: a Z-order or Hilbert run is not ordered on any subset of
+ *		its key, and a fail-safe clear costs only an optimisation until the next
+ *		ordering rewrite.
+ */
+void
+PgColumnarForgetSortKeyColumn(uint64 storageId, const char *dropped)
+{
+	int64		sfrom,
+				sthrough;
+	List	   *skey;
+	char	   *skind;
+	ListCell   *lc;
+
+	PgColumnarGetSortedInfo(storageId, &sfrom, &sthrough, &skey, &skind);
+	foreach(lc, skey)
+	{
+		if (strcmp((char *) lfirst(lc), dropped) == 0)
+		{
+			PgColumnarSetSortedExtent(storageId, sfrom, sthrough, NIL, NULL);
+			return;
+		}
+	}
+	/* a drop that touches no sort-key column must not rewrite the row */
 }
 
 /*
@@ -3507,6 +3658,55 @@ PgColumnarReadRowGroupList(uint64 storageId, Snapshot snapshot)
 	table_close(rel, AccessShareLock);
 
 	list_sort(result, row_group_cmp);
+	return result;
+}
+
+/*
+ * PgColumnarRowGroupXmin
+ *		The transaction that inserted the row group holding rowNumber, or
+ *		InvalidTransactionId when no row group holds it.
+ *
+ *		This is the row's xmin: a row group is written whole by one transaction,
+ *		and its catalog row is inserted by that transaction. Core reads xmin from
+ *		a conflicting row at REPEATABLE READ and SERIALIZABLE, to tell a row this
+ *		transaction inserted from one another transaction did (#2060).
+ *
+ *		Read under SnapshotSelf, so the answer covers committed groups and this
+ *		transaction's own, including groups flushed by the current command.
+ *		No tested path reaches it for an own group today: the snapshot check
+ *		finds this transaction's rows live first, and returns before asking.
+ */
+TransactionId
+PgColumnarRowGroupXmin(uint64 storageId, uint64 rowNumber)
+{
+	Relation	rel = open_columnar_table("row_group", AccessShareLock);
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TransactionId result = InvalidTransactionId;
+	Oid			rgIdx = pgcolumnar_index_oid("row_group_pkey");
+
+	ScanKeyInit(&key[0], Anum_row_group_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	scan = systable_beginscan(rel, rgIdx, OidIsValid(rgIdx), SnapshotSelf, 1, key);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool		isnull;
+		uint64		firstRow = (uint64) DatumGetInt64(
+			heap_getattr(tuple, Anum_row_group_first_row_number, tupdesc, &isnull));
+		uint64		rowCount = (uint64) DatumGetInt64(
+			heap_getattr(tuple, Anum_row_group_row_count, tupdesc, &isnull));
+
+		if (rowNumber >= firstRow && rowNumber - firstRow < rowCount)
+		{
+			result = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
 	return result;
 }
 

@@ -16,6 +16,9 @@ ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each
 asserts one reading (#1339). A reading that fails is a failed reading, never a value:
 two failed reads never agree.
 """
+import pathlib
+import subprocess
+
 import psycopg
 import pytest
 
@@ -28,6 +31,7 @@ FGEN = ("SELECT g, 'https://www.example.com/user/' || g || '/profile?id=' || md5
         "|| '&ref=columnar', ('\\\\x' || md5(g::text) || md5((g+1)::text))::bytea "
         "FROM generate_series(1, 6000) g")
 CODECS = ("none", "pglz", "lz4", "zstd")
+WF_DB = f"{DB}_wf"
 
 
 def _message(exc):
@@ -72,6 +76,15 @@ def _set_hash(dsn, query):
                        f"FROM (SELECT _row::text AS t FROM ( {query} ) _row) _s")
 
 
+def _tool(cluster, name, *args):
+    """-> the tool's exit status, or query_error() when it could not be run at all."""
+    try:
+        return subprocess.run([str(pathlib.Path(cluster.bindir) / name), "-h", "127.0.0.1", "-p", str(cluster.port),
+                               "-U", "postgres", *args], capture_output=True, text=True).returncode
+    except OSError as exc:
+        return query_error(f"{name} could not run: {exc}")
+
+
 def _cc(table):
     return f"FROM pgcolumnar.column_chunk WHERE storage_id = pgcolumnar.get_storage_id('{table}')"
 
@@ -95,9 +108,10 @@ def _ratio_ok(dsn, on, off):
 
 
 @pytest.fixture(scope="module")
-def ne(pgc_cluster):
+def ne(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
-        a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+        for d in (DB, WF_DB):
+            a.execute(f"DROP DATABASE IF EXISTS {d} WITH (FORCE)")
         a.execute(f"CREATE DATABASE {DB}")
     try:
         dsn = pgc_cluster.dsn(dbname=DB)
@@ -198,10 +212,47 @@ def ne(pgc_cluster):
              "INSERT INTO se_small SELECT g, g * 3 FROM generate_series(1, 500) g")
         r["small enc"] = _bad_of(dsn, "se_small", "get_byte(encoding_descriptor, 6) = 0", "AND column_index = 1")
         r["small vals"] = _value(dsn, "SELECT count(*) || ' ' || sum(v) FROM se_small")
+
+        # #2061: repeated values of a fixed-width type that is not 1, 2, 4 or 8 bytes
+        # wide, on the exhaustive path (sampling off) and on the sampled path (one
+        # chunk of 20000 values, larger than encoding_sample_rows).
+        wf_cols = "id int, u uuid, iv interval, tz timetz, nm name, mac macaddr, t tid, p point"
+        wf_row = ("'00000000-0000-0000-0000-000000000001'::uuid, '1 day'::interval, '12:00+05'::timetz, "
+                  "'abc'::name, '08:00:2b:01:02:03'::macaddr, '(1,2)'::tid, point(1, 2)")
+        _run(dsn, f"CREATE TABLE wf_h ({wf_cols})",
+             f"INSERT INTO wf_h SELECT g, {wf_row} FROM generate_series(1, 100) g")
+        _run(dsn, f"CREATE TABLE wf_n ({wf_cols}) USING pgcolumnar",
+             "SET pgcolumnar.encoding_sample_rows = 0", "INSERT INTO wf_n SELECT * FROM wf_h")
+        _run(dsn, f"CREATE TABLE wf_sh ({wf_cols})",
+             f"INSERT INTO wf_sh SELECT g, {wf_row} FROM generate_series(1, 20000) g")
+        _run(dsn, f"CREATE TABLE wf_s ({wf_cols}) USING pgcolumnar",
+             "SET pgcolumnar.chunk_group_row_limit = 100000", "SET pgcolumnar.encoding_sample_rows = 2048",
+             "INSERT INTO wf_s SELECT * FROM wf_sh")
+        r["wf rle"] = _value(dsn, "SELECT count(*) FILTER (WHERE get_byte(encoding_descriptor, 6) = 1) "
+                                  "|| '/' || count(*) FROM pgcolumnar.column_chunk WHERE storage_id IN "
+                                  "(pgcolumnar.get_storage_id('wf_n'), pgcolumnar.get_storage_id('wf_s')) "
+                                  "AND column_index BETWEEN 1 AND 7")
+        r["wf hash"] = (_set_hash(dsn, "SELECT * FROM wf_n"), _set_hash(dsn, "SELECT * FROM wf_h"))
+        r["wf sampled hash"] = (_set_hash(dsn, "SELECT * FROM wf_s"), _set_hash(dsn, "SELECT * FROM wf_sh"))
+        r["wf analyze"] = _run(dsn, "ANALYZE wf_s") or "analyzed"
+        # pg_dump reads every row through the same decoder. Dump both tables, restore
+        # them into a fresh database and compare. This runs before the DELETE below,
+        # which empties wf_n.
+        wf_dump = str(server_dir / "wide-fixed-width.sql")
+        r["wf dump"] = _tool(pgc_cluster, "pg_dump", "-d", DB, "-t", "wf_n", "-t", "wf_s", "-f", wf_dump)
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"CREATE DATABASE {WF_DB}")
+        wf_dsn = pgc_cluster.dsn(dbname=WF_DB)
+        _run(wf_dsn, "CREATE EXTENSION pgcolumnar")
+        r["wf restore"] = _tool(pgc_cluster, "psql", "-d", WF_DB, "-v", "ON_ERROR_STOP=1", "-q", "-f", wf_dump)
+        r["wf restored hash"] = (_set_hash(wf_dsn, "SELECT * FROM wf_n UNION ALL SELECT * FROM wf_s"),
+                                 _set_hash(dsn, "SELECT * FROM wf_h UNION ALL SELECT * FROM wf_sh"))
+        r["wf delete"] = _value(dsn, "WITH d AS (DELETE FROM wf_n RETURNING 1) SELECT count(*) FROM d")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
-            a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            for d in (DB, WF_DB):
+                a.execute(f"DROP DATABASE IF EXISTS {d} WITH (FORCE)")
 
 
 def test_none_holds_every_row(ne, expect):
@@ -406,3 +457,40 @@ def test_a_chunk_smaller_than_the_sample_window_is_encoded(ne, expect):
 
 def test_a_chunk_smaller_than_the_sample_window_reads_back(ne, expect):
     expect.text(ne["small vals"], "500 375750", "a chunk smaller than the sample window reads back exactly")
+
+
+def test_repeated_wide_fixed_width_values_are_stored_as_rle(ne, expect):
+    expect.text(ne["wf rle"], "14/14",
+                "premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE")
+
+
+def test_repeated_wide_fixed_width_values_read_back_exactly(ne, expect):
+    expect.text(ne["wf hash"][0], ne["wf hash"][1],
+                "repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly")
+
+
+def test_repeated_wide_fixed_width_values_read_back_on_the_sampled_path(ne, expect):
+    expect.text(ne["wf sampled hash"][0], ne["wf sampled hash"][1],
+                "repeated wide fixed-width values read back exactly on the sampled path")
+
+
+def test_analyze_reads_repeated_wide_fixed_width_values(ne, expect):
+    expect.text(ne["wf analyze"], "analyzed", "ANALYZE reads a table of repeated wide fixed-width values")
+
+
+def test_pg_dump_reads_repeated_wide_fixed_width_values(ne, expect):
+    expect.num(ne["wf dump"], 0, "pg_dump of a table of repeated wide fixed-width values succeeds")
+
+
+def test_restore_of_repeated_wide_fixed_width_values_succeeds(ne, expect):
+    expect.num(ne["wf restore"], 0, "restore of a table of repeated wide fixed-width values succeeds")
+
+
+def test_repeated_wide_fixed_width_values_survive_a_pg_dump_round_trip(ne, expect):
+    expect.text(ne["wf restored hash"][0], ne["wf restored hash"][1],
+                "repeated wide fixed-width values read back exactly after a pg_dump round trip")
+
+
+def test_delete_removes_repeated_wide_fixed_width_values(ne, expect):
+    expect.text(ne["wf delete"], "100",
+                "DELETE removes every row of a table of repeated wide fixed-width values")

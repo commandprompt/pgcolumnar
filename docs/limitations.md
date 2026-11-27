@@ -298,6 +298,19 @@ these constraints.
 - The target is a single columnar table or a RANGE-partitioned table with
   columnar partitions. The function rejects any other target, such as a heap
   table.
+- A single columnar table with a unique or exclusion index, including a primary
+  key, loads with one worker only. The function refuses more workers with
+  `0A000`. The workers would wait on each other's prepared transactions, so the
+  load would hang or fail with a deadlock error. Every kind of unique index
+  counts, even a partial index that no loaded row matches. That includes
+  deferrable indexes, indexes on expressions or on more than one column, and
+  indexes with INCLUDE columns or NULLS NOT DISTINCT. So does an exclusion
+  constraint of any index type, such as gist. So do invalid unique indexes, such
+  as the one a failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves behind: such an
+  index still checks every insert. A caller without INSERT on the table gets
+  `42501` first, and a URL gets the refusal for remote files first. A
+  partitioned target with such an index is not limited: each worker loads its
+  own partitions.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.
@@ -315,6 +328,28 @@ these constraints.
   final commit step can leave some ranges committed and some prepared. This is
   the ordinary two-phase-commit in-doubt case. A DBA resolves it from
   `pg_prepared_xacts`.
+- The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
+  or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
+  refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
+  locks. The workers take ROW EXCLUSIVE in their own transactions, so they
+  would wait for the caller until the statement timed out.
+  `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
+  or on one of its leaf partitions.
+- The check covers only the target and its partitions. The load still waits
+  until `statement_timeout` when the calling transaction locks another table
+  the loaders need. One example is a table the target references through a
+  foreign key. Others are a table a trigger on the target writes to, and a
+  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
+  `parallel_copy` before taking such locks, or after `COMMIT`.
+- The calling transaction must not have written to the target or to one of its
+  partitions, for example with an earlier `INSERT`. The function refuses such a
+  call with `55000` (#2211). The write holds a lock on the table's storage until
+  the transaction ends. The workers take that lock in their own transactions,
+  so they would wait for the caller until the statement timed out. Commit the
+  write first, or load the file with `COPY`.
+  The check does not see a write to a columnar table that a trigger on the
+  target writes. If no row was ever committed to that table, the load still waits
+  until `statement_timeout` (#2216).
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
@@ -366,8 +401,18 @@ returning no rows.
   indexes of the table again.
 - The writer reserves row numbers one whole row group at a time. A row group that
   it flushes with fewer than `stripe_row_limit` rows therefore leaves a gap in
-  the row-number space. A row number must be unique and stable, and nothing more.
-  The gap does no damage.
+  the row-number space. The space is finite. A row number maps to an item
+  pointer, so about 1.25 trillion row numbers exist at the default 8 kB block
+  size. Every transaction that writes to the table uses up at least
+  `stripe_row_limit` of them, however few rows it writes. At the default 150000
+  that is about 8.3 million writing transactions; at the largest
+  `stripe_row_limit`, 2147483647, it is 582. When the next reservation would
+  pass the end, the write fails with SQLSTATE 54000 ("has run out of row
+  numbers"). Run `pgcolumnar.vacuum` on the table to renumber its rows and free
+  the space again (#2073). A table written by an older version may already hold
+  rows past the end. A sequential scan still reads them, but index scans may
+  miss them. Writes to such a table fail with 54000 too. Run
+  `pgcolumnar.vacuum` on it.
 - A declared `sort_by` key (#288) and `pgcolumnar.vacuum_sorted` are **one-shot**.
   Rows that an insert adds after a sort go in at the end, in insertion order. No
   operation sorts them again. Skip quality therefore decreases until the next
@@ -623,8 +668,9 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   the transaction on this error, as you retry one at `REPEATABLE READ`. The
   behavior is stricter than a heap at `READ COMMITTED`. A heap re-applies both
   updates transparently there; pgColumnar makes the loser retry. The same holds
-  for a row an `UPDATE` moves to another partition. On a table with a unique index,
-  an `UPDATE` serializes each row as it reaches it, not at the end of the statement.
+  for a row an `UPDATE` moves to another partition. Some tables have a unique index,
+  immediate or deferrable, or an exclusion constraint. On those, an `UPDATE`
+  serializes each row as it reaches it, not at the end of the statement.
   Two multi-row `UPDATE`s that reach shared rows in opposite orders can therefore
   deadlock. One of them then gets `deadlock_detected` (40P01), which is also
   retryable. The GUC
@@ -643,6 +689,16 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `test/serializable.sh` covers two shapes. In one, each transaction updates a row,
   in the same row group or in different ones. In the other, each inserts a row after
   a scan of the whole table or an index scan.
+- At `REPEATABLE READ` and `SERIALIZABLE`, `INSERT ... ON CONFLICT DO NOTHING` can
+  fail with `serialization_failure` (40001) on a conflicting row that did not
+  change. This happens when `pgcolumnar.compact_rewrite` or `pgcolumnar.recluster`
+  moved that row and committed after the transaction took its snapshot. The
+  autovacuum daemon runs both. Each copies the rows it moves to new row numbers, in
+  a row group its own transaction writes. The older snapshot cannot see that copy,
+  so PostgreSQL treats the row as changed by another transaction. A heap table does
+  not fail here, because `VACUUM` moves no row. Retry the transaction: the retry
+  takes a new snapshot, sees the moved row, and skips the insert.
+  `test/am_contracts.sh` checks this behavior (#2060).
 - Concurrent inserts of the same unique key go in sequence. The server therefore
   always finds the conflict. Before a new row reaches the uniqueness check, the
   access method takes an advisory lock with the scope of the transaction. The key
@@ -653,15 +709,51 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `pgcolumnar.unique_lock_buckets` sets and which defaults to 128. Keys hash into
   those buckets. Two keys that are not related can share a bucket. Such keys go
   in sequence when they do not need to, but they never fail to go in sequence
-  when they must. This applies to unique, immediate and valid
-  indexes. It includes multi-column indexes, partial indexes and expression
-  indexes. Some indexes use a single lock for the whole index
-  instead. The first is an index whose operator class does not match
+  when they must. This applies to valid unique indexes, immediate or
+  deferrable, and to exclusion constraints. It includes multi-column indexes,
+  partial indexes and expression indexes. Some indexes use a single lock for the
+  whole index instead. The first is an index whose operator class does not match
   the default equality of its key type. The second is an index whose key type has
-  no hash support. A
+  no hash support. The third is an exclusion constraint, because its operator,
+  such as `&&`, need not be equality (#2063). The lock is held until the
+  transaction ends. While one insert statement into a table with an exclusion
+  constraint runs, a second insert into that table waits for the first
+  transaction. It waits even when its row does not overlap. A row whose key holds
+  a NULL takes no lock and does not wait at that point. After the first statement
+  ends, any second insert into a pgcolumnar table waits while the first
+  transaction is open. That holds for any key, with or without an index. So two transactions that insert into two pgcolumnar tables in opposite
+  order can deadlock even when no rows conflict. One of them then gets
+  `deadlock_detected` (40P01). On heap both would commit. Retry the transaction
+  on that error. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
-  `pgcolumnar.enable_unique_insert_lock = off`.
+  `pgcolumnar.enable_unique_insert_lock = off`. The locks use the shared lock
+  table. One statement that inserts into many partitions, each with a unique
+  index, immediate or deferrable, can fail with `out of shared memory`. Raise
+  `max_locks_per_transaction` if it does.
+- Two writers can deadlock on one table with no maintenance running (#2184). A
+  writer holds two locks to commit. One is the delete lock of each row group it
+  deletes from. The other is the table's storage-row lock, which every flush of
+  new rows takes. It
+  can take them in either order. A transaction that deletes, scans and then
+  inserts takes the delete lock first; one that inserts, scans and then deletes
+  takes the storage-row lock first. When two such transactions meet, one gets
+  `deadlock_detected` (40P01). Retry it, as with any deadlock.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
+  do not queue behind them. Before it writes, a rewrite needs the storage-row lock
+  and every row group's delete lock at once. It waits for each busy lock alone,
+  holding none, and tries again, so it never closes a deadlock with a writer. It
+  can still get 40P01 when it waits inside a deadlock between two writers. A steady
+  stream of short delete transactions can keep one lock busy at every try. After
+  `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
+  `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
+  its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
+  its row groups wait for it to commit.
+- Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
+  transaction. The first verb keeps the storage-row lock until commit. A second
+  verb in the same transaction then waits for a busy row group while it holds that
+  lock, and a writer can get 40P01. The maintenance daemon runs both verbs in one
+  transaction when both are due on a table, so it can meet this case (#2194).
 
 ## Row locking
 
@@ -1023,7 +1115,24 @@ so you cannot leave the column out, and declaring it as a scalar fails too
 example with pyarrow.
 `import_arrow` refuses a list of lists or a list of maps for an array column
 too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
-a large list, which it does not read.
+a large list, which it does not read. For the same reason it refuses a large
+binary, a large string, a binary view and a string view, at any depth (#2097).
+To import such a column, cast it to binary or string first, for example with
+pyarrow.
+`import_arrow` reads an Arrow column only into a column of the same type family.
+For example, it refuses a float64 for a `bigint` column and a string for a
+`bigint` column, with SQLSTATE 42804 (#2082). It does not convert the values.
+It reads four pairings across families. A signed int64 reads into `timestamp`
+or `timestamptz` as microseconds since 1970-01-01. A duration reads into
+`bigint` as its count; the unit is not stored. A string reads into `bytea`.
+A binary reads into `text`, `varchar`, `json` and `jsonb`. It also reads into a
+`numeric` declared without a precision or with one above 38, but not into a
+`numeric(p,s)` with `p` up to 38.
+A decimal reads only into a `numeric(p,s)` with `p` up to 38. `import_arrow`
+refuses a decimal for a `numeric` declared without a precision or with one
+above 38, with SQLSTATE 42804. To import such a column, declare the target
+as `numeric(p,s)` with `p` up to 38, or cast the column to string first.
+`import_arrow` does not read a Null-type column into any column.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |
@@ -1034,7 +1143,7 @@ a large list, which it does not read.
 | `bytea` | yes | yes | yes | yes |
 | `date`, `time`, `timestamp`, `timestamptz` | yes | yes | yes | yes |
 | `uuid` | yes | yes | yes | yes |
-| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL, or UINT_64) |
+| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes (decimal into `numeric(p,s)`, `p` <= 38) | yes (DECIMAL, or UINT_64) |
 | `json`, `jsonb` | yes | yes | yes | no |
 | one-dimensional array of the above | yes | yes | yes | yes |
 | composite of the above | yes | yes | yes | yes |
@@ -1066,6 +1175,40 @@ column. Arrow export and import carry `numeric` in either form.
 The exporter can write `json` and `jsonb` to Parquet, and other tools can read
 them. pgColumnar cannot import them from Parquet at this time. Arrow supports
 both types in each direction.
+
+`export_arrow` refuses a `timestamp` or `timestamptz` after
+294247-01-10 04:00:54.775807. Arrow stores a timestamp as 64-bit microseconds since
+1970-01-01, and that is the last value it holds. PostgreSQL timestamps run to
+294276-12-31. The export fails with `out of range for an Arrow timestamp`
+(SQLSTATE 22008), names the table column, and writes no file. For a value
+inside an array or composite column, it names that column, not the array element
+or the field. It writes `infinity` and `-infinity` as null, as before.
+
+## Write size limits
+
+A row group holds at most `stripe_row_limit` rows, and at most 256 MiB of values
+summed over its columns (#2071). Before a row would take the row group past
+256 MiB, the writer writes the row group and starts a new one. Wide rows therefore
+make row groups with fewer rows than `stripe_row_limit`. For example, 150000 rows
+of one 8 KB text column make five row groups, not one. A row larger than 256 MiB
+goes in a row group of its own.
+
+A single row whose values sum past about 1 GiB cannot be stored. The writer still
+builds one row group's values in one buffer, and PostgreSQL caps a buffer at 1 GiB.
+Heap can hold such a row when it TOASTs each value on its own, for example six
+200 MB `bytea` values. Copying that row into a pgcolumnar table fails with
+`string buffer exceeds maximum allowed length (1073741823 bytes)`, or, when the
+server is short of memory, the backend can be ended first. #2178 tracks a clean
+refusal or a write path without this limit.
+
+The 256 MiB is counted before compression, so it holds even for values that
+compress to almost nothing. It is not a setting.
+
+Before #2071, a load failed once one column's values in one row group passed
+1 GiB, with PostgreSQL's error `string buffer exceeds maximum allowed length
+(1073741823 bytes)`. With the default limits, that was a column averaging more
+than about 7 KB per row. Lowering `stripe_row_limit` and `chunk_group_row_limit`
+is no longer needed for such rows.
 
 ## Export size limits
 
@@ -1348,6 +1491,15 @@ table at its current snapshot. It has these limits:
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet. The reader accepts the file format in
   any case, so `parquet` and `PARQUET` both read.
+- The reader does not apply a format-version-3 field's `initial-default`, the
+  value older data files must read for a column added later (#2087). It refuses
+  such a field with SQLSTATE 0A000 rather than read those rows as null. The
+  refusal applies when the field is an output column, or the column an
+  equality delete compares. A query that leaves the field out still reads. A
+  `pgcolumnar_iceberg` foreign table refuses any scan when one of its columns
+  has an `initial-default`. A null `initial-default` counts as none. The
+  reader refuses the field even when every data file carries it, and also in a
+  metadata file whose `format-version` is lower than 3.
 - The table metadata file may be plain JSON or gzip-compressed. Writers produce a
   gzip file when the table property `write.metadata.compression-codec` is `gzip`,
   and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects

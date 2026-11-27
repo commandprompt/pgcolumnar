@@ -772,8 +772,11 @@ jobs:
           # PGC_REQUIRE_ISOLATION turns a missing pg_isolation_regress into a
           # failure instead of a skip (#247), so the seven columnar race specs
           # cannot report green without executing.
+          # GITHUB_BASE_REF is passed by name because `sudo -E` stopped carrying
+          # it when ubuntu-latest moved to ubuntu-26.04. Without it the ledger
+          # gate cannot find the PR's base, and every PR fails here.
           sudo -E env "PATH=$PATH" PGC_SKIP_TIMING=1 PGC_JOBS=4 \
-            PGC_REQUIRE_ISOLATION=1 \
+            PGC_REQUIRE_ISOLATION=1 "GITHUB_BASE_REF=${GITHUB_BASE_REF:-}" \
             bash test/run_all_versions.sh /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
 
       - name: Collect logs on failure

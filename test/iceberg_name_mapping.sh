@@ -169,6 +169,65 @@ check "...and its other columns still carry real data" \
 	        AS t(id bigint, region text, amount int)")" "$REGIONS_ALL"
 check "backend still up after the null-fill reads" "$(survived "$BEFORE")" "1"
 
+# ---- equality deletes over an id-less file (#2088) --------------------------
+# An imported table that later receives an equality delete. The delete file
+# carries field ids; the data file does not. The probe that finds the deleted
+# rows must bind the delete columns through the same mapping the data read
+# uses. Before the fix it ignored the mapping, and the scan failed with a hint
+# asking for the mapping the table already has.
+BEFORE="$(crashes)"
+check "an equality delete on a long column applies to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,3|us|30,5|us|50"
+# The same delete with the query's columns in another order. The probe must bind
+# the delete columns through the mapping's field ids, not the query's: every
+# other arm lists the columns in mapping order, so the two id lists agree there.
+check "an equality delete applies when the query lists the columns in another order" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq.metadata.json')
+	        AS t(amount int, id bigint, region text)")" "1|eu|10,3|us|30,5|us|50"
+# Deletes on more than one column. Every arm above reads one delete column, so
+# a probe that drops the mapping whenever it reads more than one passes them
+# all. A delete keyed on (id, region) removes (2,'eu') and (4,'eu'); row 4 is
+# in 'us', so it stays.
+check "an equality delete keyed on two columns applies to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq2col.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,3|us|30,4|us|40,5|us|50"
+# Two one-column delete files on one data file: id IN (2, 4) and amount = 30.
+check "two equality-delete files on different columns both apply to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq2files.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,5|us|50"
+# A delete keyed on (id, amount) where the mapping has no name for amount. It is
+# refused as the one-column unbound delete below is: reading amount as null
+# would match no delete row and keep row 3.
+check "a two-column equality delete with one column the mapping does not bind is refused, naming it" \
+	"$(errmsg_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmeq2unbound.metadata.json')
+	              AS t(id bigint, region text, amount int)" | grep -c "no Parquet column has field id 3")" "1"
+check "an equality delete on a string column applies to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeqstr.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "3|us,4|us,5|us"
+# The mapping does not bind the delete column. The delete is refused, as one on
+# a column missing from an older data file is: reading the column as null would
+# keep the row the delete removes.
+check "an equality column the mapping does not bind is still refused (22023)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmequnbound.metadata.json')
+	                AS t(id bigint, region text, amount int)")" "22023"
+check "...and the refusal names the unbound field id" \
+	"$(errmsg_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmequnbound.metadata.json')
+	              AS t(id bigint, region text, amount int)" | grep -c "no Parquet column has field id 3")" "1"
+# The positive control for the refusal above: the same amount = 30 delete under
+# the full mapping applies. So the refusal comes from the missing mapping entry,
+# not from a delete on amount, the last mapped column, being refused.
+check "an equality delete on the column the unbound arm uses applies once the mapping binds it" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeqamt.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,2|eu|20,4|us|40,5|us|50"
+check "backend still up after the equality-delete reads" "$(survived "$BEFORE")" "1"
+
 # ---- the name cap, and the allocation that opens for it (#711) --------------
 # ICE_MAX_NAME_MAPPING bounds the NAME count, and the entry count is not an
 # upper bound on it: one entry carries a whole list of names, so a single entry

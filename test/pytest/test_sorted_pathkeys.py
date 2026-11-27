@@ -502,8 +502,16 @@ def test_a_recorded_name_that_no_longer_resolves_is_not_a_claim(fx, expect):
         cur.execute("INSERT INTO rnd SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rnd', 'k', 'j')")
         cur.execute("ALTER TABLE rnd DROP COLUMN k")
+        # Since #2069 the drop clears the mark. A build before #2069 left the dropped
+        # name in place, and a table upgraded from it still carries it, so the old mark
+        # is written back by hand to keep the refusal under test.
+        expect.text(str(_storage(cur, "rnd", "COALESCE(sorted_by::text, '-')")), "-",
+                    "the drop clears the recorded key (#2069)")
+        cur.execute("UPDATE pgcolumnar.storage SET sorted_by = '{k,j}', "
+                    "sorted_kind = 'lexicographic' "
+                    "WHERE storage_id = pgcolumnar.get_storage_id('rnd')")
         expect.text(str(_storage(cur, "rnd", "sorted_by::text")), "{k,j}",
-                    "the recorded key still names the dropped column")
+                    "premise: a mark left by an older build still names the dropped column")
         expect.at_least(_one(cur, "SELECT count(*) FROM (SELECT j < lag(j) OVER () AS d "
                                   "FROM rnd) z WHERE d"), 1,
                         "premise: and j alone really is NOT ordered, so a claim on it "

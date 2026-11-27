@@ -247,6 +247,121 @@ vsort "'sb'"
 check "and a bare vacuum_sorted() is a no-op, not a rewrite on a different key" \
 	"$(moved sb "$S")" "noop"
 
+# ==================== DROP COLUMN of a sort-key column (#2069) ===============
+# A drop is the other way a name comes free. PostgreSQL renames a dropped
+# column to "........pg.dropped.N........", so its old name can be given to
+# another column by a plain RENAME, which writes no rows. If the mark still
+# named the dropped column, the stored name would resolve to that other column:
+# the planner would drop the Sort for ORDER BY on it (a wrong answer), and the
+# vacuum_sorted gate would skip the work. The drop must clear the mark.
+#
+# Not mk's data: there a = 0 exactly where b = 0, so the first rows in a's
+# order are also b's first rows and the wrong-answer arm would pass on the
+# defect. Here b is a permutation of 0..19999 that starts at 7919 in a's order.
+psql_run "CREATE TABLE vd_t (a int, b int) USING pgcolumnar;"
+psql_run "INSERT INTO vd_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+check_num "premise: vd_t loaded every row" "$(q "SELECT count(*) FROM vd_t;")" "20000"
+vsort "'vd_t','a'"
+check "premise: before the drop, the mark records key {a}" "$(markof vd_t)" "{a}/lexicographic"
+psql_run "ALTER TABLE vd_t DROP COLUMN a;"
+check "DROP COLUMN of the sort-key column clears the mark" "$(markof vd_t)" "-/-"
+psql_run "ALTER TABLE vd_t RENAME COLUMN b TO a;"
+check "premise: the column that took the name a is NOT ordered" \
+	"$([ "$(descents vd_t a)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
+check "after the drop and a rename onto the name, ORDER BY plans a Sort" \
+	"$(sorts 'SELECT a FROM vd_t ORDER BY a LIMIT 5')" "yes"
+check "THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values" \
+	"$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vd_t ORDER BY a LIMIT 5) x;")" \
+	"0,1,2,3,4"
+S="$(storid vd_t)"
+vsort "'vd_t','a'"
+check "and vacuum_sorted on the new a does the work" "$(moved vd_t "$S")" "rewrote"
+check_num "and vd_t really is ordered by a afterwards" "$(descents vd_t a)" "0"
+
+# ---- a drop that touches no sort-key column leaves the mark alone ----------
+mk vd_o
+psql_run "ALTER TABLE vd_o ADD COLUMN spare int;"
+vsort "'vd_o','a'"
+psql_run "ALTER TABLE vd_o DROP COLUMN spare;"
+check "dropping an unrelated column keeps the mark" "$(markof vd_o)" "{a}/lexicographic"
+S="$(storid vd_o)"
+vsort "'vd_o','a'"
+check "and the gate still fires after an unrelated drop" "$(moved vd_o "$S")" "noop"
+
+# ---- a drop issued on a partitioned parent clears the partition's mark -----
+psql_run "CREATE TABLE vdp (k int, j int) PARTITION BY RANGE (j);"
+psql_run "CREATE TABLE vdp1 PARTITION OF vdp FOR VALUES FROM (0) TO (100000) USING pgcolumnar;"
+psql_run "INSERT INTO vdp SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
+          FROM generate_series(1,20000) g;"
+vsort "'vdp1','k'"
+check "premise: the partition's mark records key {k}" "$(markof vdp1)" "{k}/lexicographic"
+psql_run "ALTER TABLE vdp DROP COLUMN k;"
+check "the PARTITION's mark is cleared by a drop issued on the parent" "$(markof vdp1)" "-/-"
+
+# ---- a Z-order mark is cleared when any one of its columns is dropped -------
+mk vd_z
+psql_run "ALTER TABLE vd_z ADD COLUMN c int;"
+psql_run "SELECT pgcolumnar.recluster('vd_z','a','b');"
+check "premise: vd_z's mark records {a,b} as zorder" "$(markof vd_z)" "{a,b}/zorder"
+psql_run "ALTER TABLE vd_z DROP COLUMN b;"
+check "dropping one Z-order column clears the mark" "$(markof vd_z)" "-/-"
+
+# ---- a drop issued on an inheritance parent clears the child's mark --------
+# Not (LIKE ...) INHERITS: LIKE makes the child's columns local, and PostgreSQL
+# then keeps the child's column when the parent drops its own.
+psql_run "CREATE TABLE vdi (k int, j int);"
+psql_run "CREATE TABLE vdi1 () INHERITS (vdi) USING pgcolumnar;"
+psql_run "INSERT INTO vdi1 SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
+          FROM generate_series(1,20000) g;"
+vsort "'vdi1','k'"
+check "premise: the inheritance child's mark records key {k}" "$(markof vdi1)" "{k}/lexicographic"
+psql_run "ALTER TABLE vdi DROP COLUMN k;"
+check "the inheritance CHILD's mark is cleared by a drop issued on the parent" "$(markof vdi1)" "-/-"
+
+# ---- a drop on a HEAP table succeeds, with and without the extension -------
+# The library is preloaded, so the drop hook runs for every column drop in
+# every database. Only its columnar-AM test keeps a heap table away from
+# PgColumnarStorageId, which reads block 0 as a columnar metapage. Without that
+# test an empty heap's drop fails with "could not read blocks 0..0", a
+# populated one's with "unsupported columnar format version", and the column
+# stays. Each reading is the drop's status, then the live column count.
+smr_dbrun() {	# smr_dbrun DB SQL -> rc=0, or rc=N and the first ERROR line
+	local out rc
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$1" -v ON_ERROR_STOP=1 -At -c "$2" 2>&1)"
+	rc=$?
+	[ "$rc" = 0 ] && { echo "rc=0"; return; }
+	echo "rc=$rc $(printf '%s\n' "$out" | grep -m1 -E 'ERROR|FATAL' | head -c 120)"
+}
+smr_dbq() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$1" -At -c "$2" 2>/dev/null || true
+}
+smr_heapdrop() {	# smr_heapdrop DB TABLE ROWS -> "rc=0/live=1" when the drop worked
+	local st
+	smr_dbrun "$1" "DROP TABLE IF EXISTS $2; CREATE TABLE $2 (a int, b int) USING heap;
+	                INSERT INTO $2 SELECT g, g FROM generate_series(1,$3) g;" >/dev/null
+	st="$(smr_dbrun "$1" "ALTER TABLE $2 DROP COLUMN a;")"
+	echo "$st/live=$(smr_dbq "$1" "SELECT count(*) FROM pg_attribute
+	                              WHERE attrelid = '$2'::regclass AND attnum > 0 AND NOT attisdropped;")"
+}
+psql_admin "DROP DATABASE IF EXISTS smr_nocx;" >/dev/null 2>&1
+psql_admin "CREATE DATABASE smr_nocx;" >/dev/null 2>&1
+check "premise: the extension is absent in the second database" \
+	"$(smr_dbq smr_nocx "SELECT count(*) FROM pg_extension WHERE extname='pgcolumnar'")" "0"
+check "premise: and the library is loaded there, so its drop hook runs" \
+	"$(smr_dbq smr_nocx "SELECT CASE WHEN current_setting('shared_preload_libraries') ~ 'pgcolumnar'
+	                      THEN 'loaded' ELSE 'not loaded' END")" "loaded"
+check "a column of an EMPTY heap table drops, in this database" \
+	"$(smr_heapdrop "$PGC_DB" vd_he 0)" "rc=0/live=1"
+check "a column of a POPULATED heap table drops, in this database" \
+	"$(smr_heapdrop "$PGC_DB" vd_hf 1000)" "rc=0/live=1"
+check "a column of an EMPTY heap table drops, in a database without the extension" \
+	"$(smr_heapdrop smr_nocx vd_he 0)" "rc=0/live=1"
+check "a column of a POPULATED heap table drops, in a database without the extension" \
+	"$(smr_heapdrop smr_nocx vd_hf 1000)" "rc=0/live=1"
+psql_admin "DROP DATABASE IF EXISTS smr_nocx;" >/dev/null 2>&1
+
 # ============================ recluster (#415) ===============================
 # The same comparison, character for character, in the online recluster gate.
 mkz() {

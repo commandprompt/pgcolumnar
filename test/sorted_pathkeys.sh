@@ -462,8 +462,17 @@ psql_run "SELECT pgcolumnar.vacuum_sorted('rnd', 'k', 'j');"
 # legitimately needs no Sort, so that shape cannot test a refusal at all. With
 # the first column gone nothing about the remaining order can be claimed: j is
 # ordered only WITHIN equal k, so claiming j alone would be a wrong answer.
+#
+# Since #2069 the drop clears the mark, so a drop alone no longer leaves a name
+# that cannot resolve. A build before #2069 did leave one, and a table upgraded
+# from it still carries it, so the arm writes that old mark back by hand.
 psql_run "ALTER TABLE rnd DROP COLUMN k;"
-check "the recorded key still names the dropped column" \
+check "the drop clears the recorded key (#2069)" \
+	"$(q "SELECT COALESCE(sorted_by::text,'-') FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('rnd');")" \
+	"-"
+psql_run "UPDATE pgcolumnar.storage SET sorted_by = '{k,j}', sorted_kind = 'lexicographic'
+          WHERE storage_id = pgcolumnar.get_storage_id('rnd');"
+check "premise: a mark left by an older build still names the dropped column" \
 	"$(q "SELECT sorted_by::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('rnd');")" \
 	"{k,j}"
 check "premise: and j alone really is NOT ordered, so a claim on it would be wrong" \

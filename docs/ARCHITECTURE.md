@@ -317,11 +317,12 @@ the ordinary btree check then catches the duplicate. Equal keys map to one lock
 by hashing each key column with its type's default hash function (consistent
 with the index equality: `numeric` scale, `citext` case, collation-aware text),
 combining columns, and mapping into a bounded number of buckets per index
-(`pgcolumnar.unique_lock_buckets`) to bound the lock budget. Unique, immediate,
-valid indexes are handled, including multi-column, partial (predicate evaluated
-per row), and expression indexes; an index whose operator class is not provably
-the type default, or whose key type has no hash proc, falls back to one coarse
-per-index lock. A relcache-invalidated backend-local cache holds the per-relation
+(`pgcolumnar.unique_lock_buckets`) to bound the lock budget. Valid unique
+indexes, immediate or deferrable, are handled, including multi-column, partial
+(predicate evaluated per row), and expression indexes; an index whose operator
+class is not provably the type default, or whose key type has no hash proc, falls
+back to one coarse per-index lock. An exclusion constraint always takes the coarse
+per-index lock, because its operator need not be equality (#2063). A relcache-invalidated backend-local cache holds the per-relation
 unique-index metadata so the per-row cost is a hash plus a lock acquire.
 
 ### columnar_index.c

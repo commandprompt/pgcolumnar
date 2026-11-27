@@ -1129,6 +1129,42 @@ def test_merge_exact_float_sums(pgc_conn, expect):
     expect.rows(got, want, "merge: float sums of exactly representable values merge to core's")
 
 
+def _dp_lone_infinity(conn, name):
+    """#2068: each key's first-half runs hold one Infinity and four NULLs, and its
+    second-half runs hold finite values, in a float8 column f and a real column r.
+    Core's float8_accum sets Sxx to NaN at an infinite first value, so combining such a
+    run with a finite one returns Infinity. A run state of {1, Infinity, 0} makes the
+    combine raise "value out of range: overflow" instead."""
+    inf = ("CASE WHEN g <= 15000 AND g % 5 = 0 THEN 'Infinity'::{t}"
+           " WHEN g <= 15000 THEN NULL ELSE (g % 64) / 8.0 END")
+    _dp_table(conn, name, "k int, f float8, r real, b bigint",
+              f"(g / 5) % 3000, {inf.format(t='float8')}, {inf.format(t='real')}, g")
+
+
+def test_hand_off_avg_float_of_a_lone_infinity_run(pgc_conn, expect):
+    conn = pgc_conn
+    _dp_lone_infinity(conn, "tdpv")
+    query = "SELECT k, avg(f), avg(r) FROM {} GROUP BY k"
+    _exec(conn, f"PREPARE p_tdpv_f AS {query.format('tdpv')}")
+    try:
+        plan = _plan_text(conn, "EXECUTE p_tdpv_f")
+    finally:
+        _exec(conn, "DEALLOCATE p_tdpv_f")
+    planned, got, want = _dp_run(conn, "tdpv", query)
+    finalize = int('"Finalize"' in plan)
+    expect.text(f"{finalize}|{planned}", "1|1",
+                "premise: the tdpv avg plan is a Partial grouped node under a core Finalize")
+    expect.rows(got, want, "hand-off: a run whose only avg(float8) and avg(real) value is Infinity combines to Infinity under a core Finalize, as heap does (#2068)")
+
+
+def test_merge_avg_float_of_a_lone_infinity_run(pgc_conn, expect):
+    conn = pgc_conn
+    _dp_lone_infinity(conn, "tdpw")
+    planned, got, want = _dp_run(conn, "tdpw", "SELECT k, avg(f), avg(r), sum(b) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdpw plan is the grouped node")
+    expect.rows(got, want, "merge: a run whose only avg(float8) and avg(real) value is Infinity merges to Infinity, as heap does (#2068)")
+
+
 def test_merge_a_key_equal_but_not_identical(pgc_conn, expect):
     """numeric 3 and 3.00 are one group; core shows the first seen, and runs merge in
     flush order, so the earlier run's key is shown."""

@@ -109,6 +109,21 @@ check "a row that violates it is still rejected" \
 	"$(case "$bad" in *"violates foreign key constraint"*) echo yes ;; *) echo "no ($bad)" ;; esac)" \
 	"yes"
 
+# A deferred foreign key checks each referencing row at commit, and core first asks
+# the access method whether the row is still live under SnapshotSelf
+# (RI_FKey_check). A row deleted before commit is not, so heap skips its check and
+# commits. pgcolumnar answered "live" without looking until #2060, so the same
+# transaction failed with 23503 on a row that no longer existed. The check above is
+# the control: a row that stays must still be rejected.
+psql_run "DROP TABLE IF EXISTS fk_dc_child;
+	CREATE TABLE fk_dc_child (id int, pid int REFERENCES fk_h_parent(id)
+		DEFERRABLE INITIALLY DEFERRED) USING pgcolumnar;" >/dev/null
+dc="$(psql_run "BEGIN; INSERT INTO fk_dc_child VALUES (3, 99999);
+	DELETE FROM fk_dc_child WHERE id = 3; COMMIT;" 2>&1 || true)"
+check "a deferred foreign key does not check a referencing row deleted before commit, as heap" \
+	"$(case "$dc" in *ERROR*) echo "no ($dc)" ;; *) echo ok ;; esac)|$(q "SELECT count(*) FROM fk_dc_child;")" \
+	"ok|0"
+
 # --- 4. constraints that do not need a row lock are unaffected -----------------
 
 # The rule keys on the constraint being FOREIGN and on the referenced side being

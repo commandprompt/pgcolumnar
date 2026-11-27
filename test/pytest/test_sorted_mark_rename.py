@@ -9,6 +9,8 @@ the gate skips work it must do, and ORDER BY returns rows out of order. Asserted
 mark follows a rename, on a plain table, a partition (renamed through its parent), and
 an inheritance child; an unrelated rename leaves the storage row alone; the planner
 sorts again after a swap; the declared sort_by key follows too; and recluster's mark.
+DROP COLUMN of a sort-key column clears the mark (#2069), on a plain table, a partition
+(dropped through its parent) and a Z-order run; an unrelated drop leaves it.
 
 HOW A CALL IS READ. A vacuum_sorted call is read by the table's storage id: "noop",
 "rewrote", "call failed: ..." when the call errored, or "no reading" when a storage id
@@ -26,6 +28,7 @@ import pytest
 from pgc_vacuity import QUERY_ERROR, query_error
 
 DB = "pgc_sorted_mark_rename"
+NOCX = "pgc_sorted_mark_rename_nocx"
 LOAD = "SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000 FROM generate_series(1,20000) g"
 
 
@@ -229,6 +232,73 @@ def sm(pgc_cluster):
         d.vsort("sb")
         r["sb noop"] = d.moved("sb", s)
 
+        # DROP COLUMN of a sort-key column (#2069). Not LOAD: there a = 0 exactly where
+        # b = 0, so a's first rows are also b's and the wrong-answer arm would pass on the
+        # defect. Here b is a permutation of 0..19999 that starts at 7919 in a's order.
+        d.run("CREATE TABLE vd_t (a int, b int) USING pgcolumnar")
+        d.run("INSERT INTO vd_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g")
+        r["vd_t rows"] = d.rows("vd_t")
+        d.vsort("vd_t", "a")
+        r["vd mark before"] = d.mark("vd_t")
+        d.run("ALTER TABLE vd_t DROP COLUMN a")
+        r["vd mark after"] = d.mark("vd_t")
+        d.run("ALTER TABLE vd_t RENAME COLUMN b TO a")
+        r["vd new a"] = d.order("vd_t", "a")
+        r["vd sorts"] = d.sorts("SELECT a FROM vd_t ORDER BY a LIMIT 5")
+        r["vd answer"] = d.q("SELECT string_agg(a::text, ',') FROM (SELECT a FROM vd_t ORDER BY a LIMIT 5) x")
+        s = d.storid("vd_t")
+        d.vsort("vd_t", "a")
+        r["vd work"] = d.moved("vd_t", s)
+        r["vd descents"] = d.descents("vd_t", "a")
+
+        d.mk("vd_o")
+        d.run("ALTER TABLE vd_o ADD COLUMN spare int")
+        d.vsort("vd_o", "a")
+        d.run("ALTER TABLE vd_o DROP COLUMN spare")
+        r["vd_o mark"] = d.mark("vd_o")
+        s = d.storid("vd_o")
+        d.vsort("vd_o", "a")
+        r["vd_o noop"] = d.moved("vd_o", s)
+
+        for sql in ["CREATE TABLE vdp (k int, j int) PARTITION BY RANGE (j)",
+                    "CREATE TABLE vdp1 PARTITION OF vdp FOR VALUES FROM (0) TO (100000) USING pgcolumnar",
+                    f"INSERT INTO vdp {LOAD}"]:
+            d.run(sql)
+        d.vsort("vdp1", "k")
+        r["vdp mark before"] = d.mark("vdp1")
+        d.run("ALTER TABLE vdp DROP COLUMN k")
+        r["vdp mark after"] = d.mark("vdp1")
+
+        d.mk("vd_z")
+        d.run("ALTER TABLE vd_z ADD COLUMN c int")
+        d.run("SELECT pgcolumnar.recluster('vd_z','a','b')")
+        r["vd_z mark before"] = d.mark("vd_z")
+        d.run("ALTER TABLE vd_z DROP COLUMN b")
+        r["vd_z mark after"] = d.mark("vd_z")
+
+        # an inheritance child, dropped through its parent. Not (LIKE ...) INHERITS: LIKE
+        # makes the child's columns local, and the parent's drop then keeps the child's.
+        for sql in ["CREATE TABLE vdi (k int, j int)", "CREATE TABLE vdi1 () INHERITS (vdi) USING pgcolumnar",
+                    f"INSERT INTO vdi1 {LOAD}"]:
+            d.run(sql)
+        d.vsort("vdi1", "k")
+        r["vdi mark before"] = d.mark("vdi1")
+        d.run("ALTER TABLE vdi DROP COLUMN k")
+        r["vdi mark after"] = d.mark("vdi1")
+
+        # a heap column drop, here and in a database without the extension: the preloaded
+        # drop hook must leave heap tables alone (#2135 review, mutant M3d)
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {NOCX} WITH (FORCE)")
+            a.execute(f"CREATE DATABASE {NOCX}")
+        nx = _Db(pgc_cluster.dsn(dbname=NOCX))
+        r["nocx ext"] = nx.q("SELECT count(*) FROM pg_extension WHERE extname='pgcolumnar'")
+        r["nocx lib"] = nx.q("SELECT CASE WHEN current_setting('shared_preload_libraries') ~ 'pgcolumnar' "
+                             "THEN 'loaded' ELSE 'not loaded' END")
+        for key, db, t, n in [("heap empty", d, "vd_he", 0), ("heap full", d, "vd_hf", 1000),
+                              ("nocx heap empty", nx, "vd_he", 0), ("nocx heap full", nx, "vd_hf", 1000)]:
+            r[key] = _heapdrop(db, t, n)
+
         # recluster's mark
         d.mkz("rr_ctl")
         r["rr_ctl rows"] = d.rows("rr_ctl")
@@ -246,6 +316,19 @@ def sm(pgc_cluster):
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {NOCX} WITH (FORCE)")
+
+
+def _heapdrop(d, t, n):
+    """-> "rc=0/live=1" when DROP COLUMN worked on a heap table of n rows, else the
+    drop's error and the live column count."""
+    d.run(f"DROP TABLE IF EXISTS {t}")
+    d.run(f"CREATE TABLE {t} (a int, b int) USING heap")
+    d.run(f"INSERT INTO {t} SELECT g, g FROM generate_series(1,{n}) g")
+    err = d.run(f"ALTER TABLE {t} DROP COLUMN a")
+    live = d.q(f"SELECT count(*) FROM pg_attribute WHERE attrelid = '{t}'::regclass "
+               "AND attnum > 0 AND NOT attisdropped")
+    return f"{'rc=0' if not err else 'rc=1 ' + err}/live={live}"
 
 
 def _positive(v, yes, no):
@@ -424,6 +507,105 @@ def test_the_two_catalogs_still_agree(sm, expect):
 
 def test_a_bare_vacuum_sorted_is_a_no_op(sm, expect):
     expect.text(sm["sb noop"], "noop", "and a bare vacuum_sorted() is a no-op, not a rewrite on a different key")
+
+
+# ---- DROP COLUMN of a sort-key column (#2069) --------------------------------------------
+# A drop frees the column's name: PostgreSQL renames a dropped column to
+# "........pg.dropped.N........". A RENAME that writes no rows can then give the name to
+# another column, and a mark still naming it would point the planner and the gate there.
+
+def test_vd_t_loaded_every_row(sm, expect):
+    expect.num(sm["vd_t rows"], 20000, "premise: vd_t loaded every row")
+
+
+def test_before_the_drop_the_mark_records_a(sm, expect):
+    expect.text(sm["vd mark before"], "{a}/lexicographic", "premise: before the drop, the mark records key {a}")
+
+
+def test_dropping_the_sort_key_column_clears_the_mark(sm, expect):
+    expect.text(sm["vd mark after"], "-/-", "DROP COLUMN of the sort-key column clears the mark")
+
+
+def test_the_column_that_took_the_name_is_not_ordered(sm, expect):
+    expect.text(sm["vd new a"], "unordered", "premise: the column that took the name a is NOT ordered")
+
+
+def test_after_a_drop_and_rename_order_by_plans_a_sort(sm, expect):
+    expect.text(sm["vd sorts"], "yes", "after the drop and a rename onto the name, ORDER BY plans a Sort")
+
+
+def test_after_a_drop_and_rename_order_by_limit_is_right(sm, expect):
+    expect.text(sm["vd answer"], "0,1,2,3,4",
+                "THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values")
+
+
+def test_vacuum_sorted_after_a_drop_does_the_work(sm, expect):
+    expect.text(sm["vd work"], "rewrote", "and vacuum_sorted on the new a does the work")
+
+
+def test_vd_t_is_ordered_by_a_afterwards(sm, expect):
+    expect.num(sm["vd descents"], 0, "and vd_t really is ordered by a afterwards")
+
+
+def test_an_unrelated_drop_keeps_the_mark(sm, expect):
+    expect.text(sm["vd_o mark"], "{a}/lexicographic", "dropping an unrelated column keeps the mark")
+
+
+def test_the_gate_still_fires_after_an_unrelated_drop(sm, expect):
+    expect.text(sm["vd_o noop"], "noop", "and the gate still fires after an unrelated drop")
+
+
+def test_the_partitions_mark_records_k(sm, expect):
+    expect.text(sm["vdp mark before"], "{k}/lexicographic", "premise: the partition's mark records key {k}")
+
+
+def test_a_drop_on_the_parent_clears_the_partitions_mark(sm, expect):
+    expect.text(sm["vdp mark after"], "-/-", "the PARTITION's mark is cleared by a drop issued on the parent")
+
+
+def test_vd_z_mark_records_a_zorder_run(sm, expect):
+    expect.text(sm["vd_z mark before"], "{a,b}/zorder", "premise: vd_z's mark records {a,b} as zorder")
+
+
+def test_dropping_one_zorder_column_clears_the_mark(sm, expect):
+    expect.text(sm["vd_z mark after"], "-/-", "dropping one Z-order column clears the mark")
+
+
+def test_the_inheritance_childs_mark_records_k(sm, expect):
+    expect.text(sm["vdi mark before"], "{k}/lexicographic", "premise: the inheritance child's mark records key {k}")
+
+
+def test_a_drop_on_the_parent_clears_the_inheritance_childs_mark(sm, expect):
+    expect.text(sm["vdi mark after"], "-/-",
+                "the inheritance CHILD's mark is cleared by a drop issued on the parent")
+
+
+# ---- a heap column drop, with and without the extension (#2135 review, M3d) ------------
+
+def test_the_extension_is_absent_in_the_second_database(sm, expect):
+    expect.text(sm["nocx ext"], "0", "premise: the extension is absent in the second database")
+
+
+def test_the_library_is_loaded_in_the_second_database(sm, expect):
+    expect.text(sm["nocx lib"], "loaded", "premise: and the library is loaded there, so its drop hook runs")
+
+
+def test_an_empty_heap_tables_column_drops(sm, expect):
+    expect.text(sm["heap empty"], "rc=0/live=1", "a column of an EMPTY heap table drops, in this database")
+
+
+def test_a_populated_heap_tables_column_drops(sm, expect):
+    expect.text(sm["heap full"], "rc=0/live=1", "a column of a POPULATED heap table drops, in this database")
+
+
+def test_an_empty_heap_tables_column_drops_without_the_extension(sm, expect):
+    expect.text(sm["nocx heap empty"], "rc=0/live=1",
+                "a column of an EMPTY heap table drops, in a database without the extension")
+
+
+def test_a_populated_heap_tables_column_drops_without_the_extension(sm, expect):
+    expect.text(sm["nocx heap full"], "rc=0/live=1",
+                "a column of a POPULATED heap table drops, in a database without the extension")
 
 
 # ---- recluster ---------------------------------------------------------------------------

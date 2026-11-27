@@ -168,6 +168,17 @@
  */
 #define COLUMNAR_VALID_ITEMPOINTER_OFFSETS ((uint64) MaxHeapTuplesPerPage)
 
+/*
+ * One past the largest row number an item pointer can address (#2073). A block
+ * number holds 32 bits and MaxBlockNumber is the largest valid one, so the last
+ * usable row number is the last offset of block MaxBlockNumber. A row number at
+ * or above this limit would wrap the block number and give the row the item
+ * pointer of a different row. PgColumnarReserveRowNumbers refuses to reserve
+ * past it, and pgcolumnar.row_tid refuses such a row number from SQL.
+ */
+#define COLUMNAR_ROW_NUMBER_LIMIT \
+	(((uint64) MaxBlockNumber + 1) * COLUMNAR_VALID_ITEMPOINTER_OFFSETS)
+
 /* compression codes (spec 5) */
 #define COLUMNAR_COMPRESSION_NONE 0
 #define COLUMNAR_COMPRESSION_PGLZ 1
@@ -286,7 +297,10 @@ extern bool pgcolumnar_objstore_buffered;	/* chunk-granular remote reads (#393) 
 extern bool pgcolumnar_objstore_pin_reads;	/* pin remote reads to one version (#1866) */
 extern char *pgcolumnar_objstore_allowed_endpoints; /* #393 allow-list, SUSET */
 extern int	pgcolumnar_objstore_part_size;	/* #394 remote multipart part size */
-extern char *pgcolumnar_objstore_s3_addressing; /* #621 path|virtual addressing */
+/* pgcolumnar.objstore_s3_addressing (#621); an enum since #2091 */
+#define COLUMNAR_S3_ADDRESSING_PATH		0
+#define COLUMNAR_S3_ADDRESSING_VIRTUAL	1
+extern int	pgcolumnar_objstore_s3_addressing;
 /* #415 autovacuum daemon */
 extern bool pgcolumnar_autovacuum;
 extern int	pgcolumnar_autovacuum_naptime;
@@ -295,6 +309,8 @@ extern double pgcolumnar_autovacuum_recluster_threshold;
 extern bool pgcolumnar_autovacuum_expire;
 extern void PgColumnarAutovacuumRegister(void);
 extern int	pgcolumnar_maintenance_hold_ms;	/* dev/test: hold SUEL this long in a maintenance verb */
+extern int	pgcolumnar_rewrite_lock_timeout;	/* ms a rewrite may spend taking its locks (#2074) */
+extern int	pgcolumnar_vm_set_hold_ms;	/* dev/test: pause lazy VACUUM between VM compute and set */
 
 /* Phase 6 GUCs (spec 8.3) */
 extern bool pgcolumnar_enable_vectorization;	/* vectorized aggregate path */
@@ -575,6 +591,11 @@ extern bool pgcolumnar_enable_end_truncation;
 extern void PgColumnarRequireTableOwner(Relation rel);
 extern void PgColumnarRequireTableOwnerByOid(Oid relid);
 extern void PgColumnarRequireNoRowSecurity(Oid relid);
+/* refuse when this transaction holds a lock its workers would wait on (#2183) */
+extern void PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid,
+											LOCKMODE workerlock);
+/* does this transaction hold the storage-row lock of storageId? (#2211) */
+extern bool PgColumnarStorageRowLockHeldByMe(uint64 storageId);
 
 /*
  * Assert-only invariant: a storage's live row-group footprints and its
@@ -597,6 +618,7 @@ extern uint64 PgColumnarNextStorageId(void);
 
 extern void PgColumnarCheckNativeFormatVersion(uint64 storageId, const char *relName);
 extern List *PgColumnarReadRowGroupList(uint64 storageId, Snapshot snapshot);
+extern TransactionId PgColumnarRowGroupXmin(uint64 storageId, uint64 rowNumber);
 extern List *PgColumnarReadZoneMapList(uint64 storageId, uint64 groupNumber,
 									 Snapshot snapshot);
 /*
