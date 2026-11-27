@@ -617,6 +617,12 @@ true until the next version shipped.
   sequential scan already did for its own table. A VACUUM then sees the marks,
   and the write clears any bit it set. The tests also read inside an EXCEPTION
   block that rolls back, and check that the marks still reach the catalog.
+  A DELETE that fails after such a nested read leaves every row live in the
+  next transaction. A second writer of the same rows now waits for the first
+  from the nested statement's start, then gets the documented
+  `serialization_failure` (docs/limitations.md). The #2059 test that commits a
+  DELETE during VACUUM's pause now holds VACUUM 15 s instead of 5 s, because its
+  400,000-row DELETE did not always finish within 5 s on a loaded machine.
   `test/index_only.sh` and `test_index_only.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single

@@ -375,7 +375,7 @@ vm_mid() {
 	vm_before="$(q "$before")"
 	held="SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM $tbl;' AND wait_event_type = 'Extension';"
 
-	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=5000' \
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=15000' \
 		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "VACUUM $tbl;" \
 		> "$PGC_WORKDIR/$tbl.vacuum.out" 2>&1 &
 	vpid=$!
@@ -560,6 +560,138 @@ check "an AFTER trigger reading in an EXCEPTION block during vacuum: the writer 
 check "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$he_ios" "t|t"
 check "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger counts none of the deleted rows, as heap does" "$tr_n|$he_n" "0|0"
 check "an AFTER trigger reading in an EXCEPTION block during vacuum: after commit none of them is counted, as on heap" "$tr_after|$he_after" "0|0"
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 (#2169, review of #2241): a DELETE whose nested statement wrote its
+# marks early, at that statement's start, then fails. Its marks must die with
+# it. The DELETE reads the table through an index-only scan on row 999 (a
+# plpgsql function, so a nested statement) and fails with division by zero on
+# row 1000. The writer's session then runs one more transaction, which is where
+# marks kept past the abort would be written. A fresh session counts the rows
+# through a sequential scan, an index scan and an index-only scan, before and
+# after a VACUUM: all 20,000 rows are live, as on heap.
+# ---------------------------------------------------------------------------
+echo "-- phase 9: a DELETE that fails after a nested statement wrote its marks (#2169)"
+psql_run "CREATE FUNCTION ab_peek(t text, i int) RETURNS bool LANGUAGE plpgsql AS \$\$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %I WHERE id = \$1', t) INTO n USING i;
+	RAISE NOTICE 'peeked';
+	RETURN true;
+END \$\$;"
+
+# q_last SQL: q's last line, the value after any SET tags
+q_last() { local v; v="$(q "$1")"; printf '%s\n' "${v##*$'\n'}"; }
+# ab_counts TABLE: seq/index/index-only counts of TABLE from a fresh session each
+ab_counts() {
+	local seq="SET enable_seqscan = on; SET enable_indexscan = off; SET enable_indexonlyscan = off;"
+	echo "$(q_last "$seq SELECT count(*) FROM $1;")/$(q_last "SET enable_indexonlyscan = off; SELECT count(pad) FROM $1 WHERE id > 0;")/$(q_last "SELECT count(*) FROM $1 WHERE id > 0;")"
+}
+# ab_abort TABLE AM: load, run the failing DELETE and one more transaction in
+# the writer's session, then count. Sets ab_writer, ab_plans, ab_after, ab_vac.
+ab_abort() {
+	local tbl="$1" am="$2" seq plan
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING $am;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	# one psql, three -c: each its own transaction, and an error does not stop the next
+	ab_writer="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate \
+		-c "DELETE FROM $tbl WHERE CASE WHEN id > 1000 THEN false WHEN id = 999 THEN ab_peek('$tbl', id)
+		    WHEN id = 1000 THEN id / (id - 1000) = 1 ELSE true END" \
+		-c "SELECT 'W_END'" 2>&1 | paste -sd '|')"
+	seq="SET enable_seqscan = on; SET enable_indexscan = off; SET enable_indexonlyscan = off;"
+	plan="$(q "$seq EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl;")"
+	ab_plans="$(grep -o 'Seq Scan' <<<"$plan" | head -1)"
+	plan="$(q "SET enable_indexonlyscan = off; EXPLAIN (COSTS OFF) SELECT count(pad) FROM $tbl WHERE id > 0;")"
+	ab_plans="$ab_plans|$(grep -oE 'Index (Only )?Scan' <<<"$plan" | head -1)"
+	plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl WHERE id > 0;")"
+	ab_plans="$ab_plans|$(grep -oE 'Index (Only )?Scan' <<<"$plan" | head -1)"
+	ab_after="$(ab_counts "$tbl")"
+	psql_run "VACUUM $tbl;"
+	ab_vac="$(ab_counts "$tbl")"
+}
+
+ab_abort ab_h heap
+hb_writer="$ab_writer" hb_after="$ab_after" hb_vac="$ab_vac"
+ab_abort ab pgcolumnar
+check "a delete that fails after a nested read: the nested read ran, the delete failed with 22012 and the next transaction ran, as on heap" \
+	"$ab_writer || $hb_writer" "NOTICE:  00000|ERROR:  22012|W_END || NOTICE:  00000|ERROR:  22012|W_END"
+check "a delete that fails after a nested read: the counts use a seq scan, an index scan and an index-only scan" \
+	"$ab_plans" "Seq Scan|Index Scan|Index Only Scan"
+check "a delete that fails after a nested read: every row is live by each scan in a new transaction, as on heap" \
+	"$ab_after || $hb_after" "20000/20000/20000 || 20000/20000/20000"
+check "a delete that fails after a nested read: every row is live by each scan after vacuum, as on heap" \
+	"$ab_vac || $hb_vac" "20000/20000/20000 || 20000/20000/20000"
+
+# ---------------------------------------------------------------------------
+# Phase 10 (#2169, review of #2241): a second deleter of the same rows. The
+# first deleter A pauses inside a nested read on row 999, on advisory lock
+# 2241, which session H holds; by then its nested statement has written its
+# marks. B, at READ COMMITTED, deletes ids 500..1500 meanwhile. B waits for A,
+# as on heap. When A commits, B fails with serialization_failure, where heap
+# re-checks and deletes the other 500: the documented columnar rule
+# (docs/limitations.md, Concurrency). Pinned, so a change shows.
+# ---------------------------------------------------------------------------
+echo "-- phase 10: a second deleter of the same rows during the first's nested read (#2169)"
+psql_run "CREATE FUNCTION cd_gate(t text, i int) RETURNS bool LANGUAGE plpgsql AS \$\$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %I WHERE id = \$1 AND pg_advisory_lock_shared(2241)::text = %L', t, '') INTO n USING i;
+	RETURN true;
+END \$\$;"
+
+# cd_race TABLE AM: sets cd_paused, cd_wait, cd_a, cd_b, cd_left
+cd_race() {
+	local tbl="$1" am="$2" i apid bpid
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING $am;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	h_send "SELECT 'H_LOCKED_$tbl' FROM pg_advisory_lock(2241);"
+	h_wait "H_LOCKED_$tbl" || true
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate \
+		-c "DELETE FROM $tbl WHERE CASE WHEN id > 1000 THEN false WHEN id = 999 THEN cd_gate('$tbl', id) ELSE true END" \
+		> "$PGC_WORKDIR/$tbl.a.out" 2>&1 &
+	apid=$!
+	cd_paused="no"
+	for i in $(seq 1 200); do
+		if [ "$(q "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 2241 AND NOT granted;")" = "1" ]; then
+			cd_paused="yes"; break
+		fi
+		sleep 0.1
+	done
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate \
+		-c "DELETE FROM $tbl WHERE id BETWEEN 500 AND 1500" > "$PGC_WORKDIR/$tbl.b.out" 2>&1 &
+	bpid=$!
+	cd_wait="B never waited"
+	for i in $(seq 1 200); do
+		if [ "$(q "SELECT wait_event_type FROM pg_stat_activity WHERE query LIKE 'DELETE FROM $tbl WHERE id BETWEEN%';")" = "Lock" ]; then
+			cd_wait="Lock"; break
+		fi
+		sleep 0.1
+	done
+	h_send "SELECT 'H_UNLOCKED_$tbl' FROM pg_advisory_unlock(2241);"
+	h_wait "H_UNLOCKED_$tbl" || true
+	wait "$apid" 2>/dev/null || true
+	wait "$bpid" 2>/dev/null || true
+	cd_a="$(paste -sd '|' "$PGC_WORKDIR/$tbl.a.out")"
+	cd_b="$(paste -sd '|' "$PGC_WORKDIR/$tbl.b.out")"
+	cd_left="$(q_last "SET enable_seqscan = on; SELECT count(*) FROM $tbl;")"
+}
+
+cd_race cd_h heap
+hc_wait="$cd_wait" hc_a="$cd_a" hc_b="$cd_b" hc_left="$cd_left"
+cd_race cd pgcolumnar
+check "a second deleter during the first's nested read: the first deleter was paused inside its nested read" "$cd_paused" "yes"
+check "a second deleter during the first's nested read: the second deleter waits for the first, as on heap" "$cd_wait|$hc_wait" "Lock|Lock"
+check "a second deleter during the first's nested read: the first deleter deletes its 1000 rows, as on heap" "$cd_a|$hc_a" "DELETE 1000|DELETE 1000"
+check "a second deleter during the first's nested read: the second then fails with serialization_failure, where heap deletes the other 500" "$cd_b|$hc_b" "ERROR:  40001|DELETE 500"
+check "a second deleter during the first's nested read: 19000 rows remain, where heap leaves 18500" "$cd_left|$hc_left" "19000|18500"
 
 exec 9>&-
 wait "$H_PID" 2>/dev/null || true
