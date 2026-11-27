@@ -42,6 +42,7 @@
 #include "pgstat.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "storage/lockdefs.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -175,6 +176,60 @@ PgColumnarRequireNoRowSecurity(Oid relid)
 						   "applied."),
 				 errhint("Use ordinary SQL against the table, which applies the "
 						 "policies.")));
+}
+
+/*
+ * PgColumnarRefuseOwnLockConflict
+ *		Refuse, before any background worker starts, when this transaction already
+ *		holds a lock on relid that conflicts with the lock the workers will take
+ *		on it (#2183).
+ *
+ * parallel_export_parquet's workers open the table, or each leaf, with ACCESS
+ * SHARE, and parallel_copy's coordinator and loaders open the target, and the
+ * partitions they route to, with ROW EXCLUSIVE. Each worker runs in its own
+ * transaction, outside this backend's lock group, and this backend waits for
+ * them on a latch. So after LOCK TABLE or TRUNCATE in the caller's transaction a
+ * worker's lock request waited on the caller's own lock, the deadlock detector
+ * never saw the cycle, and the statement waited until statement_timeout.
+ *
+ * parallel_flush got around the same wait by not opening the table in its
+ * workers at all (#2072). These workers scan or load the table itself, so that
+ * is not open to them. Nor is letting them past the lock: each runs in its own
+ * transaction and cannot see what the caller did under it (after TRUNCATE, an
+ * uncommitted new relfilenode). So the call is refused, naming the lock and the
+ * relation.
+ *
+ * Only the modes that conflict with workerlock are refused, read from the lock
+ * method's own conflict table: export (ACCESS SHARE) is refused for ACCESS
+ * EXCLUSIVE only, and still runs under SHARE; parallel_copy (ROW EXCLUSIVE) is
+ * refused for SHARE and stronger, but not for SHARE UPDATE EXCLUSIVE, which is
+ * stronger by number and does not conflict. Locks on other relations, and the
+ * caller's own ACCESS SHARE from opening the table, conflict with nothing here.
+ */
+void
+PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid, LOCKMODE workerlock)
+{
+	LOCKMODE	held;
+
+	for (held = MaxLockMode; held > NoLock; held--)
+	{
+		if (!DoLockModesConflict(held, workerlock) ||
+			!CheckRelationOidLockedByMe(relid, held, false))
+			continue;
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("%s cannot run while this transaction holds %s on \"%s\"",
+						funcname, GetLockmodeName(DEFAULT_LOCKMETHOD, held),
+						get_rel_name(relid)),
+				 errdetail("Its background workers take %s on \"%s\" in their own "
+						   "transactions, so they would wait for this transaction "
+						   "to end.",
+						   GetLockmodeName(DEFAULT_LOCKMETHOD, workerlock),
+						   get_rel_name(relid)),
+				 errhint("Run it in a transaction that does not hold that lock, "
+						 "for example before the LOCK TABLE or TRUNCATE, or after "
+						 "COMMIT.")));
+	}
 }
 
 /*
