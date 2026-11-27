@@ -289,29 +289,89 @@ av_expire_one(const char *qualname)
 }
 
 /*
- * Run the due maintenance verbs on one table, all in one transaction inside
- * PG_TRY: a query-cancel (the lock yield) or any error aborts just this table's
- * pass and the caller continues to the next table. compact_rewrite keeps the
- * storage-row lock to commit, so a recluster after it in this transaction can
- * deadlock with a writer (#2194).
+ * Run one maintenance verb (an SQL statement) in a transaction of its own,
+ * inside PG_TRY, and log `done` once it has committed. A cancel (the lock
+ * yield) or any error rolls back just this verb; it is logged as a skip of the
+ * table, and the caller runs nothing more on the table in this pass. Returns
+ * whether the verb committed.
  */
-static void
-av_maintain_one(const char *qualname)
+static bool
+av_run_verb(const char *qualname, const char *sql, const char *done)
 {
+	bool		ok = false;
+
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
 	SetCurrentStatementStartTimestamp();
 
 	PG_TRY();
 	{
-		bool		compactDue = false;
-		bool		reclusterDue = false;
-		char	   *sortKey = NULL;
-		char	   *sortedKind = NULL;
-		const char *reclusterVerb;
+		if (SPI_connect() != SPI_OK_CONNECT)
+			elog(ERROR, "pgcolumnar autovacuum: SPI_connect failed");
+		(void) SPI_execute(sql, false, 0);
+		SPI_finish();
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		elog(LOG, "pgcolumnar autovacuum: %s", done);
+		ok = true;
+	}
+	PG_CATCH();
+	{
+		/*
+		 * A cancel (the lock yield) or any error: roll this op back and keep
+		 * going. The where-it-failed line is what an administrator acts on.
+		 */
+		MemoryContext ecxt = MemoryContextSwitchTo(TopMemoryContext);
+		ErrorData  *ed = CopyErrorData();
+
+		elog(LOG, "pgcolumnar autovacuum: skipped %s: %s", qualname, ed->message);
+		FreeErrorData(ed);
+		MemoryContextSwitchTo(ecxt);
+
+		FlushErrorState();
+		AbortCurrentTransaction();
+	}
+	PG_END_TRY();
+	return ok;
+}
+
+/*
+ * Run the due maintenance verbs on one table. Which verbs are due is read in
+ * one transaction; then each verb runs in a transaction of its own
+ * (av_run_verb), compact_rewrite first.
+ *
+ * ONE TRANSACTION PER VERB (#2194). A verb keeps its locks to commit: the
+ * storage-row lock (class 102) and the locks of the row groups it rewrote
+ * (class 101). In one transaction, the recluster after a compact_rewrite waited
+ * for a busy group while it still held the storage-row lock the compact_rewrite
+ * kept, since lock_rewrite_groups can give back only what it took itself. A
+ * writer that held that group's lock and waited for the storage-row lock then
+ * closed the #2074 cycle, and the deadlock detector aborted one side. Committed
+ * on its own, each verb starts holding nothing, which is what
+ * lock_rewrite_groups assumes.
+ *
+ * A verb that fails or is cancelled ends the table's pass, as before: the
+ * daemon yields a table to the session that cancelled it, rather than take the
+ * table's lock again for the next verb.
+ */
+static void
+av_maintain_one(const char *qualname)
+{
+	bool		compactDue = false;
+	bool		reclusterDue = false;
+	char	   *sortKey = NULL;
+	char	   *sortedKind = NULL;
+	char		q[512];
+	char		done[512];
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	SetCurrentStatementStartTimestamp();
+
+	PG_TRY();
+	{
 		Oid			argtypes[3] = {REGCLASSOID, FLOAT8OID, FLOAT8OID};
 		Datum		argvals[3];
-		char		q[512];
 
 		argvals[0] = DirectFunctionCall1(regclassin, CStringGetDatum(qualname));
 		argvals[1] = Float8GetDatum(pgcolumnar_autovacuum_compact_threshold);
@@ -343,58 +403,13 @@ av_maintain_one(const char *qualname)
 			compactDue = !isnull && DatumGetBool(d);
 			d = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2, &isnull);
 			reclusterDue = !isnull && DatumGetBool(d);
+			/* the strings outlive this transaction: the recluster runs in its own */
 			d = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3, &isnull);
 			if (!isnull)
-				sortKey = pstrdup(TextDatumGetCString(d));
+				sortKey = MemoryContextStrdup(TopMemoryContext, TextDatumGetCString(d));
 			d = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 4, &isnull);
 			if (!isnull)
-				sortedKind = pstrdup(TextDatumGetCString(d));
-		}
-
-		/* compact_rewrite: online space reclaim (SUEL) */
-		if (compactDue)
-		{
-			snprintf(q, sizeof(q),
-					 "SELECT pgcolumnar.compact_rewrite(%s, %g)",
-					 quote_literal_cstr(qualname),
-					 pgcolumnar_autovacuum_compact_threshold);
-			(void) SPI_execute(q, false, 0);
-			elog(LOG, "pgcolumnar autovacuum: compact_rewrite %s", qualname);
-		}
-
-		/*
-		 * recluster: only when the table has a recorded/declared key (else the
-		 * daemon cannot know the columns). The self-gating recluster (#415) is
-		 * a no-op when nothing decayed, so calling it here is cheap when the
-		 * gate was optimistic.
-		 */
-		if (reclusterDue && sortKey != NULL && sortKey[0] != '\0')
-		{
-			/*
-			 * DISPATCH ON THE RECORDED KIND (#889). This line hard-coded
-			 * pgcolumnar.recluster, so a Hilbert table was reclustered by the
-			 * Z-order verb and came back relabelled 'zorder' -- the daemon
-			 * converting a layout the user chose, on a timer, with nothing in
-			 * the log to say so. Plain recluster() now maintains the recorded
-			 * curve on a matching key, so this is belt and braces; it is written
-			 * out anyway because "the daemon preserves the curve" should be
-			 * readable HERE, at the call the ruling is about, and not depend on
-			 * a rule two modules away.
-			 */
-			reclusterVerb =
-				(sortedKind != NULL &&
-				 strcmp(sortedKind, COLUMNAR_CURVE_HILBERT) == 0)
-				? "pgcolumnar.recluster_hilbert" : "pgcolumnar.recluster";
-
-			snprintf(q, sizeof(q),
-					 "SELECT %s(%s, VARIADIC string_to_array(%s, ',')::name[])",
-					 reclusterVerb,
-					 quote_literal_cstr(qualname),
-					 quote_literal_cstr(sortKey));
-			(void) SPI_execute(q, false, 0);
-			elog(LOG, "pgcolumnar autovacuum: recluster %s by (%s) on the %s curve",
-				 qualname, sortKey,
-				 sortedKind != NULL ? sortedKind : COLUMNAR_CURVE_ZORDER);
+				sortedKind = MemoryContextStrdup(TopMemoryContext, TextDatumGetCString(d));
 		}
 
 		SPI_finish();
@@ -403,10 +418,6 @@ av_maintain_one(const char *qualname)
 	}
 	PG_CATCH();
 	{
-		/*
-		 * A cancel (the lock yield) or any error: roll this op back and keep
-		 * going. The where-it-failed line is what an administrator acts on.
-		 */
 		MemoryContext ecxt = MemoryContextSwitchTo(TopMemoryContext);
 		ErrorData  *ed = CopyErrorData();
 
@@ -416,8 +427,61 @@ av_maintain_one(const char *qualname)
 
 		FlushErrorState();
 		AbortCurrentTransaction();
+		compactDue = reclusterDue = false;
 	}
 	PG_END_TRY();
+
+	/* compact_rewrite: online space reclaim (SUEL) */
+	if (compactDue)
+	{
+		snprintf(q, sizeof(q),
+				 "SELECT pgcolumnar.compact_rewrite(%s, %g)",
+				 quote_literal_cstr(qualname),
+				 pgcolumnar_autovacuum_compact_threshold);
+		snprintf(done, sizeof(done), "compact_rewrite %s", qualname);
+		if (!av_run_verb(qualname, q, done))
+			reclusterDue = false;
+	}
+
+	/*
+	 * recluster: only when the table has a recorded/declared key (else the
+	 * daemon cannot know the columns). The self-gating recluster (#415) is
+	 * a no-op when nothing decayed, so calling it here is cheap when the
+	 * gate was optimistic.
+	 */
+	if (reclusterDue && sortKey != NULL && sortKey[0] != '\0')
+	{
+		/*
+		 * DISPATCH ON THE RECORDED KIND (#889). This line hard-coded
+		 * pgcolumnar.recluster, so a Hilbert table was reclustered by the
+		 * Z-order verb and came back relabelled 'zorder' -- the daemon
+		 * converting a layout the user chose, on a timer, with nothing in
+		 * the log to say so. Plain recluster() now maintains the recorded
+		 * curve on a matching key, so this is belt and braces; it is written
+		 * out anyway because "the daemon preserves the curve" should be
+		 * readable HERE, at the call the ruling is about, and not depend on
+		 * a rule two modules away.
+		 */
+		const char *reclusterVerb =
+			(sortedKind != NULL &&
+			 strcmp(sortedKind, COLUMNAR_CURVE_HILBERT) == 0)
+			? "pgcolumnar.recluster_hilbert" : "pgcolumnar.recluster";
+
+		snprintf(q, sizeof(q),
+				 "SELECT %s(%s, VARIADIC string_to_array(%s, ',')::name[])",
+				 reclusterVerb,
+				 quote_literal_cstr(qualname),
+				 quote_literal_cstr(sortKey));
+		snprintf(done, sizeof(done), "recluster %s by (%s) on the %s curve",
+				 qualname, sortKey,
+				 sortedKind != NULL ? sortedKind : COLUMNAR_CURVE_ZORDER);
+		(void) av_run_verb(qualname, q, done);
+	}
+
+	if (sortKey != NULL)
+		pfree(sortKey);
+	if (sortedKind != NULL)
+		pfree(sortedKind);
 }
 
 /*

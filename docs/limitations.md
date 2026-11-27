@@ -755,21 +755,28 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   inserts takes the delete lock first; one that inserts, scans and then deletes
   takes the storage-row lock first. When two such transactions meet, one gets
   `deadlock_detected` (40P01). Retry it, as with any deadlock.
-- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
-  do not queue behind them. Before it writes, a rewrite needs the storage-row lock
-  and every row group's delete lock at once. It waits for each busy lock alone,
-  holding none, and tries again, so it never closes a deadlock with a writer. It
-  can still get 40P01 when it waits inside a deadlock between two writers. A steady
-  stream of short delete transactions can keep one lock busy at every try. After
-  `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
-  `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
-  its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
-  its row groups wait for it to commit.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers. Before
+  it writes, a rewrite needs the storage-row lock and every row group's delete
+  lock at once. It waits for each busy lock alone, holding none, and tries again,
+  so it never closes a deadlock with a writer. It can still get 40P01 when it waits
+  inside a deadlock between two writers. While it takes its locks it holds the
+  table's rewrite turnstile (#2185). Before its first delete takes a row group's lock, a
+  transaction that has not yet written to a columnar table waits for the
+  turnstile. It waits at most `deadlock_timeout` (default 1 s). So writers that
+  start after the rewrite let the ones already running finish, and steady short
+  deletes no longer keep the rewrite from its locks. A writer that waited that
+  long goes on anyway, so writer transactions longer than `deadlock_timeout` can
+  still keep a lock busy at every try. After `pgcolumnar.rewrite_lock_timeout`
+  (default 10 s) the verb stops with SQLSTATE `55P03` and changes nothing. The
+  maintenance daemon logs a skip and tries at its next sweep. Once the rewrite
+  holds its locks, new rows and deletes in its row groups wait for it to commit.
+  The turnstile wait is not a lock wait: `lock_timeout` does not end it, and
+  `pg_locks` does not show it.
 - Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
   transaction. The first verb keeps the storage-row lock until commit. A second
   verb in the same transaction then waits for a busy row group while it holds that
-  lock, and a writer can get 40P01. The maintenance daemon runs both verbs in one
-  transaction when both are due on a table, so it can meet this case (#2194).
+  lock, and a writer can get 40P01. The maintenance daemon runs each verb in its
+  own transaction (#2194).
 
 ## Row locking
 

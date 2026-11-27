@@ -410,6 +410,7 @@ behaviour, the source of that number is named.
 - [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
+- [365. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own](#365-test_autovacuum_verb_txnpy-the-maintenance-daemon-runs-each-verb-in-a-transaction-of-its-own)
 
 ## 1. How to read a test in here
 
@@ -13629,6 +13630,7 @@ Every test makes one check under the shell's name, on a private database. The wo
 | `test_the_rewrite_under_steady_deletes_ends_within_its_limit` (recluster, compact_rewrite) | a recluster (a compact_rewrite) under steady deletes ends within its 2 s rewrite_lock_timeout plus 4 s |
 | `test_the_rewrite_under_steady_deletes_finished_or_stopped_with_55p03` (recluster, compact_rewrite) | and the recluster (the compact_rewrite) either finished or stopped with the lock error 55P03 |
 | `test_no_deleter_beside_the_rewrite_hit_a_deadlock` (recluster, compact_rewrite) | and no deleter beside the recluster (the compact_rewrite) hit a deadlock |
+| `test_the_rewrite_under_steady_deletes_finished` (recluster, compact_rewrite) | and the recluster (the compact_rewrite) under steady deletes finished, with no 55P03 |
 | `test_the_rewrite_behind_an_open_writer_stops_with_55p03` (recluster, compact_rewrite) | a recluster (a compact_rewrite) behind a writer that stays open stops with 55P03 naming rewrite_lock_timeout |
 | `test_the_rewrite_behind_an_open_writer_stops_within_its_limit` (recluster, compact_rewrite) | and the recluster (the compact_rewrite) stops within its 1 s rewrite_lock_timeout plus 0.8 s |
 | `test_the_session_lock_timeout_after_the_rewrite_55p03_is_back_to_0` (recluster, compact_rewrite) | and the session's lock_timeout after the recluster's (the compact_rewrite's) 55P03 is back to 0 |
@@ -13660,6 +13662,15 @@ Every test makes one check under the shell's name, on a private database. The wo
 | `test_the_rewrite_with_limit_0_under_a_lock_timeout_stops_within_it` (recluster, compact_rewrite) | and the recluster (the compact_rewrite) with rewrite_lock_timeout 0 stops within that 500 ms lock_timeout plus 1.5 s |
 | `test_the_rewrite_after_a_sleep_in_its_own_statement_finishes` (recluster, compact_rewrite) | a recluster (a compact_rewrite) with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its own statement, finishes |
 | `test_the_rewrite_after_a_sleep_in_its_transaction_finishes` (recluster, compact_rewrite) | a recluster (a compact_rewrite) with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its transaction, finishes |
+| `test_a_new_transaction_waits_at_the_turnstile` (recluster, compact_rewrite) | a new transaction, in a session that wrote before, waits at the turnstile while the recluster (the compact_rewrite) waits on a busy group |
+| `test_the_turnstile_wait_stops_after_deadlock_timeout` (recluster, compact_rewrite) | and it stops waiting after its 1 s deadlock_timeout, within 2.5 s, while the recluster (the compact_rewrite) still waits |
+| `test_a_group_lock_holder_skips_the_turnstile` (recluster, compact_rewrite) | a transaction that already holds a group lock does not wait at the recluster's (the compact_rewrite's) turnstile, under 1 s against its 3 s deadlock_timeout |
+| `test_a_storage_row_lock_holder_skips_the_turnstile` (recluster, compact_rewrite) | a transaction that holds the storage-row lock does not wait at the recluster's (the compact_rewrite's) turnstile, under 1 s against its 3 s deadlock_timeout |
+| `test_the_rewrite_behind_the_turnstile_writers_finishes` (recluster, compact_rewrite) | and the recluster (the compact_rewrite) behind those writers finishes |
+| `test_every_write_beside_the_turnstile_took_effect` (recluster, compact_rewrite) | and every write beside the recluster's (the compact_rewrite's) turnstile took effect |
+| `test_the_paused_compact_rewrite_holds_its_group_lock` | a compact_rewrite paused after it took its group lock holds it |
+| `test_the_turnstile_was_given_back` | and a delete in a group it does not rewrite, with a 3 s deadlock_timeout, goes on within 1.5 s: the turnstile was given back |
+| `test_the_paused_compact_rewrite_commits` | and that paused compact_rewrite commits |
 
 The six tests after the held rewrite are #2074, on their own private database. A writer holds two advisory locks to commit and can take them in either order. In the update shape (first three tests), an open writer flushes one inserted row, so it holds the storage-row lock (class 102) and no chunk-group lock (class 101); the rewrite, held for 3 s by `pgcolumnar.maintenance_hold_ms`, then runs until `pg_locks` shows it waiting on class 102, and only then does the writer UPDATE a row of a group the rewrite covers and commit. In the delete shape (last three tests), the writer deletes a row and scans, so it holds class 101 and not class 102; the rewrite runs until it waits on class 101, and only then does the writer insert a row and commit, which takes class 102. Main's rewrites took 101 and then waited on 102, so the update shape failed with `deadlock detected`. Taking 102 first and then waiting on 101 made the delete shape fail the same way.
 
@@ -13674,6 +13685,8 @@ The seven tests after them answer the review of #2139 at b1d94859, on the same d
 The ten tests after them answer the review of #2139 at 42763bd3, on the same database. Busy last group (six tests): all three groups of the table have deletes, so each verb takes groups 0 and 1 and then finds group 2 busy. (`compact_rewrite` rewrites only groups with deletes.) A writer deletes id 2501, in group 2, and scans; once the verb waits on that group, the writer updates id 5, in group 0, and commits. Both must commit, and both changes must show. The give-back arms above put the busy group second, so only one lock was held when the try failed. A rewrite that gave back only its last lock keeps group 0 through the wait and deadlocks with this writer. Limit 0 under a user timeout (four tests): a writer holds a group's lock for 4 s, and the session sets the limit to 0 and `lock_timeout` to 500 ms. The verb must stop within 2 s with PostgreSQL's own `canceling statement due to lock timeout`. A rewrite that reported the limit as run out says `rewrite_lock_timeout (0 ms)` and tells the user to raise a setting that has no limit.
 
 The six tests after them answer the review of #2139 at 1b2b7ceb, on the same database. No group lock held (two tests): in the busy-last-group arm, while the verb waits on group 2, the writer reads `pg_locks`, and the waiting session must hold no granted group lock (class 101). Every give-back arm's writer updates a row of group 0, so a rewrite that gave back group 0 twice and kept group 1 committed beside it; this test reads the locks instead and covers every group. The test sits with the busy-last-group tests, after their "took effect" test. Clock (four tests): with no writer and a 1 s limit, the session sleeps 1.5 s, once in the verb's own statement (`SELECT pg_sleep(1.5) IS NULL, <verb>`) and once in an earlier statement of its transaction, and the verb must finish. A deadline counted from the statement's or the transaction's start has already passed when the verb begins.
+
+Steady deletes finished (two tests, #2185): the bound arm's verb must now finish, not stop with 55P03. The deleter threads keep one connection each, a transaction per row, as the shell's deleters leave no gap between deletes that a reconnect would. The fifteen tests after the clock tests are the rewrite turnstile (#2185), on the same database. The rewrite holds its storage's turnstile (advisory class 107) while it takes its locks, and a transaction that holds no row-group or storage-row lock yet polls it, for at most its deadlock_timeout, before its first row-group lock. D deletes id 1501 and stays open 6 s, H deletes id 2997 and stays open, and H2 inserts a row, so it holds the storage-row lock. The verb starts behind them with a 20 s limit. Once it waits on the storage-row lock, H2 deletes id 47 (3 s deadlock_timeout) and must take under 1 s. Once it waits on a group lock, H deletes id 2996, in its own group, and must take under 1 s; and N, whose session committed a delete of id 49 first, deletes id 50 in a fresh transaction with a 1 s deadlock_timeout and must take 0.8 to 2.5 s. The verb must then finish, and every write must show. Given back (three tests): a compact_rewrite pauses in `dl_pause()` with its lock on group 0 taken, and a delete in group 1 with a 3 s deadlock_timeout must take under 1.5 s.
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 
@@ -15123,3 +15136,28 @@ Removal proof, each failing a test here:
 | --- | --- |
 | `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read, with or without a trailing comment; a comment line, a step's timeout and the next job's are not; a job without one, a missing job, and a job that gives the key twice read as none |
 | `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job has exactly one timeout of its own, between 1.5 and 2 times `MEASURED_MAX_MINUTES` |
+
+## 365. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own
+
+The twin of `test/autovacuum_verb_txn.sh` (#2194), every check by the shell's name, on a private database with the daemon's settings by ALTER SYSTEM (naptime 1 s, both thresholds 0.05, `deadlock_timeout` 20 s), reset at teardown. When both verbs were due, the daemon ran compact_rewrite and then recluster in one transaction, so the recluster waited for a busy row group while it held the storage-row lock the compact_rewrite kept to commit. A writer that held that group's lock and waited for the storage-row lock closed the #2074 cycle. On main the writer got 40P01.
+
+### Every test
+
+The table is reclustered by id, then 300 rows are appended and a third of the first group deleted, so both verbs are due. An expression index calls `dl_pause()`, which sleeps 3 s on its first call in a daemon worker. Deadlock (seven tests, the default 10 s `pgcolumnar.rewrite_lock_timeout`): a writer deletes id 2501 and flushes it, so it holds that group's lock; the daemon starts; once the daemon sleeps in its compact_rewrite holding the storage-row lock, the writer inserts, which waits for that lock, and commits. Its `deadlock_timeout` is 6 s, so a recluster that waits on its group while holding the storage-row lock is found by its own check. Both verbs must be logged by one worker process, so a daemon that left the recluster to the next pass fails. Limit (three tests): the same with a 1.5 s limit, under the compact_rewrite's 3 s; on main the recluster stopped with 55P03 and the daemon logged a skip. Yield (three tests): a session with a 1 s `deadlock_timeout` locks the table in ACCESS EXCLUSIVE mode while the compact_rewrite sleeps, which cancels it; the daemon's next verb on the table must be the next pass's compact_rewrite.
+
+| test | check |
+| --- | --- |
+| `test_the_maintenance_launcher_is_running` | the maintenance launcher is running |
+| `test_dl_is_due_for_both_verbs` | dl is due for both compact_rewrite and recluster at the daemon's thresholds |
+| `test_the_writer_saw_the_paused_compact_rewrite` | the writer saw the daemon paused in its compact_rewrite, holding the storage-row lock |
+| `test_the_writer_beside_both_verbs_commits` | the writer that deleted and then inserted beside the daemon's two verbs commits, with no deadlock |
+| `test_the_writers_delete_and_insert_took_effect` | and the writer's DELETE and INSERT took effect |
+| `test_the_daemon_logged_compact_rewrite_then_recluster` | the daemon logged compact_rewrite and then recluster on dl in that pass |
+| `test_both_verbs_ran_in_one_pass` | and the daemon's compact_rewrite and recluster on dl came from one worker, one pass |
+| `test_no_session_hit_a_deadlock_beside_the_pass` | no session hit a deadlock beside the daemon's pass |
+| `test_the_limit_writer_saw_the_paused_compact_rewrite` | beside a 1.5 s rewrite_lock_timeout, the writer saw the paused compact_rewrite |
+| `test_the_limit_writer_commits` | and that writer commits |
+| `test_the_recluster_finished_after_a_long_compact_rewrite` | the daemon's recluster, with a 1.5 s rewrite_lock_timeout, finished after a compact_rewrite of 3 s |
+| `test_the_locker_saw_the_paused_compact_rewrite` | the locker saw the daemon paused in its compact_rewrite |
+| `test_the_lock_table_was_granted` | a LOCK TABLE with a 1 s deadlock_timeout was granted beside the paused compact_rewrite |
+| `test_a_cancelled_verb_ends_the_pass` | after its cancelled compact_rewrite, the daemon's next verb on dl is the next pass's compact_rewrite, not a recluster |

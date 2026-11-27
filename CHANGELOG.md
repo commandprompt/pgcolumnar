@@ -605,6 +605,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
+  transaction (#2194). It ran both in one transaction when both were due. The
+  recluster then waited for a busy row group while it held the storage-row lock
+  the compact_rewrite kept to commit. A writer that held that group's lock and
+  waited for the storage-row lock got 40P01, or, with a short
+  `pgcolumnar.rewrite_lock_timeout`, the recluster stopped with 55P03 and took
+  the compact_rewrite down with it. A verb that fails or is cancelled still ends
+  the table's pass. docs/limitations.md and docs/administration.md.
+  `test/autovacuum_verb_txn.sh` and `test_autovacuum_verb_txn.py` (new).
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` now finish under a
+  steady stream of short deletes (#2185). Since #2139 they take their locks
+  without waiting while they hold one, so writers never queued behind them, and
+  they stopped with 55P03 at `pgcolumnar.rewrite_lock_timeout`. A rewrite now
+  holds the table's rewrite turnstile (advisory lock class 107) while it takes
+  its locks. A transaction that has not yet written to a columnar table polls
+  the turnstile before its first row-group lock, for at most `deadlock_timeout`.
+  The poll is not a lock wait, so it adds no deadlock and does not cancel the
+  maintenance daemon. With 8 clients each deleting one row and holding its lock
+  for 200 ms, both verbs now finish within a 2 s limit. docs/limitations.md,
+  docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
+  and `test_native_rewrite_conc.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error

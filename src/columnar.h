@@ -1113,6 +1113,13 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
  * the lock manager, where the deadlock detector can see the wait (#2187).
  */
 #define PGCOLUMNAR_LOCKCLASS_PCOPY_OPEN		106
+/*
+ * The rewrite turnstile of one storage (#2185). recluster and compact_rewrite
+ * hold it while they take their row-group locks; a writer that holds no
+ * row-group or storage-row lock yet waits a bounded time for it to come free
+ * before it takes its first one (PgColumnarRewriteTurnstile).
+ */
+#define PGCOLUMNAR_LOCKCLASS_REWRITE_TURNSTILE	107
 
 /* -------------------------------------------------------------------------
  * concurrent unique-key insert serialization (pgcolumnar_unique.c, issue #5)

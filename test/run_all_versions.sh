@@ -56,6 +56,7 @@ SUITES=(
 	audit
 	autovacuum
 	autovacuum_expire
+	autovacuum_verb_txn
 	autovacuum_yield
 	avro_manifest
 	base_scan_io

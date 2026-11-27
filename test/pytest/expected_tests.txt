@@ -2564,4 +2564,13 @@ guard_tests 899
 # export over http and over https, and a REST catalog request reset before any answer each name the errno), by
 # collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
-cluster_tests 6181
+# cluster_tests 6181 -> 6212, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
+# daemon's launcher and due premise; a writer beside both verbs of one daemon pass commits, its writes show, the
+# verbs log in order from one worker, no deadlock; with a 1.5 s limit the writer commits and the recluster
+# finishes; a cancelled compact_rewrite ends the pass) and seventeen in test_native_rewrite_conc.py (steady deletes
+# finish, per verb; the turnstile: a new transaction waits, the wait stops at deadlock_timeout, a group-lock holder
+# and a storage-row-lock holder skip it, the verb finishes and the writes show, per verb; a paused compact_rewrite
+# holds its group lock, gives the turnstile back, and commits), by collection of those two files (102 for
+# test_native_rewrite_conc.py on main, 119 here, and 14) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+cluster_tests 6212

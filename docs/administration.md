@@ -228,9 +228,12 @@ The daemon calls only the online `ShareUpdateExclusiveLock` verbs. It never
 calls `vacuum`, `vacuum_sorted`, or `cluster`. So it does not block readers.
 Writers wait for a `recluster` or `compact_rewrite` only from the moment it
 holds its locks until it commits. Before that the verb waits for writers, up to
-`pgcolumnar.rewrite_lock_timeout` (default 10 s). If writers keep its locks busy
-that long, the verb stops with SQLSTATE 55P03. The daemon logs a skip and
-tries the table again at the next sweep. It also yields the way autovacuum does: it cancels its own maintenance
+`pgcolumnar.rewrite_lock_timeout` (default 10 s). New writers wait up to
+`deadlock_timeout` behind it, so a steady stream of short ones does not starve it.
+If writers keep its locks busy that long, the verb stops with SQLSTATE 55P03.
+The daemon logs a skip and tries the table again at the next sweep. Each verb
+runs in its own transaction, and a verb that fails or is cancelled ends the
+table's pass. It also yields the way autovacuum does: it cancels its own maintenance
 the moment a statement needs a stronger lock on the table.
 
 ```

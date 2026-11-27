@@ -537,6 +537,8 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 		"$(awk '{print ($2 == "ok" || $2 == "55P03") ? "ok-or-55P03" : $2}' <<<"$got")" "ok-or-55P03"
 	check "and no deleter beside the $name hit a deadlock" \
 		"$(cat "$PGC_WORKDIR"/dl.del.* 2>/dev/null | grep -c 'deadlock detected')" "0"
+	check "and the $name under steady deletes finished, with no 55P03" \
+		"$(awk '{print $2}' <<<"$got")" "ok"
 	got="$(dl_held "$verb" "$DL_DELETER" 101 8 "SET pgcolumnar.rewrite_lock_timeout = '1s';")"
 	check "a $name behind a writer that stays open stops with 55P03 naming rewrite_lock_timeout" \
 		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
@@ -836,5 +838,159 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 	check "a $name with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its transaction, finishes" \
 		"$(dl_late "$verb" xact)" "ok"
 done
+
+# ---- the rewrite turnstile: forward progress under steady writers ----
+#
+# Issue #2185. The rewrite never waits in the lock manager while it holds a lock, so
+# writers never queued behind it, and under steady deletes it stopped with 55P03 (the
+# "finished, with no 55P03" arm above). Now it holds its storage's turnstile (advisory
+# class 107) while it takes its locks, and a transaction that holds no row-group or
+# storage-row lock yet polls the turnstile, for at most its deadlock_timeout, before it
+# takes its first one. Each arm reddens one way of getting that wrong:
+#
+#   - waits: a new transaction waits at the turnstile while the rewrite waits on a busy
+#     group. Its session wrote and committed before, so a mark that outlived that
+#     transaction would let it skip.
+#   - bounded: it stops waiting after its deadlock_timeout (1 s), though the rewrite
+#     still waits; a writer is never held longer than that.
+#   - holder skips: a transaction that already holds a group lock, or the storage-row
+#     lock, does not wait (the rewrite may be waiting for that very lock). Its
+#     deadlock_timeout is 3 s, so a wait would show.
+#   - given back: compact_rewrite gives the turnstile back once it has its locks, so a
+#     delete in a group it does not rewrite, with a 3 s deadlock_timeout, goes on at
+#     once while the rewrite pauses on its first row.
+
+# dl_turnstile VERB-SQL -> "n=<ms> h=<ms> h2=<ms> rewrite=<ok|error>": D deletes id 1501
+# (group 1) and stays open 6 s; H deletes id 2997 (group 2) and stays open; H2 inserts
+# a row, so it holds the storage-row lock, and stays open. The verb starts behind them
+# with a 20 s limit. Once the verb waits on the storage-row lock, H2 deletes id 47 and
+# commits. Once the verb waits on a group lock, H deletes id 2996, in its own group, and
+# N, whose session committed a delete of id 49 first, deletes id 50 in a fresh
+# transaction. Each reports how long its last delete took
+dl_ms_sql() {
+	echo "round(extract(epoch FROM clock_timestamp() - current_setting('pgc.t0')::timestamptz) * 1000)"
+}
+dl_turnstile() {
+	dl_make extra
+	rm -f "$PGC_WORKDIR/dl.d" "$PGC_WORKDIR/dl.h" "$PGC_WORKDIR/dl.h2" "$PGC_WORKDIR/dl.n" "$PGC_WORKDIR/dl.rw"
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 -c "BEGIN; DELETE FROM dl WHERE id = 1501;
+			SELECT count(*) FROM dl; SELECT pg_sleep(6); COMMIT;" >"$PGC_WORKDIR/dl.d" 2>&1
+	) &
+	local d_pid=$!
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.h" 2>&1 <<SQL
+SET deadlock_timeout = '3s';
+BEGIN;
+DELETE FROM dl WHERE id = 2997;
+SELECT count(*) FROM dl;
+$(dl_wait_sql "$(dl_waiting 101)")
+SELECT set_config('pgc.t0', clock_timestamp()::text, false) IS NULL;
+DELETE FROM dl WHERE id = 2996;
+SELECT count(*) FROM dl WHERE id = 2996;
+SELECT 'h=' || $(dl_ms_sql);
+COMMIT;
+SQL
+	) &
+	local h_pid=$!
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.h2" 2>&1 <<SQL
+SET deadlock_timeout = '3s';
+BEGIN;
+INSERT INTO dl VALUES (0, 0);
+SELECT count(*) FROM dl;
+$(dl_wait_sql "$(dl_waiting 102)")
+SELECT set_config('pgc.t0', clock_timestamp()::text, false) IS NULL;
+DELETE FROM dl WHERE id = 47;
+SELECT count(*) FROM dl WHERE id = 47;
+SELECT 'h2=' || $(dl_ms_sql);
+COMMIT;
+SQL
+	) &
+	local h2_pid=$!
+	dlp -qAt -c "$(dl_wait_sql "(SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 101 AND granted) >= 2
+		AND EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 102 AND granted)")" >/dev/null
+	rm -f "$PGC_WORKDIR/dl.rw"
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 -c "SET pgcolumnar.rewrite_lock_timeout = '20s';" \
+			-c "SELECT $1;" >"$PGC_WORKDIR/dl.rw" 2>&1
+		echo "rc=$?" >>"$PGC_WORKDIR/dl.rw"
+	) &
+	DL_RW_PID=$!
+	dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.n" 2>&1 <<SQL
+SET deadlock_timeout = '1s';
+DELETE FROM dl WHERE id = 49;
+$(dl_wait_sql "$(dl_waiting 101)")
+SELECT set_config('pgc.t0', clock_timestamp()::text, false) IS NULL;
+BEGIN;
+DELETE FROM dl WHERE id = 50;
+SELECT count(*) FROM dl WHERE id = 50;
+COMMIT;
+SELECT 'n=' || $(dl_ms_sql);
+SQL
+	wait "$d_pid" "$h_pid" "$h2_pid"
+	dl_rw_wait
+	echo "$(grep -o '^n=.*' "$PGC_WORKDIR/dl.n" || echo n=none)" \
+		"$(grep -o '^h=.*' "$PGC_WORKDIR/dl.h" || echo h=none)" \
+		"$(grep -o '^h2=.*' "$PGC_WORKDIR/dl.h2" || echo h2=none)" "rewrite=$DL_RW"
+	grep -h 'ERROR' "$PGC_WORKDIR/dl.d" "$PGC_WORKDIR/dl.h" "$PGC_WORKDIR/dl.h2" "$PGC_WORKDIR/dl.n" "$PGC_WORKDIR/dl.rw" >&2
+	return 0
+}
+
+# dl_given_back -> "groups=<yes|no> p=<ms> rewrite=<ok|error>": compact_rewrite pauses on its
+# first row with its lock on group 0 taken; then a delete of id 1502, in group 1, which it
+# does not rewrite, runs with a 3 s deadlock_timeout and reports how long it took
+dl_given_back() {
+	dl_pause_bg "pgcolumnar.compact_rewrite('dl', 0.0)"
+	local out
+	out="$(dlp -qAt -v ON_ERROR_STOP=1 2>&1 <<SQL
+$(dl_wait_activity_sql "EXISTS (SELECT 1 FROM pg_stat_activity a WHERE $DL_PAUSED AND a.pid <> pg_backend_pid())")
+SELECT 'groups=' || CASE WHEN count(*) > 0 THEN 'yes' ELSE 'no' END
+FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+WHERE l.locktype = 'advisory' AND l.objsubid = 101 AND l.granted AND $DL_PAUSED;
+SET deadlock_timeout = '3s';
+SELECT set_config('pgc.t0', clock_timestamp()::text, false) IS NULL;
+BEGIN;
+DELETE FROM dl WHERE id = 1502;
+SELECT count(*) FROM dl WHERE id = 1502;
+COMMIT;
+SELECT 'p=' || $(dl_ms_sql);
+SQL
+)"
+	dl_rw_wait
+	echo "$(grep -o '^groups=.*' <<<"$out" || echo groups=none)" \
+		"$(grep -o '^p=.*' <<<"$out" || echo p=none)" "rewrite=$DL_RW"
+	grep 'ERROR' <<<"$out" >&2
+	grep -h 'ERROR' "$PGC_WORKDIR/dl.rw" >&2
+	return 0
+}
+
+# dl_ms_in WORD LO HI: "yes" when WORD=<ms> in the input is a number in [LO, HI), else what it was
+dl_ms_in() {
+	awk -v w="$1" -v lo="$2" -v hi="$3" '{for (i = 1; i <= NF; i++) if (index($i, w "=") == 1) {
+		v = substr($i, length(w) + 2); print (v ~ /^[0-9]+$/ && v + 0 >= lo && v + 0 < hi) ? "yes" : "no (" $i ")"; exit }
+		print "no (" w " missing)"}'
+}
+
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	got="$(dl_turnstile "$verb")"
+	check "a new transaction, in a session that wrote before, waits at the turnstile while the $name waits on a busy group" \
+		"$(dl_ms_in n 800 100000 <<<"$got")" "yes"
+	check "and it stops waiting after its 1 s deadlock_timeout, within 2.5 s, while the $name still waits" \
+		"$(dl_ms_in n 0 2500 <<<"$got")" "yes"
+	check "a transaction that already holds a group lock does not wait at the $name's turnstile, under 1 s against its 3 s deadlock_timeout" \
+		"$(dl_ms_in h 0 1000 <<<"$got")" "yes"
+	check "a transaction that holds the storage-row lock does not wait at the $name's turnstile, under 1 s against its 3 s deadlock_timeout" \
+		"$(dl_ms_in h2 0 1000 <<<"$got")" "yes"
+	check "and the $name behind those writers finishes" "$(grep -o 'rewrite=[a-z]*' <<<"$got")" "rewrite=ok"
+	check "and every write beside the $name's turnstile took effect" \
+		"$(q "SELECT count(*) FILTER (WHERE id IN (47, 49, 50, 1501, 2996, 2997)) || ' ' || count(*) FILTER (WHERE id = 0) FROM dl;")" "0 1"
+done
+got="$(dl_given_back)"
+check "a compact_rewrite paused after it took its group lock holds it" "$(cut -d' ' -f1 <<<"$got")" "groups=yes"
+check "and a delete in a group it does not rewrite, with a 3 s deadlock_timeout, goes on within 1.5 s: the turnstile was given back" \
+	"$(dl_ms_in p 0 1500 <<<"$got")" "yes"
+check "and that paused compact_rewrite commits" "$(cut -d' ' -f3 <<<"$got")" "rewrite=ok"
 
 pgc_summary

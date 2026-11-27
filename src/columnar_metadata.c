@@ -38,6 +38,10 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
+#include "utils/wait_event.h"
+#include "storage/latch.h"
+#include "storage/proc.h"
 
 /* attribute numbers for columnar.options (spec 7.4) */
 #define Anum_options_regclass 1
@@ -1797,11 +1801,137 @@ delete_vector_chunk_lock_key(uint64 storageId, uint64 stripeId, int chunkId)
  *		acquire chunk-group locks in a consistent global order (see
  *		delete_vector_flush_buffer) so two transactions cannot form an AB-BA cycle.
  */
+/* -------------------------------------------------------------------------
+ * The rewrite turnstile (#2185)
+ *
+ * recluster and compact_rewrite take every row-group lock (class 101) they need,
+ * and the storage-row lock (class 102), without ever waiting while they hold one
+ * (#2074; see lock_rewrite_groups in columnar_vacuum.c). Nothing kept their
+ * place, so under a steady stream of short deletes new deleters took a group's
+ * lock ahead of them at every try, and they stopped with 55P03 at
+ * rewrite_lock_timeout.
+ *
+ * The turnstile gives the rewrite its place. The rewrite holds it, in
+ * ExclusiveLock, while it takes its locks, and gives it back once it has them
+ * all. A transaction that holds no 101 or 102 lock yet, of any table, first
+ * waits for the turnstile of the storage before it takes a row-group lock. So
+ * the deleters that started after the rewrite began to wait hold off, the ones
+ * already in flight finish, and the rewrite gets every lock within about the
+ * longest of those. The storage-row lock needs no turnstile: the rewrite waits
+ * for that one in the lock manager, holding only the turnstile, so writers that
+ * want it after the rewrite queue behind the rewrite there.
+ *
+ * Two rules keep this from adding a deadlock or a stall:
+ *
+ *   - The wait is a poll (a conditional try every 10 ms), not a lock wait. The
+ *     waiter adds no edge to the lock manager's wait-for graph, so no cycle
+ *     passes through it, and the maintenance daemon, which a blocked backend
+ *     would cancel after deadlock_timeout, is not cancelled by it.
+ *   - The wait lasts at most deadlock_timeout, the time PostgreSQL itself lets a
+ *     lock wait run before it looks for a cycle. Then the writer goes on as
+ *     before. So a writer the rewrite waits for, through some other lock, holds
+ *     both up for at most that long, and a rewrite that waits for a writer that
+ *     stays open delays new writers by at most that much each.
+ *
+ * A writer that already holds a 101 or 102 lock skips the turnstile: the
+ * rewrite may be waiting for that very lock. It is noted per transaction, for
+ * every table, because a lock on one table can be what another table's rewrite
+ * waits for through a third session. A rewrite's own locks are not noted; a
+ * rewrite passes its own turnstile at once, and its transaction can wait at
+ * another table's for at most deadlock_timeout.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Has this transaction, as a writer, taken or set out to take a 101 or 102 lock?
+ * Set before the delete path's 101 (rewrite_turnstile_pass) and the insert
+ * path's 102 (PgColumnarInsertNativeStorageRow).
+ */
+static bool rewrite_turnstile_passed = false;
+
+static void
+rewrite_turnstile_tag(LOCKTAG *tag, uint64 storageId)
+{
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_REWRITE_TURNSTILE);
+}
+
+/*
+ * Called before every wait for a 101 lock. The first such lock, or 102 lock, of
+ * a transaction waits, for at most deadlock_timeout, while a rewrite of
+ * storageId holds the turnstile. A rewrite passes its own turnstile at once: a
+ * backend's own lock never conflicts with its request.
+ */
+static void
+rewrite_turnstile_pass(uint64 storageId)
+{
+	LOCKTAG		tag;
+	TimestampTz start;
+
+	if (rewrite_turnstile_passed)
+		return;
+	rewrite_turnstile_passed = true;
+
+	rewrite_turnstile_tag(&tag, storageId);
+	start = GetCurrentTimestamp();
+	for (;;)
+	{
+		if (LockAcquire(&tag, ShareLock, false, true) != LOCKACQUIRE_NOT_AVAIL)
+		{
+			LockRelease(&tag, ShareLock, false);
+			return;
+		}
+		if (TimestampDifferenceExceeds(start, GetCurrentTimestamp(), DeadlockTimeout))
+			return;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/*
+ * PgColumnarLockRewriteTurnstile / PgColumnarUnlockRewriteTurnstile
+ *		A rewrite holds the turnstile while it takes its locks (lock_rewrite_groups).
+ *		Writers hold it only for an instant, so the wait is short.
+ */
+void
+PgColumnarLockRewriteTurnstile(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	rewrite_turnstile_tag(&tag, storageId);
+	(void) LockAcquire(&tag, ExclusiveLock, false, false);
+}
+
+void
+PgColumnarUnlockRewriteTurnstile(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	rewrite_turnstile_tag(&tag, storageId);
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
+/*
+ * At commit and abort: the next transaction holds no lock yet. PREPARE does not
+ * reach here, so the transaction after one skips the turnstile, which costs
+ * that transaction's place behind a rewrite and nothing else.
+ */
+void
+PgColumnarRewriteTurnstileAtXactEnd(void)
+{
+	rewrite_turnstile_passed = false;
+}
+
 static void
 delete_vector_lock_chunk_group(uint64 storageId, uint64 stripeId, int chunkId)
 {
 	LOCKTAG		tag;
 	uint64		key = delete_vector_chunk_lock_key(storageId, stripeId, chunkId);
+
+	rewrite_turnstile_pass(storageId);
 
 	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
 						 (uint32) (key >> 32), (uint32) (key & 0xFFFFFFFF),
@@ -2371,6 +2501,8 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 		}
 		goto insert_row;
 	}
+	/* the storage-row lock below: see rewrite_turnstile_pass (#2185) */
+	rewrite_turnstile_passed = true;
 
 	storage_row_lock_tag(&tag, s->storageId);
 	(void) LockAcquire(&tag, ExclusiveLock, false /* transaction lock */ ,
