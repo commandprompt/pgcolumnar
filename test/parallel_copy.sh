@@ -1236,6 +1236,41 @@ check "parallel_copy refuses 4 workers when a unique index appears after its che
 	"$(late_unique t_ur4 4) | $(q "SELECT CASE WHEN is_called THEN 'a loader inserted a row' ELSE 'no row inserted' END FROM t_ur4_rows")" \
 	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" with more than one worker, because it has a unique or exclusion index | no hint | no row inserted'
 
+# ---- #2200: a temporal primary key is a unique AND an exclusion index ---------
+# PostgreSQL 18's PRIMARY KEY (id, during WITHOUT OVERLAPS) builds one index with
+# indisunique and indisexclusion both true, the one shape no table above has. So
+# the refusal must not test that exactly one of the two flags is set: with
+# `indisunique != indisexclusion` every check above passed, and this load of
+# distinct keys hung until its statement_timeout (57014). The file carries a
+# third column, so the rows fit the table: a load that is not refused would run.
+# The int key part needs btree_gist, which test/temporal.sh needs too. A missing
+# btree_gist fails this check on 18 and later (#448: a box that cannot run it has
+# not passed it). WITHOUT OVERLAPS does not exist before 18, so the check is a
+# SKIP there. The major is asserted first, so an unreadable one fails the check
+# rather than being taken for an old one.
+if ! pgc_is_number "${PGC_MAJOR:-}"; then
+	check "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" \
+		"unreadable server major [${PGC_MAJOR:-<none>}]" "a server major to gate on"
+elif [ "$PGC_MAJOR" -ge 18 ]; then
+	F_TPK="$DATADIR/temporal_pk.txt"
+	psql_run "COPY (SELECT g, 'host_'||g, daterange(date '2020-01-01' + g, date '2020-01-01' + g + 1)
+	                FROM generate_series(1, 5000) g) TO '$F_TPK' WITH (FORMAT text);" >/dev/null
+	tpk_setup="$(remote_refusal "CREATE EXTENSION IF NOT EXISTS btree_gist;
+	    CREATE TABLE t_utp (id int, txt text, during daterange,
+	      PRIMARY KEY (id, during WITHOUT OVERLAPS)) USING pgcolumnar;")"
+	if [ "${tpk_setup#no error (}" = "$tpk_setup" ]; then
+		check "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" "setup failed: $tpk_setup" "$(want_unique t_utp) | 0 rows"
+	else
+		check "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" \
+			"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_utp'::regclass, '$F_TPK', 2)") | $(q "SELECT count(*) FROM t_utp") rows" \
+			"$(want_unique t_utp) | 0 rows"
+	fi
+else
+	check_skip "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" \
+		"SKIP  parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200) (PostgreSQL $PGC_MAJOR has no WITHOUT OVERLAPS; 18 added it)" \
+		"PostgreSQL $PGC_MAJOR has no WITHOUT OVERLAPS"
+fi
+
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
 # a projection at statement end with no active snapshot. It does not: on main's

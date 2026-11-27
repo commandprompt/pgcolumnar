@@ -2286,4 +2286,8 @@ guard_tests 897
 # file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
 # in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
 # collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
-cluster_tests 5720
+# cluster_tests 5720 -> 5721 for #2200's test in test_parallel_copy.py (parallel_copy refuses a single
+# table with a temporal primary key, whose index is both unique and exclusion, on PostgreSQL 18 and later),
+# by collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5721 tests collected (5720 on
+# main 91637726).
+cluster_tests 5721
