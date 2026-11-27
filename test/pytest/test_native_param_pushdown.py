@@ -241,11 +241,12 @@ NONC_Q = ("SELECT collname FROM pg_collation "
 # tk holds each clause shape the scan can key, 20 groups of 2000 rows. tkh is a heap copy.
 TK = ["SET pgcolumnar.stripe_row_limit = 2000",
       "CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"{nonc}\", v varchar, tsp timestamp, "
-      "r tsrange, tsz timestamptz) USING pgcolumnar",
+      "r tsrange, tsz timestamptz, d date) USING pgcolumnar",
       "INSERT INTO tk SELECT g, lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), "
       "timestamp '2020-01-01' + g * interval '1 hour', "
       "tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour'), "
-      "timestamptz '2020-01-01 00:00+00' + g * interval '1 hour' "
+      "timestamptz '2020-01-01 00:00+00' + g * interval '1 hour', "
+      "(timestamp '2020-01-01' + g * interval '1 hour')::date "
       "FROM generate_series(1, 40000) g",
       "CREATE TABLE tkh AS SELECT * FROM tk"]
 # Clauses that can never be scan keys: ts < 0, tsp < '2000-01-01' and sc/sn < '' hold
@@ -298,6 +299,9 @@ PRUNE3 = (
     ("prune rdom overlap", "rdom", "{t} WHERE r && $1", "'[2024-07-01,2024-07-02)'"),
     ("prune date_trunc upper unit", "timestamp", "{t} WHERE date_trunc('Day', tsp) = $1", "'2024-07-01'"),
     ("prune tstz column", "timestamptz", "{t} WHERE tsz >= $1", "'2024-07-01 00:00+00'"),
+    # the timestamptz decline must stay narrow (review of 164d61da)
+    ("prune date operand", "date", "{t} WHERE tsp >= $1", "'2024-07-01'"),
+    ("prune tstz on date column", "timestamptz", "{t} WHERE d >= $1", "'2024-07-01 00:00+00'"),
 )
 # prsc's rows are in random order, so its groups cannot prune; prsk holds the same rows
 # in k order, so its projection's groups can.
@@ -953,7 +957,7 @@ def test_param_pushdown_a_stable_timestamptz_operand_compared_with_a_timestamp_d
 
 
 def test_param_pushdown_the_heap_copy_answers_the_bound_domain_and_varchar_queries(pp, expect):
-    expect.text(pp["prune heap 3"], "100 100 24 569 24 24 569",
+    expect.text(pp["prune heap 3"], "100 100 24 569 24 24 569 569 569",
                 "the heap copy answers the bound domain and varchar pruning queries (premise) (#2065)")
 
 
@@ -990,6 +994,16 @@ def test_param_pushdown_a_bound_param_compared_with_date_trunc_to_an_upper_case_
 def test_param_pushdown_a_bound_timestamptz_param_compared_with_a_timestamptz_column_prunes(pp, expect):
     expect.text(pp["prune tstz column"], "19|569",
                 "a bound timestamptz parameter compared with a timestamptz column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_date_param_compared_with_a_timestamp_column_prunes(pp, expect):
+    expect.text(pp["prune date operand"], "19|569",
+                "a bound date parameter compared with a timestamp column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_timestamptz_param_compared_with_a_date_column_prunes(pp, expect):
+    expect.text(pp["prune tstz on date column"], "19|569",
+                "a bound timestamptz parameter compared with a date column prunes (#2065)")
 
 
 def test_param_pushdown_a_projection_scan_with_a_first_run_key_removes_groups(pp, expect):

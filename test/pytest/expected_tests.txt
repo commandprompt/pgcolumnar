@@ -2437,4 +2437,8 @@ guard_tests 897
 # timestamptz parameter prune; a projection scan and a hash-join rescan with a key frozen at the first run
 # remove groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5952 tests collected after the merge of main 6094d3a6 (5724 before the merges of 4cdd25a1 and 6094d3a6).
-cluster_tests 5952
+# cluster_tests 5952 -> 5954 for #2065's two tests from the tenth #2133 review in test_native_param_pushdown.py
+# (a bound date parameter on a timestamp column and a bound timestamptz parameter on a date column each prune
+# 19 of 20 groups), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5954 tests collected.
+cluster_tests 5954

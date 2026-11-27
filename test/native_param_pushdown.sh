@@ -429,11 +429,12 @@ check "premise: sn's collation orders a lower-case letter before an upper-case o
 	"$(q "SELECT ('a' < 'B' COLLATE \"$NONC\")::text || '|' || ('a' < 'B' COLLATE \"C\")::text;")" "true|false"
 q "SET pgcolumnar.stripe_row_limit=2000;
    CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"$NONC\", v varchar, tsp timestamp, r tsrange,
-	tsz timestamptz) USING pgcolumnar;
+	tsz timestamptz, d date) USING pgcolumnar;
    INSERT INTO tk SELECT g, lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), lpad(g::text, 6, '0'),
 	timestamp '2020-01-01' + g * interval '1 hour',
 	tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour'),
-	timestamptz '2020-01-01 00:00+00' + g * interval '1 hour'
+	timestamptz '2020-01-01 00:00+00' + g * interval '1 hour',
+	(timestamp '2020-01-01' + g * interval '1 hour')::date
 	FROM generate_series(1, 40000) g;
    CREATE TABLE tkh AS SELECT * FROM tk;" >/dev/null
 
@@ -553,8 +554,8 @@ check "a stable timestamptz operand compared with a timestamp domain column is n
 # timestamptz parameter still prunes, and date_trunc reads its unit in any case.
 q "CREATE DOMAIN tdom AS text; CREATE DOMAIN rdom AS tsrange;" >/dev/null
 check "the heap copy answers the bound domain and varchar pruning queries (premise) (#2065)" \
-	"$(heap_count varchar "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tdom "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tsdom "tkh WHERE date_trunc('day', tsp) = \$1" "'2024-07-01'") $(heap_count tsdom "tkh WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'") $(heap_count rdom "tkh WHERE r && \$1" "'[2024-07-01,2024-07-02)'") $(heap_count timestamp "tkh WHERE date_trunc('Day', tsp) = \$1" "'2024-07-01'") $(heap_count timestamptz "tkh WHERE tsz >= \$1" "'2024-07-01 00:00+00'")" \
-	"100 100 24 569 24 24 569"
+	"$(heap_count varchar "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tdom "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tsdom "tkh WHERE date_trunc('day', tsp) = \$1" "'2024-07-01'") $(heap_count tsdom "tkh WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'") $(heap_count rdom "tkh WHERE r && \$1" "'[2024-07-01,2024-07-02)'") $(heap_count timestamp "tkh WHERE date_trunc('Day', tsp) = \$1" "'2024-07-01'") $(heap_count timestamptz "tkh WHERE tsz >= \$1" "'2024-07-01 00:00+00'") $(heap_count date "tkh WHERE tsp >= \$1" "'2024-07-01'") $(heap_count timestamptz "tkh WHERE d >= \$1" "'2024-07-01 00:00+00'")" \
+	"100 100 24 569 24 24 569 569 569"
 check "a bound varchar parameter in LIKE on a C-collated column prunes (#2065)" \
 	"$(prune_arm varchar "tk WHERE sc LIKE \$1" "'0390%'")" "19|100"
 check "a bound text domain parameter in LIKE on a C-collated column prunes (#2065)" \
@@ -569,6 +570,12 @@ check "a bound parameter compared with date_trunc to an upper-case unit (Day) pr
 	"$(prune_arm timestamp "tk WHERE date_trunc('Day', tsp) = \$1" "'2024-07-01'")" "19|24"
 check "a bound timestamptz parameter compared with a timestamptz column prunes (#2065)" \
 	"$(prune_arm timestamptz "tk WHERE tsz >= \$1" "'2024-07-01 00:00+00'")" "19|569"
+# The timestamptz decline must stay narrow: the reader keys a date operand on a
+# timestamp column, and a timestamptz operand on a date column (review of 164d61da).
+check "a bound date parameter compared with a timestamp column prunes (#2065)" \
+	"$(prune_arm date "tk WHERE tsp >= \$1" "'2024-07-01'")" "19|569"
+check "a bound timestamptz parameter compared with a date column prunes (#2065)" \
+	"$(prune_arm timestamptz "tk WHERE d >= \$1" "'2024-07-01 00:00+00'")" "19|569"
 
 # The projection and rescan arms above check answers; these check that the keys
 # frozen at the first run still prune there (the attacker's surviving mutants). The
