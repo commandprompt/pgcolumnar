@@ -605,6 +605,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  or `smallint` column over an Iceberg `boolean`, a `bigint` column over a
+  decimal partitioned by bucket, and a `text` column over an Iceberg `int`
+  partitioned by bucket. The FDW matches the Iceberg field by
+  its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
 - A local `export_parquet` or `export_arrow` that ends with FATAL no longer
   leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
   to that temp file and renames it at the end. On an error the writer removes
