@@ -27,6 +27,7 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
+#include "common/int.h"		/* pg_add_s64_overflow */
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
 #include "commands/explain_state.h"
@@ -938,10 +939,11 @@ ice_floordiv(int64 a, int64 b)
 }
 
 /*
- * Map a PostgreSQL timestamp (micros from 2000) to the integer partition bucket
- * an Iceberg `kind` transform stores, all from the 1970 epoch in UTC. Returns
- * false for a non-finite timestamp (infinity), which has no bucket and must not
- * prune. year()/month() decompose the calendar; day()/hour() are floors of the
+ * Map a PostgreSQL timestamp (micros from 2000) to the integer partition
+ * bucket an Iceberg `kind` transform stores, all from the 1970 epoch in UTC.
+ * Returns false for a non-finite timestamp (infinity), or one too late to move
+ * to the 1970 epoch in int64 (#2230), which has no bucket and must not prune.
+ * year()/month() decompose the calendar; day()/hour() are floors of the
  * elapsed micros.
  */
 static bool
@@ -964,7 +966,16 @@ ice_temporal_bucket(IceTemporalKind kind, Timestamp ts, int64 *out)
 	}
 	else
 	{
-		int64		us = ts + ICE_TS_EPOCH_OFFSET_US;
+		int64		us;
+
+		/*
+		 * A timestamp after 294247-01-10 04:00:54.775807 overflows int64 when
+		 * moved to the 1970 epoch. A wrapped sum is a large negative bucket that
+		 * would prune every file for "ts < const" (#2230). No stored value can
+		 * be that late, so there is no bucket to compare: do not prune.
+		 */
+		if (pg_add_s64_overflow(ts, ICE_TS_EPOCH_OFFSET_US, &us))
+			return false;
 
 		if (kind == ICE_TEMPORAL_DAY)
 			*out = ice_floordiv(us, USECS_PER_DAY);

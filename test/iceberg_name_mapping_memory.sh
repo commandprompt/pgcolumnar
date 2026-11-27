@@ -105,11 +105,19 @@ open(d + "/mapping.json", "w").write(nm)
 PY_FIX
 }
 
+# PGC_NMMEM_READINGS_<N>, when set to "core scan" in kB, replaces the two peaks
+# measured for the arm of N entries. It exists to show the checks below what a
+# runner that reads the scan low gives (#2199); no run sets it otherwise.
 measure() {	# measure N -> "core scan overhead", in kB
-	local n="$1" core scan
+	local n="$1" core scan fake
 	build_fixture "$n"
-	core="$(peak "SELECT length(pg_read_file('$MDIR/mapping.json')::jsonb::text)")"
-	scan="$(peak "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDIR/pad.metadata.json') AS t(id bigint, region text, amount int)")"
+	fake="PGC_NMMEM_READINGS_$n"
+	if [ -n "${!fake:-}" ]; then
+		read -r core scan <<<"${!fake}"
+	else
+		core="$(peak "SELECT length(pg_read_file('$MDIR/mapping.json')::jsonb::text)")"
+		scan="$(peak "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDIR/pad.metadata.json') AS t(id bigint, region text, amount int)")"
+	fi
 	[ -z "$core" ] || [ -z "$scan" ] && { echo ""; return 1; }
 	echo "$core $scan $(( scan - core ))"
 }
@@ -125,17 +133,43 @@ check_text "the small arm produced three readings" \
 	"$([ "$(wc -w <<<"$small")" -eq 3 ] && echo 1 || echo "0 (readings [$small])")" 1
 check_text "the large arm produced three readings" \
 	"$([ "$(wc -w <<<"$large")" -eq 3 ] && echo 1 || echo "0 (readings [$large])")" 1
+
+# A scan peak below core's floor is not a measurement (#2199). The scan parses
+# the same bytes core's arm does, and more, so its peak cannot be lower; a
+# negative overhead means the reading went wrong. CI once read the small scan at
+# 1880 kB against a 127828 kB floor, and the slope below came out 221 bytes an
+# entry from that alone. The checks that compare readings are then unrunnable,
+# not failed and not passed. below_floor READING -> "1" when it holds three
+# numbers and the scan is below the floor.
+below_floor() {
+	local c s rest
+	read -r c s rest <<<"$1"
+	pgc_is_number "$c" && pgc_is_number "$s" && [ "$s" -lt "$c" ] && echo 1
+}
+LOW=""
+[ -n "$(below_floor "$small")" ] && LOW="$LOW small"
+[ -n "$(below_floor "$large")" ] && LOW="$LOW large"
+LOW_WHY="a scan peak below core's parse floor is not a measurement (the${LOW} arm), from readings [$small] [$large]"
+
 # And the core floor must actually dominate, or the subtraction is measuring
 # noise rather than a floor -- which is the whole basis for using a difference.
 cf="$(awk '{print $1}' <<<"$large")"; ov="$(awk '{print $3}' <<<"$large")"
-check_text "core's own parse is the larger part of the scan's peak" \
-	"$(pgc_is_number "$cf" && pgc_is_number "$ov" && [ "$cf" -gt "$ov" ] && echo 1 \
-	   || echo "0 (core floor [$cf] kB, overhead [$ov] kB)")" 1
+if [ -n "$LOW" ]; then
+	check_unrunnable "core's own parse is the larger part of the scan's peak" UNMET_PRECONDITION "$LOW_WHY"
+else
+	check_text "core's own parse is the larger part of the scan's peak" \
+		"$(pgc_is_number "$cf" && pgc_is_number "$ov" && [ "$cf" -gt "$ov" ] && echo 1 \
+		   || echo "0 (core floor [$cf] kB, overhead [$ov] kB)")" 1
+fi
 # The fixture has to be big enough that the two sizes differ measurably at all.
 sp="$(awk '{print $2}' <<<"$small")"; lp="$(awk '{print $2}' <<<"$large")"
-check_text "the two sizes give different peaks" \
-	"$(pgc_is_number "$sp" && pgc_is_number "$lp" && [ "$lp" -gt $(( sp * 2 )) ] && echo 1 \
-	   || echo "0 (scan peaks: small [$sp] kB, large [$lp] kB)")" 1
+if [ -n "$LOW" ]; then
+	check_unrunnable "the two sizes give different peaks" UNMET_PRECONDITION "$LOW_WHY"
+else
+	check_text "the two sizes give different peaks" \
+		"$(pgc_is_number "$sp" && pgc_is_number "$lp" && [ "$lp" -gt $(( sp * 2 )) ] && echo 1 \
+		   || echo "0 (scan peaks: small [$sp] kB, large [$lp] kB)")" 1
+fi
 
 # THE CLAIM. Bytes of pgcolumnar-attributable memory per mapping entry, as a
 # slope so the fixed cost of opening the file and reading the data cancels.
@@ -150,9 +184,13 @@ per_entry="$(awk -v lo="$(awk '{print $3}' <<<"$small")" -v hi="$(awk '{print $3
 echo "      pgcolumnar-attributable memory per mapping entry: ${per_entry} bytes"
 # Only over two real readings: awk reads a missing overhead as 0, so with either
 # measurement failed the slope was 0 and this passed (measured).
-check_text "the name-mapping parse does not allocate per entry (#731)" \
-	"$([ "$(wc -w <<<"$small")" -eq 3 ] && [ "$(wc -w <<<"$large")" -eq 3 ] && [ "$per_entry" -lt 30 ] && echo 1 \
-	   || echo "0 ($per_entry bytes an entry, from readings [$small] [$large])")" 1
+if [ -n "$LOW" ]; then
+	check_unrunnable "the name-mapping parse does not allocate per entry (#731)" UNMET_PRECONDITION "$LOW_WHY"
+else
+	check_text "the name-mapping parse does not allocate per entry (#731)" \
+		"$([ "$(wc -w <<<"$small")" -eq 3 ] && [ "$(wc -w <<<"$large")" -eq 3 ] && [ "$per_entry" -lt 30 ] && echo 1 \
+		   || echo "0 ($per_entry bytes an entry, from readings [$small] [$large])")" 1
+fi
 
 # The answers must be unchanged throughout: a fix that reclaimed a name still in
 # use would show up here and not in the number above.
