@@ -15089,21 +15089,22 @@ Each refusal reads `<what import_arrow returned, or SQLSTATE message>|<rows stor
 
 ## 364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time
 
-The `pytest-cluster` job in `ci.yml` and in `nightly.yml` runs the cluster half of the corpus serially under `timeout-minutes` (#2232). At 40 minutes, PG 17 on #2228 (run 46017483389, attempt 1) was cancelled with every test up to 96% passing. On 2026-11-27 the slowest of 114 passing ci.yml cluster jobs took 38.0 minutes, and the nightly's legs took up to 37.5.
+The `pytest-cluster` job in `ci.yml` and in `nightly.yml` runs the cluster half of the corpus serially under `timeout-minutes` (#2232). At 40 minutes, PG 17 on #2228 (run 46017483389, attempt 1) was cancelled after 40.25 minutes with every test up to 96% passing. On 2026-11-27 the nightly's PG 18 legs took 39.8 minutes (run 46040381293, x86_64) and 38.9 (run 46032807880, aarch64). Counting the cancelled leg as a lower bound, the slowest job is at least 41 minutes.
 
-The rule, on both workflows: the job's own timeout is at least 1.5 times the slowest measured job (57 minutes) and at most twice it (76 minutes). The measurement is `MEASURED_MAX_MINUTES` in the file, with its source beside it. Only the job-level key counts: not a comment, not a step's timeout, not the next job's.
+The rule, on both workflows: the job's own timeout is at least 1.5 times the slowest measured job (62 minutes) and at most twice it (82 minutes). Both workflows use 65. The measurement is `MEASURED_MAX_MINUTES` in the file, with its source beside it. Only the job-level key counts: not a comment, not a step's timeout, not the next job's. A trailing YAML comment after the value is allowed. A job-level key given twice is refused, because this reader would take the first and PyYAML takes the last.
 
 Removal proof, each failing a test here:
 
-- main's 40 in `ci.yml`: `got '40 < 57' want 'yes'`;
-- `nightly.yml` alone left at 40: `nightly.yml: ... got '40 < 57'`;
-- 56 in `ci.yml`: `got '56 < 57'`; 90 in `ci.yml`: `got '90 > 76'`;
-- the job's timeout commented out, with a step carrying `timeout-minutes: 60`: `premise: ci.yml's pytest-cluster job has a timeout: got 'False'`;
-- the reader matching any indentation: `got '5' want 'None'`; the reader not stopping at the next job: `got '15' want 'None'`.
+- the previous 60 against the measured 41: `got '60 < 62' want 'yes'`;
+- 61 or 83, in either workflow: `got '61 < 62'`, `got '83 > 82'`; 62 and 82 pass;
+- the job's timeout commented out, with a step carrying one: the premise, `got 'False'`;
+- the reader matching any indentation: `got '5' want 'None'`; the reader not stopping at the next job: `got '15' want 'None'`;
+- the reader without the trailing-comment allowance: `got 'None' want '60'`;
+- the reader taking the first of two keys: `got '60' want 'None'`.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read; a comment, a step's timeout and the next job's are not; a job without one, and a missing job, read as none |
-| `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job's timeout is between 1.5 and 2 times `MEASURED_MAX_MINUTES` |
+| `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read, with or without a trailing comment; a comment line, a step's timeout and the next job's are not; a job without one, a missing job, and a job that gives the key twice read as none |
+| `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job has exactly one timeout of its own, between 1.5 and 2 times `MEASURED_MAX_MINUTES` |
