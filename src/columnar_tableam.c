@@ -109,6 +109,7 @@ int			pgcolumnar_rewrite_lock_timeout = 10000;	/* ms; 0 waits without limit (#20
 int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
 int			pgcolumnar_flush_hold_ms = 0;	/* dev/test: #2266 flush catalog order */
 int			pgcolumnar_vm_set_release_hold_ms = 0;	/* dev/test: #2268 set-to-release window */
+int			pgcolumnar_delete_flush_hold_ms = 0;	/* dev/test: #2268 flush lock-to-row window */
 
 /* pgcolumnar.objstore_s3_addressing (#621, #2091) */
 static const struct config_enum_entry pgcolumnar_s3_addressing_options[] = {
@@ -5353,6 +5354,23 @@ _PG_init(void)
 							"group's all-visible blocks and before releasing the group.",
 							NULL,
 							&pgcolumnar_vm_set_release_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
+							NULL, NULL, NULL);
+
+	/*
+	 * A developer pause for a delete flush (#2268): after the flush takes its
+	 * chunk-group locks and before it writes any delete_vector row, it waits
+	 * this long, so a test can run a lazy VACUUM that meets a group whose
+	 * lock is held and whose delete is not in the catalog yet. Superuser-only
+	 * and off by default.
+	 */
+	DefineCustomIntVariable("pgcolumnar.delete_flush_hold_ms",
+							"Dev/test: wait this many ms in a delete flush after taking "
+							"its chunk-group locks and before writing its delete_vector rows.",
+							NULL,
+							&pgcolumnar_delete_flush_hold_ms,
 							0, 0, 600000,
 							PGC_SUSET,
 							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,

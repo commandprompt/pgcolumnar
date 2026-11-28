@@ -313,6 +313,7 @@ extern int	pgcolumnar_rewrite_lock_timeout;	/* ms a rewrite may spend taking its
 extern int	pgcolumnar_vm_set_hold_ms;	/* dev/test: pause lazy VACUUM between VM compute and set */
 extern int	pgcolumnar_flush_hold_ms;	/* dev/test: pause a flush before its row_group row */
 extern int	pgcolumnar_vm_set_release_hold_ms;	/* dev/test: pause lazy VACUUM after a set (#2268) */
+extern int	pgcolumnar_delete_flush_hold_ms;	/* dev/test: pause a delete flush holding its group locks (#2268) */
 
 /* Phase 6 GUCs (spec 8.3) */
 extern bool pgcolumnar_enable_vectorization;	/* vectorized aggregate path */

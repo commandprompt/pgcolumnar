@@ -600,6 +600,50 @@ def _rl_order(dsn, r):
     r["od stats"] = _value(dsn, stats)
 
 
+def _rl_busy(dsn, r):
+    """11f: a writer's flush pauses after the group's lock and before its
+    delete_vector row (pgcolumnar.delete_flush_hold_ms); a plain VACUUM runs
+    during the pause and must leave block 1 unset without waiting."""
+    _load(dsn, "vr_busy", 20000)
+    r["bz before"] = _value(dsn, _vis("vr_busy", 1))
+    wait = "SELECT wait_event FROM pg_stat_activity WHERE query LIKE 'WITH d AS (DELETE FROM vr_busy%'"
+    out = {}
+
+    def write():
+        try:
+            with psycopg.connect(dsn, autocommit=True) as w:
+                w.execute("SET pgcolumnar.delete_flush_hold_ms = 8000")
+                w.execute("SET statement_timeout = '60s'")
+                out["written"] = str(w.execute(
+                    "WITH d AS (DELETE FROM vr_busy WHERE id BETWEEN 300 AND 400 RETURNING 1) "
+                    "SELECT count(*) FROM d").fetchone()[0])
+        except psycopg.Error as exc:
+            out["written"] = f"ERROR:  {exc.sqlstate}"
+
+    t = threading.Thread(target=write)
+    t.start()
+    paused = "no"
+    for _ in range(150):
+        if _value(dsn, wait) == "Extension":
+            paused = "yes"
+            break
+        time.sleep(0.1)
+    r["bz paused"] = f"{paused}|{_value(dsn, _vis('vr_busy', 1))}"
+    try:
+        with psycopg.connect(dsn, autocommit=True) as v:
+            v.execute("SET statement_timeout = 5000")
+            v.execute("VACUUM vr_busy")
+            r["bz vac"] = "VACUUM"
+    except psycopg.Error as exc:
+        r["bz vac"] = f"ERROR:  {exc.sqlstate}"
+    r["bz still"] = _value(dsn, wait)
+    r["bz bit"] = _value(dsn, _vis("vr_busy", 1))
+    t.join(90)
+    r["bz written"] = out.get("written", "writer did not finish")
+    r["bz after"] = _value(dsn, _vis("vr_busy", 1))
+    r["bz ios"] = _ios(dsn, "SELECT count(*) FROM vr_busy WHERE id BETWEEN 300 AND 400")
+
+
 @pytest.fixture(scope="module")
 def io(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -748,6 +792,7 @@ def io(pgc_cluster):
         _rl_open(dsn, r)
         _rl_strad(dsn, r)
         _rl_order(dsn, r)
+        _rl_busy(dsn, r)
         _run(dsn, "CREATE ROLE rl_plain LOGIN")
         try:
             with psycopg.connect(dsn.replace("user=postgres", "user=rl_plain"), autocommit=True) as plain:
@@ -756,6 +801,13 @@ def io(pgc_cluster):
         except psycopg.Error as exc:
             r["rl suset"] = f"ERROR:  {exc.sqlstate}"
             r["rl suset msg"] = exc.diag.message_primary
+        try:
+            with psycopg.connect(dsn.replace("user=postgres", "user=rl_plain"), autocommit=True) as plain:
+                plain.execute("SET pgcolumnar.delete_flush_hold_ms = 1000")
+                r["rl suset2"] = "SET"
+        except psycopg.Error as exc:
+            r["rl suset2"] = f"ERROR:  {exc.sqlstate}"
+            r["rl suset2 msg"] = exc.diag.message_primary
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1465,3 +1517,43 @@ def test_2268_release_hold_is_superuser_only(io, expect):
     expect.text(f"{io['rl suset']}: {io.get('rl suset msg', '')}",
                 'ERROR:  42501: permission denied to set parameter "pgcolumnar.vm_set_release_hold_ms"',
                 "#2268 a role without superuser cannot set pgcolumnar.vm_set_release_hold_ms")
+
+
+def test_2268_premise_busy_flush_block_1_all_visible_before(io, expect):
+    expect.text(io["bz before"], "t",
+                "#2268 premise: a writer paused inside its flush: block 1 all-visible before the writer starts")
+
+
+def test_2268_premise_busy_flush_paused_holding_lock_mark_cleared(io, expect):
+    expect.text(io["bz paused"], "yes|f",
+                "#2268 premise: a writer paused inside its flush: it paused holding the group's lock, and its mark cleared block 1")
+
+
+def test_2268_busy_flush_vacuum_did_not_wait(io, expect):
+    expect.text(io["bz vac"], "VACUUM",
+                "#2268 a writer paused inside its flush: vacuum finished without waiting for the writer")
+
+
+def test_2268_premise_busy_flush_writer_still_paused(io, expect):
+    expect.text(io["bz still"], "Extension",
+                "#2268 premise: a writer paused inside its flush: the writer was still paused after vacuum")
+
+
+def test_2268_busy_flush_block_1_not_all_visible(io, expect):
+    expect.text(io["bz bit"], "f",
+                "#2268 a writer paused inside its flush: block 1 not all-visible after vacuum while the writer holds the lock")
+
+
+def test_2268_premise_busy_flush_writer_deleted_101(io, expect):
+    expect.text(io["bz written"], "101", "#2268 premise: a writer paused inside its flush: the writer deleted 101 rows")
+
+
+def test_2268_busy_flush_after_commit(io, expect):
+    expect.text(f"{io['bz after']}|{io['bz ios']}", "f|0",
+                "#2268 a writer paused inside its flush: after the writer commits block 1 is not all-visible and the index-only scan counts no deleted row")
+
+
+def test_2268_delete_flush_hold_is_superuser_only(io, expect):
+    expect.text(f"{io['rl suset2']}: {io.get('rl suset2 msg', '')}",
+                'ERROR:  42501: permission denied to set parameter "pgcolumnar.delete_flush_hold_ms"',
+                "#2268 a role without superuser cannot set pgcolumnar.delete_flush_hold_ms")

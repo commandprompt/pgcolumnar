@@ -960,12 +960,56 @@ od_stats="$(q "SELECT relpages || '|' || relallvisible FROM pg_class WHERE relna
 check "#2268 premise: a block shared by two clean row groups: ANALYZE records 5 pages and the VM's 9 all-visible blocks" "$od_analyzed" "5|9"
 check "#2268 a block shared by two clean row groups: a second vacuum that sets no bit records 4 of the 5 pages all-visible" "$od_stats" "5|4"
 
-# 11e. The new pause is a superuser setting, as vm_set_hold_ms is.
+# 11f. A writer holds the group's lock and its delete is not in the catalog
+# yet: pgcolumnar.delete_flush_hold_ms pauses its flush after the chunk-group
+# lock and before the delete_vector row. Its mark has already cleared block 1.
+# A plain VACUUM runs during that pause. It finds the group clean in the
+# catalog, but the lock is busy, so it must leave block 1 unset and must not
+# wait for the writer. After the writer commits, the index-only scan counts
+# none of the deleted rows.
+psql_run "CREATE TABLE vr_busy (id int, pad int) USING pgcolumnar;"
+psql_run "INSERT INTO vr_busy SELECT g, g FROM generate_series(1, 20000) g;"
+psql_run "CREATE INDEX vr_busy_id ON vr_busy (id);"
+psql_run "VACUUM vr_busy;"
+bz_before="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.delete_flush_hold_ms=8000 -c statement_timeout=60s' \
+	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "WITH d AS (DELETE FROM vr_busy WHERE id BETWEEN 300 AND 400 RETURNING 1) SELECT count(*) FROM d;" \
+	> "$PGC_WORKDIR/vr_busy.writer.out" 2>&1 &
+bz_wpid=$!
+BZ_WAIT="SELECT wait_event FROM pg_stat_activity WHERE query LIKE 'WITH d AS (DELETE FROM vr_busy%';"
+bz_paused="no"
+for i in $(seq 1 150); do
+	if [ "$(q "$BZ_WAIT")" = "Extension" ]; then bz_paused="yes"; break; fi
+	sleep 0.1
+done
+bz_mark="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+bz_vac="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=5000' \
+	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate -c "VACUUM vr_busy;" 2>&1)"
+bz_still="$(q "$BZ_WAIT")"
+bz_bit="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+wait "$bz_wpid" 2>/dev/null || true
+bz_written="$(cat "$PGC_WORKDIR/vr_busy.writer.out")"
+bz_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+bz_ios="$(rl_ios "SELECT count(*) FROM vr_busy WHERE id BETWEEN 300 AND 400;")"
+check "#2268 premise: a writer paused inside its flush: block 1 all-visible before the writer starts" "$bz_before" "t"
+check "#2268 premise: a writer paused inside its flush: it paused holding the group's lock, and its mark cleared block 1" "$bz_paused|$bz_mark" "yes|f"
+check "#2268 a writer paused inside its flush: vacuum finished without waiting for the writer" "$bz_vac" "VACUUM"
+check "#2268 premise: a writer paused inside its flush: the writer was still paused after vacuum" "$bz_still" "Extension"
+check "#2268 a writer paused inside its flush: block 1 not all-visible after vacuum while the writer holds the lock" "$bz_bit" "f"
+check "#2268 premise: a writer paused inside its flush: the writer deleted 101 rows" "$bz_written" "101"
+check "#2268 a writer paused inside its flush: after the writer commits block 1 is not all-visible and the index-only scan counts no deleted row" "$bz_after|$bz_ios" "f|0"
+
+# 11e. The new pauses are superuser settings, as vm_set_hold_ms is.
 psql_run "CREATE ROLE rl_plain LOGIN;"
 rl_suset="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U rl_plain -d "$PGC_DB" -At -v VERBOSITY=verbose \
 	-c "SET pgcolumnar.vm_set_release_hold_ms = 1000;" 2>&1 | head -1)"
 check "#2268 a role without superuser cannot set pgcolumnar.vm_set_release_hold_ms" "$rl_suset" \
 	'ERROR:  42501: permission denied to set parameter "pgcolumnar.vm_set_release_hold_ms"'
+rl_suset2="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U rl_plain -d "$PGC_DB" -At -v VERBOSITY=verbose \
+	-c "SET pgcolumnar.delete_flush_hold_ms = 1000;" 2>&1 | head -1)"
+check "#2268 a role without superuser cannot set pgcolumnar.delete_flush_hold_ms" "$rl_suset2" \
+	'ERROR:  42501: permission denied to set parameter "pgcolumnar.delete_flush_hold_ms"'
 
 exec 9>&-
 wait "$H_PID" 2>/dev/null || true

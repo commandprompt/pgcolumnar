@@ -636,8 +636,10 @@ true until the next version shipped.
   does, and the second pass of #2059 and #2170 is gone. VACUUM does not wait
   for a busy lock: it leaves that group's blocks unset. A DELETE whose flush
   needs a group VACUUM holds waits for it, for as long as VACUUM takes to set
-  that block's bits. `pgcolumnar.vm_set_release_hold_ms`, a new superuser-only
-  test setting, pauses VACUUM before it gives back each group.
+  that block's bits. Two new superuser-only test settings:
+  `pgcolumnar.vm_set_release_hold_ms` pauses VACUUM before it gives back each
+  group, and `pgcolumnar.delete_flush_hold_ms` pauses a delete flush after it
+  takes its groups' locks and before it writes their rows.
   docs/administration.md and docs/configuration.md. `test/index_only.sh` and
   `test_index_only.py`.
 
