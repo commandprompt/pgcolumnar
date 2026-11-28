@@ -2598,7 +2598,14 @@ guard_tests 910
 # of NO_CLUSTER, as ci.yml derives it).
 # cluster_tests 6285 -> 6287, #2248 review: two more tests in test_objstore_tls_read.py (a bad record MAC on a
 # kept-alive connection is refused, after one GET), by collection of that file (39 -> 41) and over the cluster files.
-# cluster_tests 6287 -> 6298 for #2161's eleven tests in test_parallel_copy.py:
+# cluster_tests 6287 -> 6317 for #2169's thirty tests in test_index_only.py: an AFTER STATEMENT trigger
+# of a DELETE (test_trigger_of_delete_during_vacuum_*), of an UPDATE (test_trigger_of_update_during_vacuum_*)
+# and of a DELETE that reads inside an EXCEPTION block that rolls back (test_trigger_in_exception_block_*),
+# seven each; then, for jdatcmd's review of #2241, four for a DELETE that fails after a nested read
+# (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
+# (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
+# cluster_tests 6317 -> 6328 for #2161's eleven tests in test_parallel_copy.py:
 # test_parallel_copy_into_an_empty_projection_loads_every_row (5 parametrized: 2 and 4 workers into a projection
 # that holds no rows yet load every row and fill the projection; 1 worker, a projection that already holds rows
 # and no projection are the controls), test_parallel_copy_records_the_empty_projections_storage_row_as_one_worker_does,
@@ -2608,4 +2615,4 @@ guard_tests 910
 # test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
 # test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6298
+cluster_tests 6328

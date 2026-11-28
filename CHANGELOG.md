@@ -614,6 +614,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- An AFTER trigger of a DELETE or UPDATE that reads the table through an
+  index-only scan no longer counts rows its own statement deleted, when a
+  VACUUM ran during the statement (#2169). The writer keeps its delete marks in
+  memory until the statement ends. A VACUUM cannot see them, so it set the
+  blocks all-visible again, and AFTER triggers fire before the statement's end
+  writes the marks. #2059 fixed the result after commit, not inside the
+  statement. Measured on main: a DELETE of 39 rows saw 38 of them in its trigger
+  (heap 0), and an UPDATE of 39 rows saw 77 (heap 39). Each statement now
+  writes this backend's marks for every table it names before it starts, as a
+  sequential scan already did for its own table. A VACUUM then sees the marks,
+  and the write clears any bit it set. The tests also read inside an EXCEPTION
+  block that rolls back, and check that the marks still reach the catalog.
+  A DELETE that fails after such a nested read leaves every row live in the
+  next transaction. A second writer of the same rows now waits for the first
+  from the nested statement's start, then gets the documented
+  `serialization_failure` (docs/limitations.md). The #2059 test that commits a
+  DELETE during VACUUM's pause now holds VACUUM 15 s instead of 5 s, because its
+  400,000-row DELETE did not always finish within 5 s on a loaded machine.
+  `test/index_only.sh` and `test_index_only.py`.
 - A remote read over `https://` now retries a kept-alive connection that the
   server closed without a TLS `close_notify`, as a plain `http://` read does
   (#2246). Since #2225 the reader retries once, on a new connection, when a
