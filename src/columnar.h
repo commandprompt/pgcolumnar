@@ -1115,6 +1115,19 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
  * the lock manager, where the deadlock detector can see the wait (#2187).
  */
 #define PGCOLUMNAR_LOCKCLASS_PCOPY_OPEN		106
+/*
+ * The parallel_copy coordinator, and each loader, holds this from just after it
+ * connects, so the calling backend waits for it in the lock manager rather than
+ * on a latch, and the deadlock detector sees that wait (#2229).
+ */
+#define PGCOLUMNAR_LOCKCLASS_PCOPY_RUN		107
+
+/*
+ * Each parallel_export_parquet worker holds this from just after it connects,
+ * so the calling backend waits for it in the lock manager rather than on a
+ * latch, and the deadlock detector sees that wait (#2245).
+ */
+#define PGCOLUMNAR_LOCKCLASS_PEXPORT_RUN	108
 
 /* -------------------------------------------------------------------------
  * concurrent unique-key insert serialization (pgcolumnar_unique.c, issue #5)
