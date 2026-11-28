@@ -1932,6 +1932,34 @@ PgColumnarUnlockStorageRow(uint64 storageId)
 	LockRelease(&tag, ExclusiveLock, false);
 }
 
+/*
+ * PgColumnarConditionalLockStorageRow / PgColumnarStorageRowShareHeldByMe
+ *		For a rewrite in a transaction that has written to the table: it holds
+ *		the storage-row lock in ShareLock, and must not wait for ExclusiveLock
+ *		(see lock_rewrite_groups in columnar_vacuum.c, #2184).
+ */
+bool
+PgColumnarConditionalLockStorageRow(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+	return LockAcquire(&tag, ExclusiveLock, false, true) != LOCKACQUIRE_NOT_AVAIL;
+}
+
+bool
+PgColumnarStorageRowShareHeldByMe(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+#if PG_VERSION_NUM >= 170000
+	return LockHeldByMe(&tag, ShareLock, false);
+#else
+	return LockHeldByMe(&tag, ShareLock);
+#endif
+}
+
 void
 PgColumnarUpsertDeleteVector(uint64 storageId, DeleteVectorMetadata *rm)
 {
@@ -2280,6 +2308,99 @@ storage_row_probe(Relation rel, SysScanDesc scan, int32 formatVersion, bool rais
 	return STORAGE_ROW_OLDER;
 }
 
+/*
+ * storage_row_latest
+ *		storage_row_probe against the latest committed state.
+ *
+ * GetLatestSnapshot, so a writer that waited on the storage-row lock sees the
+ * row the holder just committed, with curcid advanced
+ * (PgColumnarCatalogSnapshot), so a second flush in this same transaction still
+ * sees the row this transaction already inserted. The latest snapshot must be
+ * pushed active before it drives a heap visibility check: PostgreSQL 18
+ * asserts a scan snapshot is registered or active (heapam_visibility.c), and
+ * the catalog-snapshot copy inherits the active count.
+ */
+static int
+storage_row_latest(Relation rel, uint64 storageId, int32 formatVersion, bool raise)
+{
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	Oid			scanIdx;
+	int			state;
+
+	PushActiveSnapshot(GetLatestSnapshot());
+	ScanKeyInit(&key[0], Anum_native_storage_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	scanIdx = pgcolumnar_scan_index_oid(rel, "storage_pkey");
+	scan = systable_beginscan(rel, scanIdx, OidIsValid(scanIdx),
+							  PgColumnarCatalogSnapshot(GetActiveSnapshot()), 1, key);
+	state = storage_row_probe(rel, scan, formatVersion, raise);
+	systable_endscan(scan);
+	PopActiveSnapshot();
+	return state;
+}
+
+/*
+ * storage_row_lock_for_write
+ *		Take the storage-row lock (class 102) a write to storageId needs, and
+ *		raise the row if an earlier build stamped it (#2184). Returns the state
+ *		seen under the lock; STORAGE_ROW_ABSENT means the caller inserts the row,
+ *		holding ExclusiveLock.
+ *
+ * Two modes of one lock. A row already at this build's stamp needs nothing
+ * written, so an inserting writer holds the lock in ShareLock only, to
+ * transaction end: writers do not exclude each other, while a rewrite, which
+ * takes ExclusiveLock (lock_rewrite_groups), still waits for every open writer
+ * and makes new writers wait for it. A deleting writer (`deleting`) takes no
+ * lock on such a row, so deletes wait neither for each other nor for a rewrite
+ * of other row groups.
+ *
+ * Writers must not exclude each other here because a writer also holds the
+ * chunk-group lock (class 101) of each row group it deletes from, to commit,
+ * and takes the two classes in whatever order its statements run. With this
+ * lock exclusive, one transaction that flushed rows and then deleted in group
+ * g, and another that deleted in g and then flushed rows, each waited for the
+ * other: deadlock_detected (40P01). Taking this lock before every group lock
+ * would instead serialize every DELETE on the table.
+ *
+ * Only a writer that inserts or raises the row keeps ExclusiveLock to commit,
+ * so a writer that waited for it re-checks after that write has committed. A
+ * delete raises too, before its flush takes any group lock: a raiser holds
+ * ExclusiveLock to commit, and a delete that had taken a group lock first could
+ * be waited for by the raiser while the delete's own later insert waited for
+ * the raiser. So a writer waits on this lock only before it holds a group lock
+ * of the storage, and no cycle passes through the two classes. A writer that
+ * waited and then finds the row current keeps no more than the others do.
+ */
+static int
+storage_row_lock_for_write(Relation rel, uint64 storageId, int32 formatVersion,
+						   bool deleting)
+{
+	LOCKTAG		tag;
+	int			state;
+
+	storage_row_lock_tag(&tag, storageId);
+	state = storage_row_latest(rel, storageId, formatVersion, false);
+	if (state == STORAGE_ROW_CURRENT)
+	{
+		/* current stays current: nothing is written, so no re-check */
+		if (!deleting)
+			(void) LockAcquire(&tag, ShareLock, false, false);
+		return state;
+	}
+
+	(void) LockAcquire(&tag, ExclusiveLock, false, false);
+	state = storage_row_latest(rel, storageId, formatVersion, true);
+	if (state == STORAGE_ROW_CURRENT)
+	{
+		/* another writer inserted or raised it while this one waited */
+		if (!deleting)
+			(void) LockAcquire(&tag, ShareLock, false, false);
+		LockRelease(&tag, ExclusiveLock, false);
+	}
+	return state;
+}
+
 void
 PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 {
@@ -2293,7 +2414,6 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 	ScanKeyData key[1];
 	SysScanDesc scan;
 	bool		exists;
-	LOCKTAG		tag;
 
 	/*
 	 * The storage row is written once per storage id, but the native writer
@@ -2314,8 +2434,10 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 	 * storage row already exists in the latest committed state we skip the advisory
 	 * lock entirely and return. That lock exists ONLY to serialize the first-writer
 	 * creation race -- once the row is committed there is nothing to wait for -- and
-	 * holding it to transaction end is exactly what makes concurrent writers to one
-	 * storage serialize and, under two-phase commit, deadlock. Skipping it (only
+	 * holding it exclusively to transaction end, as every writer did before #2184,
+	 * made concurrent writers to one storage serialize and, under two-phase commit,
+	 * deadlock. (An ordinary writer now holds it in ShareLock; see
+	 * storage_row_lock_for_write.) Skipping it (only
 	 * when the row provably exists, and only for an opting-in loader whose
 	 * coordinator pre-created and committed that row) lets N loaders write one
 	 * table's storage concurrently and 2PC-safely. Every ordinary write leaves the
@@ -2399,36 +2521,9 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 		goto insert_row;
 	}
 
-	storage_row_lock_tag(&tag, s->storageId);
-	(void) LockAcquire(&tag, ExclusiveLock, false /* transaction lock */ ,
-					   false /* wait */ );
-
-	/*
-	 * Re-check under the lock against a fresh snapshot so the loser of a
-	 * cross-transaction race sees the winner's just-committed row (GetLatestSnapshot),
-	 * with curcid advanced (PgColumnarCatalogSnapshot) so a second flush in this same
-	 * transaction still sees the row this transaction already inserted. The latest
-	 * snapshot must be pushed active before it drives a heap visibility check:
-	 * PostgreSQL 18 asserts a scan snapshot is registered or active
-	 * (heapam_visibility.c), and the catalog-snapshot copy inherits the active
-	 * count. Pop it once the existence scan is done.
-	 */
-	PushActiveSnapshot(GetLatestSnapshot());
-	snapshot = PgColumnarCatalogSnapshot(GetActiveSnapshot());
-	ScanKeyInit(&key[0], Anum_native_storage_storage_id, BTEqualStrategyNumber,
-				F_INT8EQ, Int64GetDatum((int64) s->storageId));
-	scanIdx = pgcolumnar_scan_index_oid(rel, "storage_pkey");
-	scan = systable_beginscan(rel, scanIdx, OidIsValid(scanIdx), snapshot, 1, key);
-	/*
-	 * Under the advisory lock, held to transaction end, so a second writer
-	 * re-checks only after this one's raise has committed and finds the row
-	 * current.
-	 */
-	exists = storage_row_probe(rel, scan, s->formatVersion, true) !=
-		STORAGE_ROW_ABSENT;
-	systable_endscan(scan);
-	PopActiveSnapshot();
-	if (exists)
+	/* see storage_row_lock_for_write (#2184) */
+	if (storage_row_lock_for_write(rel, s->storageId, s->formatVersion, false) !=
+		STORAGE_ROW_ABSENT)
 	{
 		table_close(rel, RowExclusiveLock);
 		return;
@@ -2479,10 +2574,27 @@ PgColumnarStorageRowLockHeldByMe(uint64 storageId)
 						 (uint32) (storageId & 0xFFFFFFFF),
 						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
 #if PG_VERSION_NUM >= 170000
-	return LockHeldByMe(&tag, ExclusiveLock, false);
+	return LockHeldByMe(&tag, ExclusiveLock, false) ||
+		LockHeldByMe(&tag, ShareLock, false);
 #else
-	return LockHeldByMe(&tag, ExclusiveLock);
+	return LockHeldByMe(&tag, ExclusiveLock) || LockHeldByMe(&tag, ShareLock);
 #endif
+}
+
+/*
+ * PgColumnarRaiseStorageRowBeforeDelete
+ *		Before a delete flush takes its first chunk-group lock (class 101), raise
+ *		a storage row an earlier build stamped, as an insert's flush would, and
+ *		otherwise take nothing (#2184; see storage_row_lock_for_write).
+ */
+void
+PgColumnarRaiseStorageRowBeforeDelete(uint64 storageId)
+{
+	Relation	rel = open_columnar_table("storage", RowExclusiveLock);
+
+	(void) storage_row_lock_for_write(rel, storageId, COLUMNAR_NATIVE_FORMAT_VERSION,
+									  true);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*

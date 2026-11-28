@@ -97,7 +97,8 @@ produce a NULL where a value exists, unless the native format version also
 changes with it.
 
 **Do not downgrade the extension below the version that wrote a table.** After
-1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. It
+1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. A
+write includes a `DELETE` alone (#2184): a delete raises the stamp too. It
 reports an error rather than a wrong answer. Upgrading is safe and needs no
 conversion. A newer build reads every descriptor version it has ever written.
 Both guards are pinned by `test/native_format.sh`.
@@ -323,7 +324,8 @@ these constraints.
   triggers of a foreign key. A trigger on UPDATE or DELETE only does not count
   either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
   default `session_replication_role`. One worker still runs the trigger for every
-  row.
+  row. Like the unique-index refusal, this one comes before the function opens
+  the file, so a missing file gets `0A000`, not `58P01` (#2252).
 - The function does not look inside CHECK constraints or column defaults. Some
   of them call a VOLATILE function that writes to another table. Then the workers
   can wait on each other the same way, until `statement_timeout` or a deadlock
@@ -333,6 +335,16 @@ these constraints.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.
+- Into a partitioned target, a row that `COPY` refuses before it reads a value
+  gets `COPY`'s SQLSTATE and message, behind `pgcolumnar.parallel_copy worker N
+  failed:` (#2222). Such a row has bytes that are not valid in the caller's
+  `client_encoding`, or a raw NUL. Or it has a `\.` that `COPY` refuses, or the
+  wrong number of fields. Two kinds still get the error of reading the key,
+  when the key is not valid. On PostgreSQL 15 to 17, one is a `\.` followed by
+  the line end the rest of the file does not use. The other is a character
+  with no equivalent in the database encoding (`22P05` from `COPY`).
+  A file that also has a row out of order is refused for its order (`22000`).
+  The order is checked before any worker starts.
 - The caller needs membership in the `pg_read_server_files` role and INSERT on
   the target. The file is read on the server host.
 - Set `max_prepared_transactions` above the worker count. The load prepares one
@@ -350,16 +362,40 @@ these constraints.
 - The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
   or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
   refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
-  locks. The workers take ROW EXCLUSIVE in their own transactions, so they
-  would wait for the caller until the statement timed out.
+  locks. So do `pgcolumnar.add_projection` and `pgcolumnar.drop_projection`, and
+  `pgcolumnar.rebuild_projections` when it materializes a projection (#2215). The
+  workers take ROW EXCLUSIVE in their own transactions, so they would wait for
+  the caller until the statement timed out. They also could not see a projection
+  the caller added or dropped.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
-- The check covers only the target and its partitions. The load still waits
-  until `statement_timeout` when the calling transaction locks another table
-  the loaders need. One example is a table the target references through a
-  foreign key. Others are a table a trigger on the target writes to, and a
-  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
-  `parallel_copy` before taking such locks, or after `COMMIT`.
+- The check covers the target, its partitions, and its inheritance children. A
+  lock on an inheritance child that is not a partition is refused too, although
+  the workers never lock that child.
+- The check covers no other table. When the calling
+  transaction locks another table the loaders need, the load fails with
+  `deadlock_detected` (40P01) after `deadlock_timeout` (#2216). One example is a
+  table the target references through a foreign key. Others are a table a
+  trigger on the target writes to, and a sequence a trigger calls `nextval` on
+  after `ALTER SEQUENCE ... RESTART`. A retry in the same transaction fails the
+  same way. Run `parallel_copy` before taking such locks, or after `COMMIT`.
+- The caller takes ROW EXCLUSIVE on the target and on each of its partitions
+  before any worker starts (#2229). It holds that lock to the end of its
+  transaction, as an `INSERT` would. It waits there for another session's conflicting
+  lock, such as one `CREATE INDEX` or `LOCK TABLE ... IN SHARE MODE` holds, and
+  `lock_timeout` applies to that wait. If that session then waits for a lock the
+  caller holds, one of the two gets `deadlock_detected` (40P01). The caller
+  waits for its workers in the lock manager too, on advisory locks of class 107
+  that show in `pg_locks`. Those waits are not limited by `lock_timeout` and
+  `log_lock_waits` does not report them.
+- The caller keeps one lock per partition until its transaction ends. A target
+  with very many partitions can need a higher `max_locks_per_transaction`
+  (#2229).
+- One wait is still outside the lock manager. After the last loader exits, the
+  caller waits for the coordinator's commit step on a latch. A lock the caller
+  holds that the commit step needs is not reported as a deadlock. One example
+  is a lock on `pgcolumnar.load_fingerprint` with `dedup => true`. The call then
+  ends at `statement_timeout`.
 - The calling transaction must not have written to the target or to one of its
   partitions, for example with an earlier `INSERT`. The function refuses such a
   call with `55000` (#2211). The write holds a lock on the table's storage until
@@ -367,8 +403,8 @@ these constraints.
   so they would wait for the caller until the statement timed out. Commit the
   write first, or load the file with `COPY`.
   The check does not see a write to a columnar table that a trigger on the
-  target writes. If no row was ever committed to that table, the load still waits
-  until `statement_timeout` (#2216).
+  target writes. If no row was ever committed to that table, the load fails with
+  40P01 after `deadlock_timeout` (#2216).
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
@@ -409,6 +445,19 @@ returning no rows.
   refused: storage-parameter validation belongs to PostgreSQL and is driven by the
   relation kind rather than by the access method. Setting it is harmless and
   pointless.
+- A lazy `VACUUM` stops hiding its transaction from other sessions' snapshots
+  (PostgreSQL's PROC_IN_VACUUM) before it retires row groups, because the
+  retirement deletes catalog rows (#2263). From then until it commits, it holds
+  back the horizon of other VACUUMs like any short transaction. It keeps the
+  flag while it sets the visibility map.
+- Before #2263 was fixed, a reader could keep a retired group's `row_group`
+  row while its other catalog rows were deleted. Reading such a table now fails
+  with SQLSTATE XX001, `columnar row group N of relation "t" has no column
+  chunks`, rather than returning the group's rows with every column NULL. Every
+  row of a retired group had been deleted. A superuser can remove the leftover
+  by hand: `DELETE FROM pgcolumnar.<catalog> WHERE storage_id =
+  pgcolumnar.get_storage_id('t') AND group_number = N` for `zone_map`, `bloom`,
+  `delete_vector` and then `row_group`.
 - `REPACK`, `VACUUM FULL` and `CLUSTER` are not supported on a columnar table; the
   copy-for-cluster path raises an error. `REPACK` arrives in PostgreSQL 19 and
   replaces the other two, and it dispatches through the same path, so it is
@@ -696,9 +745,12 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `pgcolumnar.enable_row_update_lock` (default on) controls this serialization.
   The GUC `pgcolumnar.row_lock_buckets` (default 1024) bounds the held locks per
   storage, so a bulk update cannot exhaust the lock table. Unrelated rows may
-  share a bucket, which only makes them wait when they need not. For the same
-  reason, two multi-statement transactions can rarely deadlock, even on disjoint
-  rows. This happens when their bucketed locks collide in opposite statement order.
+  share a bucket. At the end of a statement a writer skips a bucket another
+  transaction holds. It waits only on the row groups it deletes from, so writers
+  of disjoint row groups never wait for each other there (#2184). An `UPDATE` on a
+  table with a unique index waits on each row's bucket as it reaches it. So two
+  multi-statement transactions that run such `UPDATE`s can rarely deadlock, even
+  on disjoint rows, when their buckets collide in opposite statement order.
   Retry resolves it, as with any serialization failure.
 - A writer keeps its delete marks in memory until it writes them to the catalog.
   It writes them at the end of each statement. It also writes them when a nested
@@ -725,6 +777,20 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   not fail here, because `VACUUM` moves no row. Retry the transaction: the retry
   takes a new snapshot, sees the moved row, and skips the insert.
   `test/am_contracts.sh` checks this behavior (#2060).
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb can fail inside the
+  transaction with `serialization_failure` (40001). The verbs are `vacuum`,
+  `vacuum_sorted`, `cluster`, `cluster_hilbert`, `recluster`,
+  `recluster_hilbert` and `compact_rewrite`. This happens when another session
+  changed the row groups the verb would rewrite after the snapshot was taken. The verb reads the newest
+  committed rows, and the transaction sees the rows it writes as its own. A row
+  group carries one xmin for all its rows, so the copies cannot keep each row's
+  own xmin and xmax, as heap's `CLUSTER` does. Before #2167 the transaction then
+  saw rows inserted after its snapshot and lost rows deleted after it. When
+  nothing changed, the verb runs and the transaction sees the rows it saw. Retry
+  the transaction, or run the verb at `READ COMMITTED`, where each statement takes
+  a new snapshot anyway. The maintenance daemon runs at `READ COMMITTED` whatever
+  `default_transaction_isolation` says, as PostgreSQL's autovacuum does.
+  `test/rewrite_snapshot.sh` checks this behavior (#2167).
 - Concurrent inserts of the same unique key go in sequence. The server therefore
   always finds the conflict. Before a new row reaches the uniqueness check, the
   access method takes an advisory lock with the scope of the transaction. The key
@@ -745,36 +811,47 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   transaction ends. While one insert statement into a table with an exclusion
   constraint runs, a second insert into that table waits for the first
   transaction. It waits even when its row does not overlap. A row whose key holds
-  a NULL takes no lock and does not wait at that point. After the first statement
-  ends, any second insert into a pgcolumnar table waits while the first
-  transaction is open. That holds for any key, with or without an index. So two transactions that insert into two pgcolumnar tables in opposite
-  order can deadlock even when no rows conflict. One of them then gets
-  `deadlock_detected` (40P01). On heap both would commit. Retry the transaction
-  on that error. A
+  a NULL takes no lock and does not wait at that point. Inserts of different
+  keys into one table do not wait for each other (#2184). Before, a second
+  insert waited while the first transaction was open. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
   `pgcolumnar.enable_unique_insert_lock = off`. The locks use the shared lock
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
-- Two writers can deadlock on one table with no maintenance running (#2184). A
-  writer holds two locks to commit. One is the delete lock of each row group it
-  deletes from. The other is the table's storage-row lock, which every flush of
-  new rows takes. It
-  can take them in either order. A transaction that deletes, scans and then
-  inserts takes the delete lock first; one that inserts, scans and then deletes
-  takes the storage-row lock first. When two such transactions meet, one gets
-  `deadlock_detected` (40P01). Retry it, as with any deadlock.
+- A writer holds the delete lock of each row group it deletes from until
+  commit. Two transactions can touch the same two row groups in opposite order,
+  in separate statements. They can then deadlock on those locks, and one gets
+  `deadlock_detected` (40P01). This happens even when no row is shared, because
+  the lock covers a whole row group. A heap locks rows, so it deadlocks only when
+  rows are shared. Within one statement a writer takes its row groups' locks in
+  group order, so a single statement does not close such a cycle. Retry on 40P01.
+- Writers no longer deadlock on the storage-row lock (#2184) or on the
+  row-identity locks of rows they do not share (#2251). A writer also holds the
+  table's storage-row lock, which every flush of new rows takes. Writers share
+  it, so a transaction that inserts and then deletes, and one that deletes and
+  then inserts, both commit. A rewrite verb in a transaction that has written to
+  the table is the exception below. The first write
+  to a table takes it alone. So do the write that raises an earlier build's
+  format stamp and the two rewrite verbs below. A
+  `DELETE` that finds the stamp of an earlier build raises it first, before it
+  takes any delete lock.
 - `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
   do not queue behind them. Before it writes, a rewrite needs the storage-row lock
   and every row group's delete lock at once. It waits for each busy lock alone,
-  holding none, and tries again, so it never closes a deadlock with a writer. It
-  can still get 40P01 when it waits inside a deadlock between two writers. A steady
+  holding none, and tries again, so it never closes a deadlock with a writer. A steady
   stream of short delete transactions can keep one lock busy at every try. After
   `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
   `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
   its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
   its row groups wait for it to commit.
+- A `pgcolumnar.recluster` or `pgcolumnar.compact_rewrite` in a transaction that
+  has already written to the table does not wait for the storage-row lock. It
+  stops at once with SQLSTATE `55P03` while another writer of the table is open,
+  and changes nothing. Waiting there could deadlock with that writer if it ran a
+  rewrite too (#2184). Before, the other writer's `INSERT`
+  waited instead. Run a rewrite in a transaction of its own.
 - Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
   transaction. The first verb keeps the storage-row lock until commit. A second
   verb in the same transaction then waits for a busy row group while it holds that

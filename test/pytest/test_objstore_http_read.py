@@ -601,6 +601,17 @@ def ohr(pgc_cluster):
         r["C rstall"] = _one_message(dsn, one % f"{base}/rstall/fixture.parquet",
                                      "failed before a response")
         r["C rstall gets"] = _count(hlog, lambda f: f[0] == "GET")
+        # #2258: an EOF after a whole 103 interim head, and the control that
+        # one response's interim head does not carry over to the next
+        pathlib.Path(hlog).write_text("")
+        r["C fin103 url"] = f"{base}/fin103/fixture.parquet"
+        r["C fin103"] = _one_message(dsn, one % r["C fin103 url"], "@@")
+        r["C fin103 gets"] = _count(hlog, lambda f: f[0] == "GET")
+        pathlib.Path(hlog).write_text("")
+        r["C hint103 finka"] = _one_message(
+            dsn, f"SET statement_timeout = '60s'; SELECT pgc_reads('{base}/hint103/fixture.parquet', 3) "
+                 f"|| ' then ' || pgc_reads('{base}/finka/fixture.parquet', 3)", "@@")
+        r["C hint103 finka closes"] = _count(hlog, lambda f: f[:1] == ["FINKA"])
         _await_server(dsn)
         r["C swap"] = _refusal(dsn, SWAP_SQL, "changed while it was being read")
         _await_server(dsn)
@@ -980,6 +991,35 @@ def test_the_get_a_server_resets_every_time_is_sent_twice(ohr, expect):
     if _declined(ohr, expect):
         return
     expect.num(ohr["C rstall gets"], 2, "C: and that GET was sent twice")
+
+
+def test_an_eof_after_a_103_interim_head_on_a_kept_alive_connection_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C fin103"], f'08006: columnar: connection to "{ohr["C fin103 url"]}" closed mid-response',
+                "C: an EOF after a 103 interim head on a kept-alive connection is refused")
+
+
+def test_the_get_after_a_103_interim_head_is_sent_once(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["C fin103 gets"], 1, "C: and that GET after a 103 interim head was sent once")
+
+
+def test_after_reads_answered_103_first_a_closed_kept_alive_connection_is_still_retried(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C hint103 finka"], "no error: ok=3 failed=0 then ok=3 failed=0",
+                "C: after reads answered 103 Early Hints first, reads from a server that closes each "
+                "kept-alive connection unanswered all succeed")
+
+
+def test_the_server_closed_a_kept_alive_connection_unanswered_on_each_of_those_reads(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = ohr["C hint103 finka closes"]
+    got = "yes" if isinstance(n, int) and n >= 3 else f"no ({n} closes)"
+    expect.text(got, "yes", "C: the server closed a kept-alive connection unanswered on each of those 3 reads")
 
 
 def test_the_overwrite_pair_has_one_byte_length(ohr, expect):

@@ -63,6 +63,9 @@ G_REFUSED = {
         "finfresh", '08006: columnar: connection to "{url}" failed before a response', 1),
     "a TLS record error on a kept-alive connection": ("garbka", '08006: columnar: TLS read from "{url}" failed', 1),
     "a bad record MAC on a kept-alive connection": ("badmac", '08006: columnar: TLS read from "{url}" failed', 1),
+    # #2258: a whole 103 Early Hints head, then the EOF with no close_notify
+    "an EOF over TLS after a 103 interim head on a kept-alive connection": (
+        "fin103", '08006: columnar: TLS read from "{url}" failed', 1),
 }
 
 
@@ -337,6 +340,15 @@ def otr(pgc_cluster, server_dir):
         r["G finka closes"] = fin1 - fin0 if isinstance(fin0, int) and isinstance(fin1, int) \
             else query_error(f"FINKA count unreadable: {fin0} -> {fin1}")
         _wait_up(dsn)
+        # #2258 control: one response's interim head does not carry over to the next
+        fin0 = _count(tlslog, "FINKA")
+        r["G hint103 finka"] = _one(
+            dsn, f"SELECT pgc_reads('{url('good', 'hint103/')}', 3) || ' then ' "
+                 f"|| pgc_reads('{url('good', 'finka/')}', 3)")
+        fin1 = _count(tlslog, "FINKA")
+        r["G hint103 finka closes"] = fin1 - fin0 if isinstance(fin0, int) and isinstance(fin1, int) \
+            else query_error(f"FINKA count unreadable: {fin0} -> {fin1}")
+        _wait_up(dsn)
         for label, (mode, _, _) in G_REFUSED.items():
             u = url("good", f"{mode}/")
             g0 = _count(tlslog, f"GET /{mode}/")
@@ -484,6 +496,22 @@ def test_the_server_closed_a_kept_alive_connection_on_each_read(otr, expect):
     got = "yes" if isinstance(otr["G finka closes"], int) and otr["G finka closes"] >= 30 \
         else f"no ({otr['G finka closes']} closes)"
     expect.text(got, "yes", "G: the server closed a kept-alive connection with no answer on each of the 30 reads")
+
+
+def test_after_reads_over_tls_answered_103_first_a_closed_kept_alive_connection_is_still_retried(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["G hint103 finka"], "ok=3 failed=0 then ok=3 failed=0",
+                "G: after reads over TLS answered 103 Early Hints first, reads from a server that closes each "
+                "kept-alive connection without close_notify all succeed")
+
+
+def test_the_server_closed_a_kept_alive_connection_on_each_of_those_reads(otr, expect):
+    if _declined(otr, expect):
+        return
+    n = otr["G hint103 finka closes"]
+    got = "yes" if isinstance(n, int) and n >= 3 else f"no ({n} closes)"
+    expect.text(got, "yes", "G: the server closed a kept-alive connection with no answer on each of those 3 reads")
 
 
 @pytest.mark.parametrize("label", list(G_REFUSED))

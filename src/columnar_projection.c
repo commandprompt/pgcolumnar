@@ -345,7 +345,17 @@ pgcolumnar_add_projection(PG_FUNCTION_ARGS)
 										sortArr ? sortArr :
 										construct_empty_array(TEXTOID));
 
-	table_close(rel, ShareLock);
+	/*
+	 * NoLock: keep the ShareLock until this transaction ends, as CREATE INDEX
+	 * does (#2215). Releasing it here let a writer in another session start
+	 * while the projection was still uncommitted: the writer could not see the
+	 * projection, so its rows never reached it, and once this transaction
+	 * committed a projection scan returned wrong answers with no error. Holding
+	 * it also makes pgcolumnar.parallel_copy in this same transaction refuse up
+	 * front (#2183's own-lock refusal), since its loaders run in their own
+	 * transactions and could not see the uncommitted projection either.
+	 */
+	table_close(rel, NoLock);
 	PG_RETURN_VOID();
 }
 
@@ -578,7 +588,14 @@ PgColumnarRerecordProjectionsAfterRewrite(Oid relid)
 		existing = PgColumnarListProjections(PgColumnarStorageId(rel));
 	}
 
-	table_close(rel, ShareLock);
+	/*
+	 * NoLock, as in add_projection (#2215): a projection materialised here is
+	 * uncommitted until the statement's transaction ends, and a writer let in
+	 * before then would miss it. A rewriting statement holds ACCESS EXCLUSIVE
+	 * anyway; a metadata-only ALTER TABLE does not, and reaches this point when
+	 * a declaration has no projection.
+	 */
+	table_close(rel, NoLock);
 }
 
 /*
@@ -621,7 +638,21 @@ pgcolumnar_drop_projection(PG_FUNCTION_ARGS)
 				 errmsg("\"%s\" is not a columnar table",
 						get_rel_name(relid))));
 
-	rel = table_open(relid, ShareUpdateExclusiveLock);
+	/*
+	 * SHARE ROW EXCLUSIVE, held to transaction end (#2215). It was SHARE UPDATE
+	 * EXCLUSIVE, released at the end of this function, which does not conflict
+	 * with a writer's ROW EXCLUSIVE at all. A writer in another session still
+	 * saw the projection (the delete was uncommitted), wrote its rows into the
+	 * projection's storage, and once this transaction committed those row
+	 * groups described storage nothing named any more. The same held for
+	 * pgcolumnar.parallel_copy in this transaction, whose loaders cannot see the
+	 * uncommitted drop; holding a lock that conflicts with ROW EXCLUSIVE makes
+	 * #2183's refusal stop it. SHARE ROW EXCLUSIVE rather than add_projection's
+	 * SHARE because it also conflicts with itself, as SHARE UPDATE EXCLUSIVE
+	 * did, so two drops of one projection still queue rather than race on the
+	 * catalog row. Readers are not blocked.
+	 */
+	rel = table_open(relid, ShareRowExclusiveLock);
 	storageId = PgColumnarStorageId(rel);
 	existing = PgColumnarListProjections(storageId);
 
@@ -682,7 +713,7 @@ pgcolumnar_drop_projection(PG_FUNCTION_ARGS)
 	 */
 	PgColumnarResetProjectionWritersForRelation(relid);
 
-	table_close(rel, ShareUpdateExclusiveLock);
+	table_close(rel, NoLock);
 	PG_RETURN_VOID();
 }
 

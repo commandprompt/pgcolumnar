@@ -2605,7 +2605,98 @@ guard_tests 910
 # (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
 # (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
-# cluster_tests 6317 -> 6328 for #2161's eleven tests in test_parallel_copy.py:
+# cluster_tests 6317 -> 6335 for #2167: test_rewrite_snapshot.py, the twin of the new rewrite_snapshot.sh
+# (18 tests), by collection over the cluster files.
+# cluster_tests 6335 -> 6337 for #2252's two tests in test_parallel_copy.py: a missing file into a table with an
+# INSERT row trigger with 2 workers gets the 0A000 trigger refusal before the file is opened, and the control
+# that the same call with 1 worker gets 58P01, by collection of that file (369 on main 0072cd88, 371 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6337 -> 6354 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
+# target (LOCK TABLE, CREATE INDEX) and waiting for the caller's lock gets 40P01 on one side (2), the caller's
+# lock_timeout ends a wait for another session's SHARE on the target and on a partition (2), the caller waits in
+# the lock manager before any worker starts (2) and then loads (2 controls), #2183's and #2211's refusals come
+# before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
+# CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
+# lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
+# cluster_tests 6354 -> 6358 for the review of #2244 in test_parallel_copy.py: the second-loader row lock (a
+# fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
+# step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
+# cluster files.
+# cluster_tests 6358 -> 6365 for #2245's seven tests in test_parallel_export_parquet.py: an ACCESS EXCLUSIVE
+# request queued behind the caller on the table and on a leaf does not hang the export (2), a cycle through the
+# dispatcher's own wait still ends in 40P01 (control), the caller's lock_timeout bounds its wait for the table,
+# the waits on the workers are neither limited by lock_timeout nor logged, and the caller's settings read back
+# unchanged, and a worker picked as the deadlock victim reaches the caller as 40P01 with its detail, by
+# collection of that file (64 on main 0072cd88, 71 here) and over the cluster files.
+# cluster_tests 6365 -> 6384 for #2222's nineteen tests in test_parallel_copy.py: two premises
+# (test_parallel_copy_malformed_row_premise and _controls_premise), test_parallel_copy_malformed_row_gets_copys_error
+# (9 parametrized rows COPY refuses before it reads a value, compared with heap COPY),
+# test_parallel_copy_row_copy_loads_is_not_left_for_core (6 parametrized controls), and
+# test_parallel_copy_eod_marker_after_last_field_follows_the_major and its CRLF twin, by collection of that file
+# (369 on main 0da8ea00, 388 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6384 -> 6386, still #2222, for jdatcmd's review of #2259 at 2fc9283d (mutant N4 there): the premise
+# test_parallel_copy_malformed_then_unsorted_premise and test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core,
+# by collection of test_parallel_copy.py (388 at 2fc9283d, 390 here) and over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it).
+# cluster_tests 6386 -> 6394, #2258: four tests in test_objstore_http_read.py and four in test_objstore_tls_read.py
+# (a close after a whole 103 interim head on a kept-alive connection is refused, after one GET; after reads answered
+# 103 first, a kept-alive connection closed unanswered is still retried, and the server closed one on each read), by
+# collection of those two files (112 and 41 on main b888a5ae, 116 and 45 here) and over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6394 -> 6432 for #2184's thirty-eight tests in test_concurrency.py (8 -> 46 by collection of that file:
+# scenarios D to K, two writers' chunk-group and storage-row locks form no cycle, writers of unrelated rows sharing
+# row-identity buckets, the same row on the chunk-group locks, two first writers at REPEATABLE READ, six writers of
+# their own rows over five rounds (#2251), and a rewrite after a write), restated on main dd4e2f6e, by collection over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6432 -> 6439 for #2184's scenarios L and M in test_concurrency.py (jdatcmd's review of 7b8cb54a): the
+# group locks held from before the same-row check to commit, and taken in group order, by collection of that file
+# (46 -> 53) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6439 -> 6448 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
+# serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
+# same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
+# workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6448 -> 6451 for the #2250 review's three tests in test_parallel_flush_optin.py: a column under an
+# ICU collation, and one under a libc collation, created in the same transaction flushes serially with no worker
+# failure, and a column under a collation from an earlier transaction flushes in workers, by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6451 -> 6455 for the #2250 re-review's four tests in test_parallel_flush_optin.py: a column whose
+# enum type, or whose ICU collation, a savepoint created, released or still open, flushes serially with no worker
+# failure, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6455 -> 6472 for #2170's seventeen tests in test_index_only.py (test_2170_*): eight for a
+# DELETE between VACUUM's two steps (three premises, the deleted blocks cleared, the clean blocks an earlier
+# VACUUM set and the blocks this VACUUM set in a clean group keeping their bits, two index-only counts); five
+# for a DELETE in the last block of a run during the hold and four for a DELETE in a block shared by two
+# row groups (the #2257 review's B1 and B2), by collection of that file (98 on main dd4e2f6e, 115 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6472 -> 6496 for #2263's twenty-four tests in test_vacuum_retire_visibility.py (a reader during
+# lazy VACUUM's retirement, the reader's guard against a row group with data and no column chunks, and a VACUUM
+# held in its visibility-map step), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it).
+# cluster_tests 6496 -> 6521 for #2264's twenty-five tests in test_vacuum_retire_snapshot.py, the twin of the
+# new vacuum_retire_snapshot.sh (a row group lazy VACUUM retires stays retired when another session reads its
+# catalog rows meanwhile, with no 23505 on free_space_pkey and the free-space accounting intact: two variants
+# of premises, retirement, free_space overlap and sum, the next VACUUM and the table's rows, and a crash
+# count), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6521 -> 6538 for #2266's review: seventeen more tests in test_vacuum_retire_visibility.py, five
+# for a table given a column after its data (test_*added_column*) and twelve for an upsert during another
+# session's flush (test_*upsert_*), by collection over the cluster files.
+# cluster_tests 6538 -> 6551, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
+# test_parallel_copy_projection_ddl_premise,
+# test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
+# test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
+# test_parallel_copy_refused_after_projection_ddl_loads_nothing,
+# test_parallel_copy_issue_sequence_answers_the_same_with_projection_scans_on_and_off,
+# test_parallel_copy_into_a_committed_projection_answers_the_same_with_projection_scans_on_and_off and
+# test_add_projection_holds_its_lock_until_its_transaction_ends,
+# test_drop_projection_holds_its_lock_until_its_transaction_ends,
+# test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
+# test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6551 -> 6552, still #2215, for the review of #2226 at d49f08e1:
+# test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6552 -> 6563 for #2161's eleven tests in test_parallel_copy.py:
 # test_parallel_copy_into_an_empty_projection_loads_every_row (5 parametrized: 2 and 4 workers into a projection
 # that holds no rows yet load every row and fill the projection; 1 worker, a projection that already holds rows
 # and no projection are the controls), test_parallel_copy_records_the_empty_projections_storage_row_as_one_worker_does,
@@ -2615,4 +2706,4 @@ guard_tests 910
 # test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
 # test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6328
+cluster_tests 6563

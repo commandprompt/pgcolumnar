@@ -89,6 +89,17 @@ instead.
 
 ## Maintenance
 
+`vacuum`, `vacuum_sorted`, `cluster`, `cluster_hilbert`, `recluster`,
+`recluster_hilbert` and `compact_rewrite` rewrite row groups. Each reads the
+newest committed rows, and the calling transaction then sees the copies as its
+own. At `REPEATABLE READ` and `SERIALIZABLE`, each one checks first that the
+groups it rewrites are as the transaction's snapshot sees them. Another session
+may have inserted, deleted or rewritten rows in them since. Then the call fails
+with SQLSTATE `40001`, `serialization_failure`, and the message
+`could not rewrite table "t": rows changed after this transaction's snapshot`.
+Retry the transaction, or run the verb at `READ COMMITTED` (#2167). See
+[limitations](limitations.md).
+
 ### pgcolumnar.vacuum(tablename regclass, stripe_count int DEFAULT 0)
 
 Compacts a columnar table by combining small row groups and reclaiming space held
@@ -568,6 +579,17 @@ than the base table, the planner scans the projection instead. See
 Declares a projection on `rel` named `name`, storing `columns`, sorted on
 `sort_key`. When you add the projection, pgColumnar fills it with the rows that exist.
 
+It takes a SHARE lock on `rel` and holds it until the transaction ends, as
+`CREATE INDEX` does (#2215). Writes from other sessions wait for that
+transaction, and it waits for theirs, so every row reaches the projection. Reads
+do not wait. `pgcolumnar.parallel_copy` into `rel` later in the same transaction
+is refused with `55000`, because its workers could not see the uncommitted
+projection. Load with `COPY` in that transaction, or commit first.
+
+Like `CREATE INDEX`, two transactions that each add a projection and then write
+to the other's table can deadlock. PostgreSQL detects the deadlock and rolls one
+of them back.
+
 ```sql
 SELECT pgcolumnar.add_projection(
     'events', 'events_by_customer',
@@ -579,6 +601,12 @@ SELECT pgcolumnar.add_projection(
 
 Drops a projection and frees its storage. It also removes the declaration, so a
 later rebuild does not create the projection again.
+
+It takes a SHARE ROW EXCLUSIVE lock on `rel` and holds it until the transaction
+ends (#2215). Writes from other sessions wait for that transaction, so none of
+them writes into the storage being freed. Reads do not wait. As after
+`add_projection`, `pgcolumnar.parallel_copy` into `rel` later in the same
+transaction is refused with `55000`.
 
 ```sql
 SELECT pgcolumnar.drop_projection('events', 'events_by_customer');
@@ -1064,14 +1092,14 @@ The target may be one of two kinds:
   function refuses more than one worker with `0A000`. Load such a table with
   `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
   transaction until every worker has finished. So two workers would wait on each
-  other, and the load would hang or fail with a deadlock error. The refusal
-  comes before the function opens the file, so a missing file gets `0A000`,
-  not `58P01` (#2209). A heap table gets `42809` before the refusal, even
-  with a primary key.
+  other, and the load would hang or fail with a deadlock error. A heap table
+  gets `42809` before the refusal, even with a primary key (#2209).
   The function also refuses more than one worker when the table has an enabled
   trigger on INSERT, of any timing or level. Each worker runs the trigger in its
   own prepared transaction, so writes the trigger makes could wait on another
   worker in the same way. A foreign key's internal triggers do not count.
+  Both refusals come before the function opens the file, so a missing file gets
+  `0A000`, not `58P01` (#2209, #2252).
 - A RANGE-partitioned table whose partitions are columnar. Each worker loads a
   distinct set of partitions. The file must be sorted ascending by the partition
   key. The key column may sit anywhere in the row, and its type must be numeric
@@ -1165,6 +1193,21 @@ The target may be one of two kinds:
   worker writes a distinct part of the table.
 - A partitioned table whose partitions are columnar. Each worker takes a distinct
   set of partitions and writes one file per partition.
+
+The dispatcher takes ACCESS SHARE on the table and on every leaf partition. It
+does so before any worker starts, and holds the lock to the end of the
+transaction. Each worker takes ACCESS SHARE again in its own transaction. The
+caller waits for its workers in the lock manager (#2245). Each worker holds an
+advisory lock of class 108 while it runs, and these show in `pg_locks`. Another
+session's ACCESS EXCLUSIVE request can queue behind the caller's lock, for
+example from `LOCK TABLE`, `TRUNCATE` or `ALTER TABLE`. The workers then queue
+behind that request. The deadlock detector moves them ahead of it after
+`deadlock_timeout`, and the export goes on. Before, the export waited until
+`statement_timeout`. The caller's waits on its workers are not limited by
+`lock_timeout`, and `log_lock_waits` does not report them. Its wait for the
+table itself is, as before. A worker's error reaches the caller with its
+SQLSTATE, detail and hint. So a worker that the deadlock detector picks as the
+victim gives the caller `40P01`.
 
 The export is read-only and consistent. The dispatcher exports one snapshot and
 every worker imports it. The files together are the committed image of the table

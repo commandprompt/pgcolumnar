@@ -250,6 +250,175 @@ def _self_lock_export(dsn, setup, table, target):
     return f"none|{row[0] if row else None}"
 
 
+# ---- #2245: the caller waits for its workers in the lock manager -------------
+def _qx_sess(dsn, app, stmts, options=None, out=None):
+    """Run stmts in order on one autocommit connection named app. -> (error, last):
+    error is "SQLSTATE message" of the first error or None, last the first column of
+    the last statement that returned a row. A failure that never reached the server
+    is a query_error()."""
+    err, last = None, None
+    try:
+        kw = {"application_name": app, "autocommit": True}
+        if options:
+            kw["options"] = options
+        with psycopg.connect(dsn, **kw) as conn:
+            for sql in stmts:
+                cur = conn.execute(sql)
+                if cur.description is not None:
+                    row = cur.fetchone()
+                    if row is not None:
+                        last = row[0]
+    except psycopg.Error as exc:
+        err = _err(exc) if exc.sqlstate is None else f"{exc.sqlstate} {exc.diag.message_primary or ''}"
+    if out is not None:
+        out.append((err, last))
+    return err, last
+
+
+def _qx_result(res):
+    err, last = res
+    return err if err else f"no error ({last})"
+
+
+def _qx_wait_lock(db, app, table, mode):
+    """Return once session app holds mode on table, up to 5 s."""
+    for _ in range(100):
+        if db.one("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                  f"WHERE a.application_name = '{app}' AND l.relation = '{table}'::regclass "
+                  f"AND l.mode = '{mode}' AND l.granted") == 1:
+            return
+        time.sleep(0.05)
+
+
+def _qx_under(ms, limit):
+    return f"under {limit} s" if ms < limit * 1000 else f"took {ms} ms"
+
+
+def _qx_queue(db, dsn, target, locked, d):
+    """-> "export | time | other session | rows read back". The caller selects from
+    locked, waits until an ACCESS EXCLUSIVE request on locked queues behind it, then
+    exports target with 2 workers. The caller's wait is bounded at 10 s, the other
+    session's at 20 s."""
+    out = []
+    b = threading.Thread(target=_qx_sess, daemon=True, args=(dsn, "pexport_qx_b", [
+        "BEGIN", f"SELECT count(*) FROM {locked}",
+        "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = "
+        f"'{locked}'::regclass AND mode = 'AccessExclusiveLock' AND NOT granted); PERFORM pg_sleep(0.02); "
+        "END LOOP; END $$",
+        "SET statement_timeout = '10s'",
+        f"SELECT pgcolumnar.parallel_export_parquet('{target}'::regclass, '{d}', 2)", "COMMIT"]),
+        kwargs={"out": out})
+    b.start()
+    _qx_wait_lock(db, "pexport_qx_b", locked, "AccessShareLock")
+    t0 = time.monotonic()
+    ea, _ = _qx_sess(dsn, "pexport_qx_a", ["SET statement_timeout = '20s'", "BEGIN",
+                                           f"LOCK TABLE {locked} IN ACCESS EXCLUSIVE MODE", "COMMIT"])
+    b.join(timeout=60)
+    ms = int((time.monotonic() - t0) * 1000)
+    res = out[0] if out else ("the export did not return", None)
+    rows = db.one(f"SELECT count(*) FROM pgcolumnar.read_parquet('{d}') AS t({RB})")
+    return (f"{_qx_result(res)} | {_qx_under(ms, 6)} | other session {ea or 'locked'} | "
+            f"{_shown(rows)} rows read back")
+
+
+def _qx_cycle(db, dsn, d):
+    """-> "outcome | time": a session holding ACCESS EXCLUSIVE on t_lk waits for a lock
+    the caller holds once the caller waits for t_lk."""
+    out = []
+    a = threading.Thread(target=_qx_sess, daemon=True, args=(dsn, "pexport_qx_c", [
+        "SET statement_timeout = '20s'", "BEGIN", "LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE",
+        "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = "
+        "'t_lk'::regclass AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END $$",
+        "LOCK TABLE t_lk_other IN SHARE MODE", "COMMIT"]), kwargs={"out": out})
+    a.start()
+    _qx_wait_lock(db, "pexport_qx_c", "t_lk", "AccessExclusiveLock")
+    t0 = time.monotonic()
+    eb, _ = _qx_sess(dsn, "pexport_qx_d", [
+        "BEGIN", "INSERT INTO t_lk_other VALUES (1)", "SET statement_timeout = '10s'",
+        f"SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '{d}', 2)", "ROLLBACK"])
+    a.join(timeout=60)
+    ms = int((time.monotonic() - t0) * 1000)
+    ea = out[0][0] if out else "the other session did not return"
+    if (ea and ea.startswith("40P01") and not eb) or (eb and eb.startswith("40P01") and not ea):
+        outcome = "one side 40P01, the other went on"
+    else:
+        outcome = f"A {ea or 'committed'}, B {eb or 'exported'}"
+    return f"{outcome} | {_qx_under(ms, 5)}"
+
+
+def _qx_lock_timeout(db, dsn, d):
+    """-> "error | time": another session holds ACCESS EXCLUSIVE on t_lk for 6 s; the
+    caller's lock_timeout is 1 s."""
+    h = threading.Thread(target=_qx_sess, daemon=True, args=(dsn, "pexport_qx_h", [
+        "BEGIN", "LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE", "SELECT pg_sleep(6)", "COMMIT"]))
+    h.start()
+    _qx_wait_lock(db, "pexport_qx_h", "t_lk", "AccessExclusiveLock")
+    t0 = time.monotonic()
+    res = _qx_sess(dsn, "pexport_qx_t", [f"SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '{d}', 2)"],
+                   options="-c statement_timeout=10s -c lock_timeout=1s")
+    ms = int((time.monotonic() - t0) * 1000)
+    h.join(timeout=30)
+    return f"{_qx_result(res)} | {_qx_under(ms, 4)}"
+
+
+def _qx_victim(db, dsn, d):
+    """-> "caller's error | what its detail names | time". A cycle of hard edges in
+    which the one worker is the likely victim: the caller waits for its run lock, the
+    worker for another session's ACCESS EXCLUSIVE on pgcolumnar.row_group, and that
+    session for SHARE on t_wv_w, which the caller wrote. The worker is first held at
+    leaf t_wv1 by a third session's ACCESS EXCLUSIVE request queued behind the caller,
+    and the other session takes row_group meanwhile. The caller and that session run
+    with deadlock_timeout 10 s, so the worker checks first."""
+    out, detail = [], []
+
+    def caller():
+        try:
+            with psycopg.connect(dsn, application_name="pexport_qx_vb", autocommit=True) as conn:
+                for sql in ["SET deadlock_timeout = '10s'", "BEGIN", "INSERT INTO t_wv_w VALUES (1)",
+                            "LOCK TABLE t_wv1 IN ACCESS SHARE MODE",
+                            "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE "
+                            "relation = 't_wv1'::regclass AND mode = 'AccessExclusiveLock' AND NOT granted); "
+                            "PERFORM pg_sleep(0.02); END LOOP; END $$",
+                            "SET statement_timeout = '10s'"]:
+                    conn.execute(sql)
+                row = conn.execute(f"SELECT pgcolumnar.parallel_export_parquet('t_wv'::regclass, '{d}', 1)").fetchone()
+                conn.execute("ROLLBACK")
+            out.append(f"no error ({row[0]})")
+        except psycopg.Error as exc:
+            out.append(_err(exc) if exc.sqlstate is None else f"{exc.sqlstate} {exc.diag.message_primary or ''}")
+            detail.append(exc.diag.message_detail or "")
+
+    b = threading.Thread(target=caller, daemon=True)
+    b.start()
+    _qx_wait_lock(db, "pexport_qx_vb", "t_wv1", "AccessShareLock")
+    t0 = time.monotonic()
+    c = threading.Thread(target=_qx_sess, daemon=True, args=(dsn, "pexport_qx_vc", [
+        "SET statement_timeout = '20s'", "BEGIN", "LOCK TABLE t_wv1 IN ACCESS EXCLUSIVE MODE", "COMMIT"]))
+    c.start()
+    _qx_sess(dsn, "pexport_qx_va", [
+        "SET statement_timeout = '20s'", "SET deadlock_timeout = '10s'", "BEGIN",
+        "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = "
+        "'t_wv1'::regclass AND mode = 'AccessShareLock' AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END $$",
+        "LOCK TABLE pgcolumnar.row_group IN ACCESS EXCLUSIVE MODE", "LOCK TABLE t_wv_w IN SHARE MODE", "COMMIT"])
+    b.join(timeout=60)
+    ms = int((time.monotonic() - t0) * 1000)
+    c.join(timeout=30)
+    said = out[0] if out else "the export did not return"
+    det = detail[0] if detail else ""
+    names = ("detail names the run lock"
+             if re.search(r"waits for ShareLock on advisory lock \[[0-9]+,[0-9]+,0,108\]", det)
+             else f"detail [{det.splitlines()[0] if det else ''}]")
+    return f"{said} | {names} | {_qx_under(ms, 8)}"
+
+
+def _qx_lock_waits_logged(cluster):
+    try:
+        text = (cluster.datadir / "server.log").read_text(errors="replace")
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
+    return text.count("still waiting for ShareLock on advisory lock")
+
+
 @pytest.fixture(scope="module")
 def pep(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -422,6 +591,50 @@ def pep(pgc_cluster, server_dir):
                 ("lk leaf", "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE", "t_part"),
                 ("lk subx", "SAVEPOINT s; LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE", "t_lk")):
             r[key] = _self_lock_export(dsn, setup, table, w / key.replace(" ", "_"))
+        # the HINT of the ACCESS EXCLUSIVE refusal (#2215, #2226 review)
+        try:
+            with psycopg.connect(dsn) as conn:
+                conn.execute("SET statement_timeout = '5s'")
+                conn.execute("LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE")
+                conn.execute(f"SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '{w / 'lk_hint'}', 2)")
+                conn.commit()
+            r["lk hint"] = "no error"
+        except psycopg.Error as exc:
+            r["lk hint"] = (exc.diag.message_hint or "no hint") if exc.sqlstate else _err(exc)
+
+        # ---- #2245: the caller waits for its workers in the lock manager
+        r["qx single"] = _qx_queue(db, dsn, "t_lk", "t_lk", w / "qx_single")
+        r["qx leaf"] = _qx_queue(db, dsn, "t_part", "t_p1", w / "qx_leaf")
+        r["qx cycle"] = _qx_cycle(db, dsn, w / "qx_cycle")
+        r["qx lock timeout"] = _qx_lock_timeout(db, dsn, w / "qx_lt")
+        lw_before = _qx_lock_waits_logged(pgc_cluster)
+        got = _qx_result(_qx_sess(dsn, "pexport_qx_n", [
+            f"SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '{w}/qx_1ms', 2)"],
+            options="-c statement_timeout=30s -c lock_timeout=1ms -c deadlock_timeout=1ms -c log_lock_waits=on"))
+        lw_after = _qx_lock_waits_logged(pgc_cluster)
+        logged = (lw_after - lw_before if isinstance(lw_before, int) and isinstance(lw_after, int)
+                  else f"no reading ({lw_before}, {lw_after})")
+        r["qx 1ms"] = f"{got} | {logged} lock waits logged"
+        shown = []
+        try:
+            with psycopg.connect(dsn, application_name="pexport_qx_g") as conn:
+                conn.execute("SET LOCAL lock_timeout = '2s'")
+                conn.execute("SET LOCAL log_lock_waits = on")
+                shown.append(conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                                          f"'t_lk'::regclass, '{w}/qx_guc', 2)").fetchone()[0])
+                shown.append(conn.execute("SHOW lock_timeout").fetchone()[0])
+                shown.append(conn.execute("SHOW log_lock_waits").fetchone()[0])
+                conn.commit()
+            r["qx guc"] = "|".join(str(x) for x in shown)
+        except psycopg.Error as exc:
+            r["qx guc"] = _err(exc) if exc.sqlstate is None else f"{exc.sqlstate} {exc.diag.message_primary or ''}"
+
+        db.run(f"CREATE TABLE t_wv ({COLS}) PARTITION BY RANGE (id)")
+        db.run("CREATE TABLE t_wv1 PARTITION OF t_wv FOR VALUES FROM (MINVALUE) TO (10001) USING pgcolumnar")
+        db.run("CREATE TABLE t_wv2 PARTITION OF t_wv FOR VALUES FROM (10001) TO (MAXVALUE) USING pgcolumnar")
+        db.run(f"INSERT INTO t_wv {GEN_TX_COMMITTED}")
+        db.run("CREATE TABLE t_wv_w (a int)")
+        r["qx victim"] = _qx_victim(db, dsn, w / "qx_victim")
 
         r["up"] = _survived(pgc_cluster, db, before)
         yield r
@@ -697,3 +910,59 @@ def test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on(pep, expect, k
     statement_timeout; it is now refused with 55000, by SQLSTATE and message. A lock
     the workers do not conflict with still exports the committed rows."""
     expect.text(_shown(pep[key]), want, name)
+
+
+def test_pexport_lock_refusal_hint_does_not_name_the_projection_functions(pep, expect):
+    """#2215, #2226 review: the refusal's add_projection and drop_projection clause is
+    parallel_copy's alone. Their SHARE and SHARE ROW EXCLUSIVE do not conflict with the
+    export workers' ACCESS SHARE, so export's HINT must not name them."""
+    expect.text(_shown(pep["lk hint"]),
+                "Run it in a transaction that does not hold that lock, for example before the LOCK TABLE or"
+                " TRUNCATE, or after COMMIT.",
+                "parallel_export_parquet refused after LOCK TABLE IN ACCESS EXCLUSIVE MODE gives a HINT that does"
+                " not name add_projection or drop_projection (#2215)")
+
+
+def test_pexport_queued_access_exclusive_on_the_table_does_not_hang(pep, expect):
+    """#2245: ACCESS EXCLUSIVE queued behind the caller's ACCESS SHARE; the workers
+    queued behind it, and the caller waited for them on a latch, which the deadlock
+    detector does not follow. The caller now waits on the workers' run locks."""
+    expect.text(pep["qx single"], f"no error ({NC}) | under 6 s | other session locked | {NC} rows read back",
+                "parallel_export_parquet with ACCESS EXCLUSIVE on the table queued behind the caller exports within 6 s, not a wait until statement_timeout, and the other session then gets its lock (#2245)")
+
+
+def test_pexport_queued_access_exclusive_on_a_leaf_does_not_hang(pep, expect):
+    expect.text(pep["qx leaf"], f"no error ({NPART}) | under 6 s | other session locked | {NPART} rows read back",
+                "parallel_export_parquet of a partitioned table with ACCESS EXCLUSIVE on one leaf queued behind the caller exports within 6 s, not a wait until statement_timeout, and the other session then gets its lock (#2245)")
+
+
+def test_pexport_control_a_cycle_through_the_dispatcher_ends_in_40p01(pep, expect):
+    """The dispatcher waits for the table in the lock manager before any worker
+    starts, so this cycle was already seen on main."""
+    expect.text(pep["qx cycle"], "one side 40P01, the other went on | under 5 s",
+                "control: a session holding ACCESS EXCLUSIVE on the table that then waits for a lock the parallel_export_parquet caller holds gets 40P01 on one side within 5 s (#2245)")
+
+
+def test_pexport_the_callers_lock_timeout_bounds_its_wait_for_the_table(pep, expect):
+    expect.text(pep["qx lock timeout"], "55P03 canceling statement due to lock timeout | under 4 s",
+                "the caller's lock_timeout of 1 s ends a parallel_export_parquet that waits for another session's ACCESS EXCLUSIVE on the table with 55P03 within 4 s (#2245)")
+
+
+def test_pexport_the_waits_on_the_workers_ignore_lock_timeout_and_are_not_logged(pep, expect):
+    """The run-lock waits are waits for the export, not lock contention."""
+    expect.text(pep["qx 1ms"], f"no error ({NSRC}) | 0 lock waits logged",
+                "parallel_export_parquet under lock_timeout 1 ms, deadlock_timeout 1 ms and log_lock_waits on still exports, and logs no wait for its workers (#2245)")
+
+
+def test_pexport_the_callers_settings_read_back_unchanged(pep, expect):
+    expect.text(pep["qx guc"], f"{NC}|2s|on",
+                "the caller's lock_timeout and log_lock_waits read back unchanged after parallel_export_parquet in the same transaction (#2245)")
+
+
+def test_pexport_a_worker_deadlock_victim_reaches_the_caller_as_40p01(pep, expect):
+    """#2245: whichever process the deadlock detector picks, the caller reports 40P01.
+    The worker's error, with its detail, is re-raised by the caller, not "exited
+    without reporting a result"."""
+    expect.text(pep["qx victim"],
+                "40P01 pgcolumnar.parallel_export_parquet worker 0 failed: deadlock detected | detail names the run lock | under 8 s",
+                "a parallel_export_parquet worker chosen as the deadlock victim reaches the caller as 40P01 with the cycle in its detail, within 8 s (#2245)")

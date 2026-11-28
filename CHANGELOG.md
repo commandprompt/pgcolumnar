@@ -282,6 +282,14 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
+  refusal for 2 or more workers (#2187) comes before the file is opened, as
+  #2209 pinned for the unique-index refusal (#2252). A missing file on a table
+  with an INSERT row trigger gets the trigger refusal, `0A000` with its hint,
+  not `58P01`. With 1 worker the same call gets `58P01`. Before this, moving
+  the trigger refusal after the file is opened passed both suites.
+  docs/limitations.md and docs/sql-reference.md state that order for both
+  refusals. Test-only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin two edges of the
   unique-index refusal for 2 or more workers (#2209). A heap table with a primary
   key gets `42809` before that refusal: the heap fixture now has a primary key.
@@ -614,6 +622,177 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.add_projection` now holds its SHARE lock until its transaction
+  ends, as `CREATE INDEX` does, and `pgcolumnar.drop_projection` takes SHARE ROW
+  EXCLUSIVE, held the same way (#2215). `add_projection` released its lock at the
+  end of the function, so a write from another session went ahead while the
+  projection was still uncommitted, could not see it, and its rows never reached
+  it. `drop_projection` took SHARE UPDATE EXCLUSIVE, which no writer waits for, so
+  a writer during an open drop wrote row groups into the storage being dropped,
+  and nothing named them after the drop committed. Projection scans then answered
+  without the missing rows, with no error. `parallel_copy` after either in the same
+  transaction loaded the same way, because its workers run in their own
+  transactions: `BEGIN; add_projection; parallel_copy; COMMIT` left the projection
+  empty, so `WHERE c = 3` returned 0 with projection scans on and 500 with them
+  off. It is now refused with `55000` by #2183's own-lock refusal, whose HINT
+  names the two functions, at any worker count; `rebuild_projections`, which calls
+  `add_projection`, is refused the same way. A metadata-only `ALTER TABLE` that
+  materializes a declared projection also keeps its SHARE lock to transaction end.
+  Reads do not wait for any of them. `parallel_export_parquet`'s HINT is
+  unchanged, because its workers' ACCESS SHARE conflicts with neither function.
+  Like `CREATE INDEX`, two transactions that each add a projection and then
+  write to the other's table can now deadlock, which PostgreSQL detects.
+  docs/sql-reference.md and docs/limitations.md. `test/parallel_copy.sh`,
+  `test/projections.sh`, `test/parallel_export_parquet.sh` and their twins.
+- A lazy VACUUM no longer clears the all-visible bits of clean blocks that an
+  earlier VACUUM had set, when a DELETE commits while it runs (#2170). Its
+  second pass (#2059) cleared every block of its first list that had left the
+  all-visible row groups. That list works by row group, so a delete of one row
+  took the bits of every block in the group, and index-only scans fetched those
+  blocks again until the next VACUUM. Results stayed correct. The second pass
+  now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
+  already set is left to the writer, which clears its own rows' blocks after it
+  writes them. `test/index_only.sh` and `test_index_only.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` when a column's type is or contains a composite
+  whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
+  `TRUNCATE` or `LOCK TABLE` on that table (#2182). The column may be the
+  composite itself, an array of it, a domain over it, a range or multirange
+  over it, or a composite with it as a field. Each flush worker reads the type
+  cache, which opens a composite's table with ACCESS SHARE. The workers are not
+  in the inserting backend's lock group, so they waited on its lock, as in
+  #2072. A column whose type or collation was created in the same
+  transaction no longer makes a worker fail with a WARNING. The backend now
+  flushes such a row group serially, which stores the same bytes. A worker runs on its own snapshot, so
+  it cannot see what the transaction changed under the lock, such as an
+  attribute added to the composite; that is why the flush does not join the
+  workers to the backend's lock group instead. `parallel_flush_optin.sh` arm 8
+  and `test_parallel_flush_optin.py`.
+- Two writers to one table no longer deadlock on the chunk-group and
+  storage-row locks (#2184). A writer holds the chunk-group lock of each row
+  group it deletes from and the storage-row lock, which every flush of new
+  rows took exclusively, both to commit, in whatever order its statements run.
+  A transaction that inserted and then deleted in a group, and one that deleted
+  in that group and then inserted, each waited for the other, and one failed
+  with `deadlock detected` (40P01). A writer whose table's storage row is
+  current now holds the storage-row lock in share mode, so writers do not wait
+  for each other on it. The first write to a table and a write that raises an
+  earlier build's format stamp still take it exclusively, and so do
+  `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite`, which still wait for
+  every open writer. A `DELETE` that finds an earlier build's stamp raises it
+  before it takes a chunk-group lock. As a result, a second `INSERT` into a
+  table no longer waits for an open transaction that inserted into it.
+  Writers that run at once also no longer deadlock on the row-identity locks
+  of unrelated rows. Those locks are bucketed, so unrelated rows share them,
+  and a transaction that ran a `DELETE` and then an `UPDATE` waited at its
+  second flush for a bucket another such transaction held from its first.
+  This had been possible all along for transactions without an `INSERT`, and
+  `concurrent_diff` met it once inserting writers stopped waiting for each
+  other. A flush now takes a row-identity lock only if it is free. It takes the
+  chunk-group lock of every row group it marks before it checks for a
+  committed conflict, and that wait is what serializes two writers of one row.
+  This fixes #2251. A `pgcolumnar.recluster` or `pgcolumnar.compact_rewrite`
+  in a transaction that has written to the table now stops with `55P03` while
+  another transaction that wrote to it is open, rather than wait for it and
+  risk a deadlock; before, that writer waited. A table that 1.0-alpha4 wrote
+  and this build only deleted from is now refused by 1.0-alpha4 (`0A000`),
+  as after any other write. docs/limitations.md. `test/concurrency.sh` and
+  `test_concurrency.py`, scenarios D to M.
+- A remote read no longer sends a request again when the connection closes
+  after a whole interim answer such as `103 Early Hints` (#2258). The reader
+  retries once, on a new connection, when a kept-alive connection ends before
+  any byte of an answer: that is a server dropping an idle connection. But it
+  read each response head on its own, so a close after a complete `1xx` head
+  counted as before any byte too, though the server had begun to answer. Over
+  plain TCP, and over TLS since #2248, the request went again. Now a close is
+  taken for a stale connection only before the first head. A close after an
+  interim head fails
+  with 08006: `connection to ... closed mid-response` over plain TCP, and `TLS
+  read from ... failed` over TLS. A close before any answer is still retried.
+  `test/objstore_http_read.sh`, `test/objstore_tls_read.sh` and their twins.
+
+- `pgcolumnar.parallel_copy` into a partitioned target now refuses a row that
+  `COPY FROM` refuses before it reads a value with `COPY`'s SQLSTATE and
+  message (#2222). The splitter reads every row's key before any loader runs,
+  so such a row was refused on its key: a row with an extra field or `\.` in
+  the key got 22P02, a raw byte that is not valid in the encoding got 22P02,
+  a raw NUL got 22P04 or 22000, where `COPY` gives 22P04 or 22021. The
+  splitter now checks a row's encoding, its unescaped `\.` and its field
+  count as core does, and leaves a row that fails one in the current range,
+  where that range's loader raises core's error behind `worker N failed:`. A
+  row `COPY` loads is never left this way, so each worker still loads only
+  its own partitions. docs/limitations.md. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`.
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when
+  another session holds SHARE on the target and then waits for a lock the
+  caller holds (#2229). `LOCK TABLE ... IN SHARE MODE` and `CREATE INDEX` take
+  such a lock. The coordinator waited for that session in the lock manager, and
+  the caller waited for the coordinator on a latch, which the deadlock detector
+  does not see. The caller now takes the workers' ROW EXCLUSIVE on the target
+  and on each partition before it starts the coordinator, after every refusal,
+  and holds it to the end of its transaction. One side of such a cycle now gets
+  40P01 within `deadlock_timeout`, and the caller's `lock_timeout` now bounds
+  its wait for another session's lock on the target (55P03). The caller also
+  waits for its workers in the lock manager now, on a new advisory lock class
+  (107) each worker holds while it runs. So a `CREATE INDEX` that queues behind
+  the caller's lock does not hang the load: it runs after it. That also fixes a
+  hang on main when the caller already held ROW EXCLUSIVE on the target. A lock
+  of the caller's own on a table the loaders reach through a foreign key, a
+  trigger or a sequence now ends with 40P01 within `deadlock_timeout` instead
+  of a wait until `statement_timeout` (#2216). These waits on the workers do
+  not count against `lock_timeout` and are not reported by `log_lock_waits`.
+  When the deadlock detector picks the coordinator, while it creates a fresh
+  table's storage row, the caller now gets the coordinator's 40P01 with its
+  DETAIL. It used to get XX000 `coordinator exited without reporting a result`.
+  docs/limitations.md. `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb inside the
+  transaction no longer changes what the transaction sees (#2167). `recluster`,
+  `recluster_hilbert`, `compact_rewrite`, `cluster`, `cluster_hilbert`, `vacuum`
+  and `vacuum_sorted` read the newest committed rows and write them as the
+  calling transaction's own, so the transaction then saw a row another session
+  inserted after its snapshot and lost a row another session deleted after it.
+  Heap's `CLUSTER` keeps both as the snapshot saw them. At those levels each verb
+  now compares what the transaction's snapshot and its own read see of the groups
+  it rewrites: each group visible to the snapshot with the same deleted-row count,
+  and for a whole-table verb the same list of groups. When they differ it raises
+  40001 with `could not rewrite table "t": rows changed after this transaction's
+  snapshot`, and a retry runs. When they agree it runs as before. The maintenance
+  daemon now forces `READ COMMITTED`, as PostgreSQL's autovacuum does, so a
+  `default_transaction_isolation` of `repeatable read` does not make it skip a
+  busy table. docs/limitations.md and docs/sql-reference.md.
+  `test/rewrite_snapshot.sh` and `test_rewrite_snapshot.py`.
+- A lazy VACUUM that retires a fully deleted row group no longer brings back a
+  deleted row with every column NULL (#2263). Core runs a lazy VACUUM with
+  PROC_IN_VACUUM set, and other backends leave its xid out of their snapshots.
+  The retirement deletes catalog rows inside that VACUUM's transaction. A
+  reader that met one of those rows before the VACUUM committed took the delete
+  for aborted and set a hint bit that kept the row for good. Measured on main:
+  the group's row_group row survived while its column_chunk and delete_vector
+  rows were deleted, so a sequential scan and an index scan returned the
+  deleted row with every column NULL, one row more than heap. A VACUUM now
+  leaves PROC_IN_VACUUM before the retirement writes anything; it keeps the
+  flag while it sets the visibility map. Readers now refuse a row group whose
+  data is on disk but whose column_chunk rows are gone, with XX001, instead of
+  returning its rows as NULLs. A table damaged by an earlier version reports
+  that error until the leftover group is removed (docs/limitations.md).
+  A row-group flush now inserts its `row_group` row after the group's other
+  catalog rows (#2266). The unique check of a concurrent `INSERT ... ON
+  CONFLICT` reads another transaction's rows as they are inserted. It had
+  found the `row_group` row before its column chunks, and the refusal turned
+  that into XX001. It now waits for the writer, as before. A new
+  superuser setting for tests, `pgcolumnar.flush_hold_ms`, pauses a flush
+  just before that insert (docs/configuration.md).
+  `test/vacuum_retire_visibility.sh` and `test_vacuum_retire_visibility.py`.
+- The same change fixes a plain VACUUM that failed with `duplicate key value
+  violates unique constraint "free_space_pkey"` under concurrent deletes
+  (#2264). The lost delete left a retired group live while its range was also
+  in free_space, so the next VACUUM that retired it inserted the same
+  `(storage_id, file_offset)` again. Measured on PG 18, three workers of
+  single-row DELETE and UPDATE against a VACUUM loop for 60 s: 1426 of 1619
+  VACUUMs failed on main, 0 of 2835 with the fix. `test/vacuum_retire_snapshot.sh`
+  and `test_vacuum_retire_snapshot.py` pin the duplicate key and the free-space
+  accounting: no free range over a live group, and exactly the retired groups'
+  pages free. Reported by @jdatcmd.
 - An AFTER trigger of a DELETE or UPDATE that reads the table through an
   index-only scan no longer counts rows its own statement deleted, when a
   VACUUM ran during the statement (#2169). The writer keeps its delete marks in
@@ -680,6 +859,22 @@ true until the next version shipped.
   alone. A table whose retention column was dropped on an older build keeps the
   stale name. docs/sql-reference.md. `test/ttl_expire.sh`,
   `test/sorted_mark_rename.sh` and their pytest twins.
+- `pgcolumnar.parallel_export_parquet` no longer waits until
+  `statement_timeout` when another session's ACCESS EXCLUSIVE request queues
+  behind the caller's lock on the table, or on a leaf partition, before the
+  workers open it (#2245). `LOCK TABLE`, `TRUNCATE`, `ALTER TABLE`,
+  `VACUUM FULL` and `DROP` take that lock. The workers queued behind the
+  request, and the caller waited for them on a latch, which the deadlock
+  detector does not see. Each worker now holds an advisory lock of a new class
+  (108) from the moment it connects, and the caller waits on those locks. The
+  deadlock detector then moves the workers ahead of the queued request after
+  `deadlock_timeout`, and the export finishes. These waits on the workers do
+  not count against `lock_timeout` and are not reported by `log_lock_waits`.
+  A worker's error now carries its detail and hint to the caller, and every
+  step after the worker connects reports its error, so a worker picked as a
+  deadlock victim reaches the caller as 40P01.
+  docs/sql-reference.md. `test/parallel_export_parquet.sh` and
+  `test_parallel_export_parquet.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error
