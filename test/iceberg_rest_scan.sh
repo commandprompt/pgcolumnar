@@ -261,7 +261,7 @@ start_fx() {
 		--port "$FX_PORT" --log "$PGC_WORKDIR/$name.log" --token "$TOKEN" \
 		--metadata-location "$MDLOC" "$@" > "$PGC_WORKDIR/$name.out" 2>&1 &
 	FX_PIDS+=("$!")
-	for _ in $(seq 1 50); do grep -q READY "$PGC_WORKDIR/$name.out" 2>/dev/null && break; sleep 0.1; done
+	pgc_await_ready "$PGC_WORKDIR/$name.out" "$!" "REST catalog fixture $name on port $FX_PORT"
 }
 ROWS5="$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
 
