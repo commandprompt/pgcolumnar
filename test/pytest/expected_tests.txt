@@ -2706,13 +2706,42 @@ guard_tests 910
 # cluster_tests 6565 -> 6566 for the review of #2224 at b9747c41 (#2186): one test in test_arrow_import.py, a
 # struct or map field with no children vector, by collection over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it): 6132 collected.
-# cluster_tests 6566 -> 6615 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
+# cluster_tests 6566 -> 6597, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
+# daemon's launcher and due premise; a writer beside both verbs of one daemon pass commits, its writes show, the
+# verbs log in order from one worker, no deadlock; with a 1.5 s limit the writer commits and the recluster
+# finishes; a cancelled compact_rewrite ends the pass) and seventeen in test_native_rewrite_conc.py (steady deletes
+# finish, per verb; the turnstile: a new transaction waits, the wait stops at deadlock_timeout, a group-lock holder
+# and a storage-row-lock holder skip it, the verb finishes and the writes show, per verb; a paused compact_rewrite
+# holds its group lock, gives the turnstile back, and commits), by collection of those two files (102 for
+# test_native_rewrite_conc.py on main, 119 here, and 14) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+# cluster_tests 6597 -> 6611, the review of #2253 at 815dce06: fourteen tests in test_native_rewrite_conc.py (an
+# INSERT does not wait at the turnstile, per verb; a delete held at the turnstile commits, its row is gone and
+# the verb finishes, per verb; a verb stopped with 55P03 holds no turnstile lock and the next delete does not
+# wait, per verb), one test renamed (the turnstile is kept to commit), by collection of that file (133 here)
+# and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6611 -> 6617, the review of #2253 at 3de3537e (C1): six tests in test_native_rewrite_conc.py (a
+# delete at REPEATABLE READ, at SERIALIZABLE, and at REPEATABLE READ by default_transaction_isolation, the first
+# statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
+# collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6617 -> 6625 for #2256's arm 9 in test_parallel_flush_optin.py: eight tests (the ordered two-session
+# cycle through a parallel flush worker ends in 40P01 with the worker, the backend or the other session as the victim,
+# and with every deadlock_timeout at 1 s; with two workers the backend waits for the second worker's run lock too;
+# the waits ignore lock_timeout and log_lock_waits, the session's settings read back, and no backend died), by
+# collection of that file (37 -> 45) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6625 -> 6626, still #2256, for the #2270 review's B1: test_cycle_a_cycle_while_a_worker_connects_ends_in_40p01
+# in test_parallel_flush_optin.py (a cycle through a worker that is still connecting, held up on pg_database, ends in
+# 40P01), by collection of that file (45 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6626 -> 6679 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
 # (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
 # guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
 # AFTER ROW trigger, and parallel premises and scans by the custom scan off and on), and for the review of #2269
 # the probes S1, R2, R3 (two isolation levels), R4 and R5 (6), a STABLE function's parallel index scan (premise
-# and 3) and its parallel sequential scan against serial (premise and 3, at two settings: 8), and a parallel index scan without
-# shared_preload_libraries (1), one test per check,
-# by collection of that file (1 on main 02d7c185, 50 here),
-# restated after the merges of origin/main 1a126cdb and 02d7c185 (6538 -> 6586 before them).
-cluster_tests 6615
+# and 3) and its parallel sequential scan against serial (premise and 3, at two settings: 8), a parallel index scan without
+# shared_preload_libraries (1), and one registry copy per parallel query (a loop of parallel queries, a
+# rescanned Gather with its premise, and no leak warning: 4), one test per check,
+# by collection of that file (1 on main 503f05f9, 54 here),
+# restated after the merges of origin/main 1a126cdb, 02d7c185 and 503f05f9 (6538 -> 6586 before them).
+cluster_tests 6679

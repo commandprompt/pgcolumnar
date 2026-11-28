@@ -35,10 +35,16 @@
 #include "postmaster/bgworker.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "storage/shm_toc.h"
 #include "tcop/tcopprot.h"
+#if PG_VERSION_NUM >= 160000
+#include "utils/wait_event.h"	/* PG_WAIT_EXTENSION */
+#else
+#include "pgstat.h"
+#endif
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -119,6 +125,9 @@ typedef struct PflushWorkerSlot
 	uint32		outLen;			/* its byte length */
 	int			sqlerrcode;
 	char		errmsg[512];
+	char		errdetail[512];	/* passed on to the backend's WARNING (#2256) */
+	char		errhint[256];	/* passed on to the backend's WARNING (#2256) */
+	pg_atomic_uint32 running;	/* 1 once the worker holds its run lock (#2256) */
 } PflushWorkerSlot;
 
 typedef struct PflushHeader
@@ -138,6 +147,7 @@ typedef struct PflushHeader
 	int			natts;
 	int			nworkers;
 	bool		bloomEnabled;
+	uint32		runLockKey;		/* names this flush's run locks (#2256) */
 
 	/*
 	 * Byte-identity: these encoding GUCs are read live inside flush_one_column
@@ -2778,6 +2788,113 @@ pflush_auto_workers(void)
 }
 
 /*
+ * The backend waits for its flush workers in the lock manager (#2256).
+ *
+ * A worker reads the type cache for each column it encodes, and for a
+ * composite the type cache opens the composite's table with ACCESS SHARE, in
+ * the worker's own transaction. The worker is not in the backend's lock group.
+ * The backend used to wait for its workers on a latch, which the deadlock
+ * detector does not follow. So when another session held a lock on that table
+ * (LOCK TABLE, TRUNCATE, ALTER TABLE) and then asked for a lock the inserting
+ * transaction holds, such as SHARE on the columnar table, the detector saw a
+ * worker waiting for that session and that session waiting for the backend,
+ * and no cycle. The INSERT waited until statement_timeout. pflush_type_needs_
+ * backend (#2182) covers a lock the inserting transaction holds itself; this
+ * covers one another session holds.
+ *
+ * So each worker takes an exclusive lock of class PGCOLUMNAR_LOCKCLASS_PFLUSH_RUN
+ * on (flush, its index) as soon as it has attached the shared segment, before
+ * it connects and so before it asks for any other lock, and says so in shared
+ * memory. The backend waits for each
+ * of those in SHARE mode in turn, until the worker has reported and released
+ * it. The wait-for graph then has an edge from the backend to the worker it
+ * waits for, the cycle above is closed, and the deadlock detector ends it with
+ * 40P01 after deadlock_timeout. When the detector picks the worker, the worker
+ * reports the error, and the backend logs it as a WARNING with the worker's
+ * SQLSTATE, detail and hint, then encodes the worker's columns itself, as it
+ * does for any failed worker. Its own type cache already holds the entry, so
+ * the INSERT finishes. When it picks the backend or the other session, that
+ * statement fails with 40P01, and the other side goes on.
+ *
+ * The run lock is a session lock, so it goes with the process if the process
+ * dies. The backend's waits on it are waits for the flush, not lock contention,
+ * so lock_timeout does not apply to them and log_lock_waits does not report
+ * them; both are restored once the waits end. A wait for a worker that has not
+ * taken its lock yet is a latch wait, but a worker takes it before it connects,
+ * so before it asks for any lock at all: connecting reads pg_database with
+ * ACCESS SHARE, which a cycle can hold up too (#2270 review).
+ *
+ * parallel_copy (#2229) and parallel_export_parquet (#2245) do the same with
+ * classes of their own; a separate class keeps the lock tags apart.
+ */
+static void
+pflush_run_locktag(LOCKTAG *tag, const PflushHeader *hdr, int idx)
+{
+	SET_LOCKTAG_ADVISORY(*tag, hdr->dbid, hdr->runLockKey, (uint32) idx,
+						 PGCOLUMNAR_LOCKCLASS_PFLUSH_RUN);
+}
+
+/*
+ * pflush_release_run_lock_at_exit
+ *		before_shmem_exit callback of a flush worker: release its run lock, and
+ *		any other session lock of the user lock method, which it holds none of.
+ *		Registered before the worker connects, so it also runs when the worker
+ *		exits while connecting. A no-op once the lock is released.
+ */
+static void
+pflush_release_run_lock_at_exit(int code, Datum arg)
+{
+	LockReleaseSession(USER_LOCKMETHOD);
+}
+
+/*
+ * pflush_wait_for_workers
+ *		The backend: for each started worker in turn, wait until it has taken its
+ *		run lock, or has stopped without it, then wait in the lock manager until
+ *		it releases it. See above.
+ */
+static void
+pflush_wait_for_workers(PflushHeader *hdr, PflushWorkerSlot *slots,
+						BackgroundWorkerHandle **handles, int nstarted)
+{
+	int			nest = NewGUCNestLevel();
+	int			i;
+
+	(void) set_config_option("lock_timeout", "0", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	(void) set_config_option("log_lock_waits", "off", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	for (i = 0; i < nstarted; i++)
+	{
+		LOCKTAG		tag;
+		bool		running = true;
+
+		while (pg_atomic_read_u32(&slots[i].running) == 0)
+		{
+			pid_t		pid;
+
+			if (pg_atomic_read_u32(&slots[i].state) != PFLUSH_PENDING ||
+				handles[i] == NULL ||
+				GetBackgroundWorkerPid(handles[i], &pid) == BGWH_STOPPED)
+			{
+				running = false;
+				break;
+			}
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 10L, PG_WAIT_EXTENSION);
+			ResetLatch(MyLatch);
+			CHECK_FOR_INTERRUPTS();
+		}
+		if (!running)
+			continue;
+		pflush_run_locktag(&tag, hdr, i);
+		(void) LockAcquire(&tag, ShareLock, false, false);
+		LockRelease(&tag, ShareLock, false);
+	}
+	AtEOXact_GUC(true, nest);
+}
+
+/*
  * pgcolumnar_parallel_flush_worker
  *		Background-worker entry (#445 slice 3): attach the input DSM, connect,
  *		and run flush_one_column for every column it can claim off the shared
@@ -2831,6 +2948,28 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	attrs = (FormData_pg_attribute *) shm_toc_lookup(toc, PFLUSH_KEY_ATTRS, false);
 	me = &slots[widx];
 
+	/*
+	 * The run lock, before the worker connects (#2256, #2270 review); see "The
+	 * backend waits for its flush workers in the lock manager". Connecting reads
+	 * pg_database with ACCESS SHARE, so a session holding ACCESS EXCLUSIVE on it
+	 * could hold the worker up there, and a backend waiting on a latch until the
+	 * lock is taken would not see that cycle. The tag names the caller's
+	 * database and this flush's segment, not MyDatabaseId, and a session lock
+	 * needs only this process's PGPROC and the local lock table, which
+	 * BackgroundWorkerMain has set up (InitProcess, BaseInit). It is held until
+	 * this worker has reported. The exit callback releases it if the worker
+	 * dies first, including while it connects, before InitPostgres has
+	 * registered the callback that releases session locks.
+	 */
+	before_shmem_exit(pflush_release_run_lock_at_exit, (Datum) 0);
+	{
+		LOCKTAG		tag;
+
+		pflush_run_locktag(&tag, hdr, widx);
+		(void) LockAcquire(&tag, ExclusiveLock, true, false);
+		pg_atomic_write_u32(&me->running, 1);
+	}
+
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
@@ -2846,16 +2985,21 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	 * transaction held ACCESS EXCLUSIVE (TRUNCATE, LOCK TABLE, ALTER TABLE), or
 	 * one with another session's ALTER TABLE queued behind it, waited forever.
 	 * The backend's ROW EXCLUSIVE keeps the table in place while the workers run.
+	 *
+	 * Everything from here on reports its error to the backend, which logs it
+	 * with its SQLSTATE, detail and hint (#2256). A deadlock in which this worker
+	 * is the victim then reaches the backend as 40P01. An error while connecting
+	 * ends the worker without a report; its columns are encoded serially.
 	 */
-	StartTransactionCommand();
-	PushActiveSnapshot(GetTransactionSnapshot());
-
 	PG_TRY();
 	{
 		StringInfoData recbuf;
 		uint32		count = 0;
 		dsm_segment *outseg;
 		char	   *obase;
+
+		StartTransactionCommand();
+		PushActiveSnapshot(GetTransactionSnapshot());
 
 		/*
 		 * Adopt the launcher's live encoding GUCs so the bytes this worker
@@ -2963,6 +3107,8 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		strlcpy(me->errmsg,
 				edata->message ? edata->message : "parallel_flush worker failed",
 				sizeof(me->errmsg));
+		strlcpy(me->errdetail, edata->detail ? edata->detail : "", sizeof(me->errdetail));
+		strlcpy(me->errhint, edata->hint ? edata->hint : "", sizeof(me->errhint));
 		FlushErrorState();
 		FreeErrorData(edata);
 		AbortOutOfAnyTransaction();
@@ -2970,6 +3116,13 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	}
 	PG_END_TRY();
 
+	if (pg_atomic_read_u32(&me->running) != 0)
+	{
+		LOCKTAG		tag;
+
+		pflush_run_locktag(&tag, hdr, widx);
+		LockRelease(&tag, ExclusiveLock, true);
+	}
 	dsm_detach(seg);
 	proc_exit(0);
 }
@@ -3206,9 +3359,13 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 		slots[i].outLen = 0;
 		slots[i].sqlerrcode = 0;
 		slots[i].errmsg[0] = '\0';
+		slots[i].errdetail[0] = '\0';
+		slots[i].errhint[0] = '\0';
+		pg_atomic_init_u32(&slots[i].running, 0);
 	}
 
 	dsmh = dsm_segment_handle(seg);
+	hdr->runLockKey = (uint32) dsmh;	/* unique among live segments */
 
 	/*
 	 * Register the workers. A registration failure is NOT an error: the started
@@ -3254,7 +3411,11 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 
 	PG_ENSURE_ERROR_CLEANUP(pflush_error_cleanup, PointerGetDatum(&cleanup));
 	{
-	/* wait for every started worker to finish (SIGTERM handler is die) */
+	/*
+	 * Wait for each worker in the lock manager (#2256), then for every started
+	 * worker to finish (SIGTERM handler is die).
+	 */
+	pflush_wait_for_workers(hdr, slots, handles, nstarted);
 	for (i = 0; i < nstarted; i++)
 		if (handles[i] != NULL)
 			WaitForBackgroundWorkerShutdown(handles[i]);
@@ -3328,9 +3489,13 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 		}
 		else if (st == PFLUSH_FAILED)
 		{
+			/* with the worker's SQLSTATE, detail and hint (#2256) */
 			ereport(WARNING,
-					(errmsg("pgcolumnar parallel_flush worker %d failed, completing its columns serially: %s",
-							i, slots[i].errmsg[0] ? slots[i].errmsg : "unknown error")));
+					(slots[i].sqlerrcode ? errcode(slots[i].sqlerrcode) : 0,
+					 errmsg("pgcolumnar parallel_flush worker %d failed, completing its columns serially: %s",
+							i, slots[i].errmsg[0] ? slots[i].errmsg : "unknown error"),
+					 slots[i].errdetail[0] ? errdetail("%s", slots[i].errdetail) : 0,
+					 slots[i].errhint[0] ? errhint("%s", slots[i].errhint) : 0));
 		}
 
 		/*

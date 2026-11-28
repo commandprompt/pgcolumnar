@@ -637,6 +637,34 @@ true until the next version shipped.
   #2267, part of #2064.
   `test/statement_self_visibility.sh` and `test_statement_self_visibility.py`.
 
+- The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
+  transaction (#2194). It ran both in one transaction when both were due. The
+  recluster then waited for a busy row group while it held the storage-row lock
+  the compact_rewrite kept to commit. A writer that held that group's lock and
+  waited for the storage-row lock got 40P01, or, with a short
+  `pgcolumnar.rewrite_lock_timeout`, the recluster stopped with 55P03 and took
+  the compact_rewrite down with it. A verb that fails or is cancelled still ends
+  the table's pass. docs/limitations.md and docs/administration.md.
+  `test/autovacuum_verb_txn.sh` and `test_autovacuum_verb_txn.py` (new).
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` now finish under a
+  steady stream of short deletes (#2185). Since #2139 they take their locks
+  without waiting while they hold one, so writers never queued behind them, and
+  they stopped with 55P03 at `pgcolumnar.rewrite_lock_timeout`. A rewrite now
+  takes the table's rewrite turnstile (advisory lock class 109) before its
+  locks and keeps it to commit. A DELETE, UPDATE or MERGE planned in a
+  transaction that has not yet written to a columnar table polls the turnstile,
+  for at most `deadlock_timeout`. It waits before it takes its snapshot, so a
+  writer that waited reads the rewritten row groups and does not fail with
+  40001. The poll is not a lock wait, so it adds no deadlock and does not cancel
+  the maintenance daemon. With 8 clients each deleting one row and holding its
+  lock for 200 ms, both verbs now finish within a 2 s limit. A writer that read
+  a row group before the rewrite retired it still fails with 40001, as before.
+  Writers at REPEATABLE READ or SERIALIZABLE do not wait: their snapshot is
+  taken before the wait, so waiting could only make them fail. Steady deletes
+  at those levels can still keep a rewrite from its locks. The turnstile is held
+  until the rewrite's transaction commits. docs/limitations.md,
+  docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
+  and `test_native_rewrite_conc.py`.
 - `pgcolumnar.add_projection` now holds its SHARE lock until its transaction
   ends, as `CREATE INDEX` does, and `pgcolumnar.drop_projection` takes SHARE ROW
   EXCLUSIVE, held the same way (#2215). `add_projection` released its lock at the
@@ -668,6 +696,26 @@ true until the next version shipped.
   now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
   already set is left to the writer, which clears its own rows' blocks after it
   writes them. `test/index_only.sh` and `test_index_only.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` in a lock cycle through a flush worker (#2256).
+  A worker opens a composite column's table with ACCESS SHARE when it reads
+  the type cache. When another session held a conflicting lock on that table
+  and then asked for a lock the inserting transaction holds, such as
+  `LOCK TABLE ... IN SHARE MODE` on the columnar table, the worker waited for
+  that session and that session waited for the backend. The backend waited
+  for the worker on a latch, which the deadlock detector does not see. Each
+  worker now holds an advisory lock of a new class (110) from just before it
+  connects, and the backend waits on those locks. Connecting reads
+  `pg_database`, so a cycle through a worker that is still connecting, for
+  example one through a superuser's `LOCK TABLE pg_database`, is found too. The deadlock detector then
+  ends the cycle with `deadlock detected` (40P01) after `deadlock_timeout`.
+  If it picks the worker, the backend logs the worker's error as a WARNING
+  with its SQLSTATE, detail and hint, encodes that worker's columns itself,
+  and the INSERT goes on. If it picks the backend or the other session, that
+  statement fails with 40P01. These waits on the workers do not count against
+  `lock_timeout` and are not reported by `log_lock_waits`.
+  docs/configuration.md and docs/limitations.md. `parallel_flush_optin.sh`
+  arm 9 and `test_parallel_flush_optin.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   until `statement_timeout` when a column's type is or contains a composite
   whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
