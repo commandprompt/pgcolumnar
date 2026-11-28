@@ -920,7 +920,13 @@ def _dl_kept(d):
     return out
 
 
-def _dl_held_writer(d, verb):
+DL_ISO = {"rr": ("REPEATABLE READ", ("BEGIN ISOLATION LEVEL REPEATABLE READ",)),
+          "ser": ("SERIALIZABLE", ("BEGIN ISOLATION LEVEL SERIALIZABLE",)),
+          "rrdefault": ("REPEATABLE READ by default_transaction_isolation",
+                        ("SET default_transaction_isolation = 'repeatable read'", "BEGIN"))}
+
+
+def _dl_held_writer(d, verb, iso=None):
     """Every group has deletes. W deletes id 1501 and flushes it, so it holds group 1; the
     verb starts with a 20 s limit and waits for group 1, holding the turnstile. N, with a 5 s
     deadlock_timeout, deletes id 50 and flushes it; 0.5 s after N's DELETE is active, W rolls
@@ -966,9 +972,15 @@ def _dl_held_writer(d, verb):
             with psycopg.connect(d.dsn, autocommit=True) as n:
                 n.execute("SET deadlock_timeout = '5s'")
                 n.execute("SET statement_timeout = '30s'")
-                with n.transaction():
+                for sql in (DL_ISO[iso][1] if iso else ("BEGIN",)):
+                    n.execute(sql)
+                try:
                     n.execute("DELETE FROM dl WHERE id = 50")
                     n.execute("SELECT count(*) FROM dl WHERE id = 50").fetchone()
+                    n.execute("COMMIT")
+                except psycopg.Error:
+                    n.execute("ROLLBACK")
+                    raise
             out["n"] = "ok"
         except psycopg.Error as exc:
             out["n"] = exc.sqlstate or _err(exc)
@@ -1113,6 +1125,8 @@ def dl(pgc_cluster):
         for name, verb in DL_VERBS.items():
             out[name, "held_writer"] = _dl_held_writer(d, verb)
             out[name, "release"] = _dl_release(d, verb)
+        for iso in DL_ISO:
+            out["held_iso", iso] = _dl_held_writer(d, "pgcolumnar.compact_rewrite('dl', 0.0)", iso)
         yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1609,3 +1623,21 @@ def test_a_delete_after_the_stopped_rewrite_does_not_wait(dl, name, expect):
     expect.text(_ms_in(dl[name, "release"].get("n2"), 0, 1000, "n2"), "yes",
                 f"and a delete right after that {name}'s 55P03, with a 3 s deadlock_timeout, "
                 "does not wait: under 1 s")
+
+
+# Review of #2253 at 3de3537e (C1). At REPEATABLE READ and SERIALIZABLE the snapshot exists
+# before the planning wait, so a held writer read the retired groups and failed with 40001.
+# Such a writer does not wait and commits, as on main: B1's steps with N at REPEATABLE READ or
+# SERIALIZABLE by BEGIN, and at REPEATABLE READ by default_transaction_isolation.
+
+@pytest.mark.parametrize("iso", list(DL_ISO))
+def test_a_repeatable_read_or_serializable_delete_beside_a_rewrite_commits(dl, iso, expect):
+    expect.text(f"n={dl['held_iso', iso]['n']}", "n=ok",
+                f"a delete at {DL_ISO[iso][0]}, the first statement of its transaction, beside a "
+                "compact_rewrite that takes its locks commits, with no 40001")
+
+
+@pytest.mark.parametrize("iso", list(DL_ISO))
+def test_the_repeatable_read_or_serializable_deletes_row_is_gone(dl, iso, expect):
+    expect.text(f"id50={dl['held_iso', iso]['id50']}", "id50=0",
+                f"and the row that delete at {DL_ISO[iso][0]} removed is gone")

@@ -1831,12 +1831,21 @@ delete_vector_chunk_lock_key(uint64 storageId, uint64 stripeId, int chunkId)
  * back once the rewrite had its locks let the writer read the old groups again,
  * and its flush then waited for the rewrite and failed the same way.
  *
+ * NOT AT REPEATABLE READ OR SERIALIZABLE (review of #2253 at 3de3537e). There
+ * the transaction snapshot is taken when the first statement is parsed, so it
+ * exists before the planner hook polls, even for the transaction's first
+ * statement. A writer held until the rewrite commits then reads the retired
+ * groups through it and fails with 40001, where on main it would have taken
+ * its group's lock first and committed. So such a writer does not wait at all
+ * and behaves as on main; it gives up #2185's queueing, and steady deletes at
+ * those levels can still keep a rewrite from its locks until
+ * rewrite_lock_timeout.
+ *
  * What still fails: a statement whose plan is reused without planning (a
- * generic plan of a prepared statement or of PL/pgSQL) does not wait, nor does
- * a transaction at REPEATABLE READ or above that took its snapshot before the
- * rewrite committed, nor a writer whose wait ended at deadlock_timeout before
- * the rewrite committed. Each of those can fail with 40001 when it deletes in a
- * group the rewrite retired, as any writer could on main.
+ * generic plan of a prepared statement or of PL/pgSQL) does not wait, and a
+ * READ COMMITTED writer whose wait ended at deadlock_timeout goes on before the
+ * rewrite committed. Either can fail with 40001 when it deletes in a group the
+ * rewrite then retires, as such a writer can on main.
  *
  * Two rules keep the wait from adding a deadlock or a stall:
  *
@@ -2508,6 +2517,8 @@ storage_row_lock_for_write(Relation rel, uint64 storageId, int32 formatVersion,
 		return state;
 	}
 
+	/* this transaction may keep 102 to commit: see PgColumnarRewriteTurnstileBeforeWrite */
+	rewrite_turnstile_passed = true;
 	(void) LockAcquire(&tag, ExclusiveLock, false, false);
 	state = storage_row_latest(rel, storageId, formatVersion, true);
 	if (state == STORAGE_ROW_CURRENT)

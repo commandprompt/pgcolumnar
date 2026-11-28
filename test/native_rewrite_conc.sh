@@ -869,6 +869,11 @@ done
 #     waits while its DELETE is planned, before its snapshot. W holds group 1, the
 #     verb waits for it, N deletes id 50 with a 5 s deadlock_timeout, and 0.5 s after
 #     N starts, W rolls back. N must commit, and id 50 must be gone.
+#   - not at REPEATABLE READ or SERIALIZABLE (review of #2253 at 3de3537e, C1): there the
+#     snapshot exists before the planning wait, so a writer held until the rewrite
+#     commits reads the retired groups and fails with 40001. Such a writer does not
+#     wait, and commits as on main: B1's steps with N at REPEATABLE READ or
+#     SERIALIZABLE by BEGIN, and at REPEATABLE READ by default_transaction_isolation.
 #   - given back on an error (same review, B2): the turnstile is a transaction lock,
 #     so a verb that stops with 55P03 gives it back at once. Its session, still open,
 #     holds no class 109 lock, and a delete right after, with a 3 s deadlock_timeout,
@@ -986,7 +991,9 @@ SQL
 	return 0
 }
 
-# dl_held_writer VERB-SQL -> "n=<ok|SQLSTATE> id50=<n> rewrite=<ok|error>": every group has
+# dl_held_writer VERB-SQL [rr|ser|rrdefault] -> "n=<ok|SQLSTATE> id50=<n> rewrite=<ok|error>":
+# N's DELETE is its transaction's first statement, at READ COMMITTED, or at REPEATABLE READ
+# or SERIALIZABLE by BEGIN, or at REPEATABLE READ by default_transaction_isolation. Every group has
 # deletes; W deletes id 1501 and flushes it, so it holds group 1. The verb starts with a 20 s
 # limit and waits for group 1, holding the turnstile. N, with a 5 s deadlock_timeout,
 # deletes id 50 and flushes it; 0.5 s after N's DELETE is active, W rolls back
@@ -1018,7 +1025,12 @@ SQL
 $(dl_wait_sql "$(dl_waiting 101)")
 SET deadlock_timeout = '5s';
 SET statement_timeout = '30s';
-BEGIN;
+$(case "${2:-}" in
+	rr) echo "BEGIN ISOLATION LEVEL REPEATABLE READ;" ;;
+	ser) echo "BEGIN ISOLATION LEVEL SERIALIZABLE;" ;;
+	rrdefault) echo "SET default_transaction_isolation = 'repeatable read';"; echo "BEGIN;" ;;
+	*) echo "BEGIN;" ;;
+esac)
 DELETE FROM dl WHERE id = 50;
 SELECT count(*) FROM dl WHERE id = 50;
 COMMIT;
@@ -1119,6 +1131,14 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 		"$(grep -o 'r109=[^ ]*' <<<"$got") $(grep -o 'all109=[^ ]*' <<<"$got")" "r109=0 all109=0"
 	check "and a delete right after that $name's 55P03, with a 3 s deadlock_timeout, does not wait: under 1 s" \
 		"$(dl_ms_in n2 0 1000 <<<"$got")" "yes"
+done
+declare -A DL_ISO_NAME=([rr]="REPEATABLE READ" [ser]="SERIALIZABLE"
+	[rrdefault]="REPEATABLE READ by default_transaction_isolation")
+for iso in rr ser rrdefault; do
+	got="$(dl_held_writer "pgcolumnar.compact_rewrite('dl', 0.0)" "$iso")"
+	check "a delete at ${DL_ISO_NAME[$iso]}, the first statement of its transaction, beside a compact_rewrite that takes its locks commits, with no 40001" \
+		"$(grep -o 'n=[^ ]*' <<<"$got")" "n=ok"
+	check "and the row that delete at ${DL_ISO_NAME[$iso]} removed is gone" "$(grep -o 'id50=[^ ]*' <<<"$got")" "id50=0"
 done
 
 pgc_summary

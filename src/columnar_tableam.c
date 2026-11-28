@@ -1088,6 +1088,14 @@ pgcolumnar_turnstile_before_write(PlannedStmt *stmt)
 
 	if (stmt->commandType == CMD_INSERT)
 		return;
+	/*
+	 * At REPEATABLE READ and SERIALIZABLE the transaction's snapshot already
+	 * exists, so a writer held until the rewrite commits would read the groups
+	 * it retired and fail with 40001; it goes on as on main instead (review of
+	 * #2253 at 3de3537e; see PgColumnarRewriteTurnstileBeforeWrite).
+	 */
+	if (IsolationUsesXactSnapshot())
+		return;
 	/* PostgreSQL 19 keeps the result relations as a Bitmapset of RT indexes */
 #if PG_VERSION_NUM >= 190000
 	while ((rti = bms_next_member(stmt->resultRelationRelids, rti)) >= 0)
