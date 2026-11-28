@@ -2758,6 +2758,11 @@ guard_tests 910
 # (4 parametrized), test_parallel_copy_eod_marker_after_null_key_is_a_null_key and
 # test_parallel_copy_eod_marker_after_key_out_of_order_is_refused, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6647 -> 6657 for #2216's ten tests in test_parallel_copy.py: for each of the issue's own-lock cases
+# (the referenced table with 2 workers and with 1, the trigger's table, the trigger's sequence, the fresh columnar
+# table a trigger writes), the 40P01's DETAIL names the loader's lock and its relation (5), and a retry after
+# ROLLBACK TO SAVEPOINT gets 40P01 again while a load after ROLLBACK loads (5), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
 # cluster_tests 6626 -> 6679 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
 # (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
 # guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
@@ -2774,4 +2779,5 @@ guard_tests 910
 # parallel queries in EXCEPTION blocks), a premise that the function runs a parallel index-only scan, V (that scan
 # inside the INSERT sees the statement's earlier rows) and A (no crash after failed parallel queries), by collection
 # of that file (54 -> 60).
-cluster_tests 6706
+# restated after the merge of origin/main 899f788f (#2277): 6657 + 59 = 6716.
+cluster_tests 6716
