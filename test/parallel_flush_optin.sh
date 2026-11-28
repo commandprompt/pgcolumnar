@@ -473,4 +473,146 @@ check_text "a parallel flush of a composite column whose table the transaction d
 check_text "a parallel flush of a composite column whose table the transaction holds in SHARE mode flushes every column in workers (#2182)" \
 	"$(typeflush tyc "TRUNCATE tyc; LOCK TABLE ty_c IN SHARE MODE" "INSERT INTO tyc SELECT g, g, row(g, g)::ty_c $TYG" "(r).x")" "$TYWORKERS"
 
+
+# ---- 9. the backend waits for its flush workers in the lock manager (#2256) ----
+#
+# A worker reads the type cache in its own transaction, so for a composite column it
+# takes ACCESS SHARE on the composite's table. The backend waited for its workers on a
+# latch, which the deadlock detector does not follow. So when another session B held
+# ACCESS EXCLUSIVE on that table and then asked for SHARE on the columnar table, the
+# worker waited for B, B waited for the backend, and the backend waited for the worker
+# unseen: the INSERT waited until statement_timeout. #2182 covers a lock the
+# inserting transaction holds itself; this is one another session holds. Each worker
+# now holds an advisory lock of class 110 from the moment it connects, and the backend
+# waits on those, so the detector sees the cycle and ends it with 40P01.
+#
+# The order is jdatcmd's: A loads cy_c's type cache entry first, so A itself needs no
+# lock on cy_c; B then takes ACCESS EXCLUSIVE on cy_c; A runs a parallel INSERT with
+# one worker; B waits until that worker waits on cy_c, then asks for SHARE on the
+# columnar table. Who ends the cycle depends on whose deadlock_timeout runs out first.
+# The worker runs at the server's 1 s, so A and B pick theirs per case:
+#  - A and B at 30 s: the worker is the victim. A logs its 40P01 as a WARNING with
+#    the cycle in its detail, encodes the worker's columns itself, and commits;
+#  - A at 500 ms: A is the victim, and its INSERT fails with 40P01;
+#  - B at 100 ms: B is the victim, and A's INSERT finishes in its worker;
+#  - all at 1 s, the issue's case: any of the three, well before the timeout.
+# A gets a 10 s statement_timeout and B 20 s; on main every case is A's 57014 at 10 s.
+cy_sess() {	# APPNAME PSQL-ARGS... -> psql's output, errors and warnings with their SQLSTATE
+	local app="$1"; shift
+	env PGAPPNAME="$app" PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -qAt -v VERBOSITY=verbose "$@" 2>&1
+}
+# pg_stat_activity is read once per transaction unless the snapshot is cleared.
+cy_until() {	# CONDITION -> a DO block that polls CONDITION every 20 ms, for up to 8 s
+	echo "DO \$\$ BEGIN FOR i IN 1..400 LOOP PERFORM pg_stat_clear_snapshot(); EXIT WHEN $1; PERFORM pg_sleep(0.02); END LOOP; END \$\$"
+}
+cy_crashes() { pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null; }
+q "CREATE TABLE cy_c (x int, y int);
+   CREATE TABLE cy_w (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE cy_wa (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE cy_wb (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE cy_wd (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE cy_w2 (r cy_c, s cy_c) USING pgcolumnar;
+   CREATE TABLE cy_wc (a int, b int) USING pgcolumnar;
+   CREATE TABLE cy_lt (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar;" >/dev/null
+CY_CRASHES_AT_START="$(cy_crashes)"
+# cycle TABLE A-DEADLOCK-TIMEOUT B-DEADLOCK-TIMEOUT [MAX-PARALLEL-WORKERS [SELECT-LIST [B'S TABLE]]]
+# -> "A: <what A's INSERT did> | B: <what B did> | <rows in TABLE> | <does the deadlock
+# report name a run lock> | <time>". max_parallel_workers 2 gives the flush one worker.
+cycle() {
+	local t0 ms ap ae aw be
+	t0=$(date +%s%N)
+	cy_sess pf_cy_a -c "SET deadlock_timeout = '$2'" -c "SET max_parallel_workers = ${4:-2}" \
+		-c "SELECT (row(1, 1)::cy_c).x" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = '${6:-cy_c}'::regclass AND mode = 'AccessExclusiveLock' AND granted)")" \
+		-c "SET pgcolumnar.parallel_flush = on" -c "SET client_min_messages = debug1" -c "SET statement_timeout = '10s'" \
+		-c "INSERT INTO $1 SELECT ${5:-g, row(g, g)::cy_c} FROM generate_series(1, 20000) g" >"$PGC_WORKDIR/cy_a.out" &
+	ap=$!
+	cy_sess pf_cy_b -c "SET deadlock_timeout = '$3'" -c "SET statement_timeout = '20s'" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'pf_cy_a' AND query LIKE 'DO%')")" \
+		-c "BEGIN" -c "LOCK TABLE ${6:-cy_c} IN ACCESS EXCLUSIVE MODE" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = '${6:-cy_c}'::regclass AND NOT granted)")" \
+		-c "LOCK TABLE $1 IN SHARE MODE" -c "SELECT 'got both'" -c "COMMIT" >"$PGC_WORKDIR/cy_b.out"
+	wait "$ap"
+	ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+	ae="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/cy_a.out")"
+	aw="$(sed -n '/^WARNING:/{s/^WARNING: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/cy_a.out")"
+	be="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/cy_b.out")"
+	printf 'A: %s | B: %s | %s rows | %s | %s\n' \
+		"$(if [ -n "$ae" ]; then echo "$ae"; elif [ -n "$aw" ]; then echo "committed after WARNING $aw"; else echo "committed, $(allsplit "$PGC_WORKDIR/cy_a.out")"; fi)" \
+		"$(if [ -n "$be" ]; then echo "$be"; else grep -qx 'got both' "$PGC_WORKDIR/cy_b.out" && echo "got both" || echo "no result"; fi)" \
+		"$(q "SELECT count(*) FROM $1")" \
+		"$(if grep -q 'waits for ShareLock on advisory lock \[[0-9]*,[0-9]*,[0-9]*,110\]' "$PGC_WORKDIR/cy_a.out" "$PGC_WORKDIR/cy_b.out"; then
+			echo "the deadlock names the run lock"; else echo "no run lock named"; fi)" \
+		"$(if [ "$ms" -lt 6000 ]; then echo "under 6 s"; else echo "took $ms ms"; fi)"
+}
+check_text "a parallel flush worker chosen as the deadlock victim reaches the backend as a 40P01 WARNING naming the run lock, and the INSERT commits its rows serially within 6 s (#2256)" \
+	"$(cycle cy_w 30s 30s)" \
+	"A: committed after WARNING 40P01 pgcolumnar parallel_flush worker 0 failed, completing its columns serially: deadlock detected | B: got both | 20000 rows | the deadlock names the run lock | under 6 s"
+check_text "a backend waiting for its parallel flush worker, chosen as the deadlock victim, fails with 40P01 naming the run lock within 6 s (#2256)" \
+	"$(cycle cy_wa 500ms 30s)" \
+	"A: 40P01 deadlock detected | B: got both | 0 rows | the deadlock names the run lock | under 6 s"
+check_text "the other session chosen as the deadlock victim fails with 40P01 naming the run lock, and the parallel INSERT finishes in its worker within 6 s (#2256)" \
+	"$(cycle cy_wb 30s 100ms)" \
+	"A: committed, every column in workers | B: 40P01 deadlock detected | 20000 rows | the deadlock names the run lock | under 6 s"
+# The issue's case, every deadlock_timeout at 1 s: one side gives way, whichever.
+cy_default="$(cycle cy_wd 1s 1s)"
+case "$cy_default" in
+	"A: committed after WARNING 40P01 pgcolumnar parallel_flush worker 0 failed, completing its columns serially: deadlock detected | B: got both | 20000 rows | "*|\
+	"A: 40P01 deadlock detected | B: got both | 0 rows | "*|\
+	"A: committed, every column in workers | B: 40P01 deadlock detected | 20000 rows | "*)
+		cy_gave="${cy_default##* | }" ;;
+	*) cy_gave="neither gave way:[$cy_default]" ;;
+esac
+check_text "with every deadlock_timeout at 1 s, the ordered two-session cycle through a parallel flush worker ends with one side giving way within 6 s, not at statement_timeout (#2256)" \
+	"$cy_gave" "under 6 s"
+# Two workers, each encoding a composite column, so both wait on cy_c. The backend
+# waits for worker 0 first; at the server's 1 s worker 0 sees the cycle and is the
+# victim. The backend then waits for worker 1, and that wait closes the cycle again:
+# worker 1, if its own check comes after, or the backend at its 2 s, ends it. Either
+# way some report names worker 1's run lock. A backend that waited only for worker 0
+# waited for worker 1 on a latch, unseen, until statement_timeout.
+cy_two="$(cycle cy_w2 2s 30s 4 "row(g, g)::cy_c, row(g, g)::cy_c")"
+case "$cy_two" in
+	"A: 40P01 deadlock detected | B: got both | 0 rows | the deadlock names the run lock | under 6 s"|\
+	"A: committed after WARNING 40P01 pgcolumnar parallel_flush worker "[01]" failed, completing its columns serially: deadlock detected | B: got both | 20000 rows | the deadlock names the run lock | under 6 s")
+		cy_two="$(if grep -q 'waits for ShareLock on advisory lock \[[0-9]*,[0-9]*,1,110\]' "$PGC_WORKDIR/cy_a.out"; then
+			echo "worker 1's run lock named"; else echo "worker 1's run lock not named"; fi), under 6 s" ;;
+	*) cy_two="neither gave way:[$cy_two]" ;;
+esac
+check_text "with two parallel flush workers waiting on the cycle, the backend waits for the second worker's run lock too, and one side gives way within 6 s (#2256)" \
+	"$cy_two" "worker 1's run lock named, under 6 s"
+# The connect phase (#2270 review). A worker reads pg_database with ACCESS SHARE
+# while it connects, so B holds ACCESS EXCLUSIVE on pg_database instead (a
+# superuser can), and A's columns are plain ints. The worker takes its run lock
+# before it connects, so the backend already waits for it in the lock manager.
+# B at 100 ms is the victim; before, the backend waited on a latch until the
+# worker had connected, and A waited until statement_timeout.
+check_text "a cycle that closes while a parallel flush worker connects (another session's ACCESS EXCLUSIVE on pg_database) ends with the other session's 40P01 naming the run lock, and the INSERT finishes in its worker within 6 s (#2256)" \
+	"$(cycle cy_wc 30s 100ms 2 "g, g" pg_database)" \
+	"A: committed, every column in workers | B: 40P01 deadlock detected | 20000 rows | the deadlock names the run lock | under 6 s"
+
+# The waits on the workers are waits for the flush, not lock contention: a 1 ms
+# lock_timeout does not end an uncontended parallel flush, and with deadlock_timeout
+# 1 ms and log_lock_waits on, none is reported. client_min_messages = debug1 sends
+# the LOG lines to the session too.
+cy_lt="$(PGOPTIONS='-c lock_timeout=1ms -c deadlock_timeout=1ms -c log_lock_waits=on' cy_sess pf_cy_lt \
+	-c "SET pgcolumnar.parallel_flush = on" -c "SET client_min_messages = debug1" -c "SET statement_timeout = '60s'" \
+	-c "INSERT INTO cy_lt $WNUM" >"$PGC_WORKDIR/cy_lt.out"
+	e="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/cy_lt.out")"
+	echo "${e:-$(q "SELECT count(*) FROM cy_lt") rows}, $(allsplit "$PGC_WORKDIR/cy_lt.out"), $(grep -c 'still waiting for ShareLock on advisory lock' "$PGC_WORKDIR/cy_lt.out") waits for a worker logged")"
+check_text "a parallel flush under lock_timeout 1 ms, deadlock_timeout 1 ms and log_lock_waits on still flushes every column in workers, and logs no wait for its workers (#2256)" \
+	"$cy_lt" "300000 rows, every column in workers, 0 waits for a worker logged"
+# and the session's settings are its own again once the flush returns
+cy_sess pf_cy_g -c "BEGIN" -c "SET LOCAL lock_timeout = '2s'" -c "SET LOCAL log_lock_waits = on" \
+	-c "SET LOCAL pgcolumnar.parallel_flush = on" -c "SET LOCAL client_min_messages = debug1" \
+	-c "INSERT INTO cy_lt (a, b, c, d, e, f, g, h) $LKROWS" \
+	-c "SHOW lock_timeout" -c "SHOW log_lock_waits" -c "COMMIT" >"$PGC_WORKDIR/cy_g.out"
+check_text "lock_timeout and log_lock_waits read back unchanged after a parallel flush in the same transaction (#2256)" \
+	"$(e="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/cy_g.out")"
+	   echo "${e:-$(allsplit "$PGC_WORKDIR/cy_g.out"), $(grep -vE '^(DEBUG|LOCATION|LOG):' "$PGC_WORKDIR/cy_g.out" | paste -sd'|')}")" \
+	"every column in workers, 2s|on"
+check_text "no backend died during the lock-cycle cases (#2256)" \
+	"$(( $(cy_crashes) - CY_CRASHES_AT_START )) terminated by signal" "0 terminated by signal"
+
 pgc_summary
