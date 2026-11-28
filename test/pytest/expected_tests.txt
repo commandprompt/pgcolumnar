@@ -2681,4 +2681,19 @@ guard_tests 910
 # cluster_tests 6521 -> 6538 for #2266's review: seventeen more tests in test_vacuum_retire_visibility.py, five
 # for a table given a column after its data (test_*added_column*) and twelve for an upsert during another
 # session's flush (test_*upsert_*), by collection over the cluster files.
-cluster_tests 6538
+# cluster_tests 6538 -> 6551, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
+# test_parallel_copy_projection_ddl_premise,
+# test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
+# test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
+# test_parallel_copy_refused_after_projection_ddl_loads_nothing,
+# test_parallel_copy_issue_sequence_answers_the_same_with_projection_scans_on_and_off,
+# test_parallel_copy_into_a_committed_projection_answers_the_same_with_projection_scans_on_and_off and
+# test_add_projection_holds_its_lock_until_its_transaction_ends,
+# test_drop_projection_holds_its_lock_until_its_transaction_ends,
+# test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
+# test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6551 -> 6552, still #2215, for the review of #2226 at d49f08e1:
+# test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6552

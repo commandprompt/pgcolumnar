@@ -622,6 +622,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.add_projection` now holds its SHARE lock until its transaction
+  ends, as `CREATE INDEX` does, and `pgcolumnar.drop_projection` takes SHARE ROW
+  EXCLUSIVE, held the same way (#2215). `add_projection` released its lock at the
+  end of the function, so a write from another session went ahead while the
+  projection was still uncommitted, could not see it, and its rows never reached
+  it. `drop_projection` took SHARE UPDATE EXCLUSIVE, which no writer waits for, so
+  a writer during an open drop wrote row groups into the storage being dropped,
+  and nothing named them after the drop committed. Projection scans then answered
+  without the missing rows, with no error. `parallel_copy` after either in the same
+  transaction loaded the same way, because its workers run in their own
+  transactions: `BEGIN; add_projection; parallel_copy; COMMIT` left the projection
+  empty, so `WHERE c = 3` returned 0 with projection scans on and 500 with them
+  off. It is now refused with `55000` by #2183's own-lock refusal, whose HINT
+  names the two functions, at any worker count; `rebuild_projections`, which calls
+  `add_projection`, is refused the same way. A metadata-only `ALTER TABLE` that
+  materializes a declared projection also keeps its SHARE lock to transaction end.
+  Reads do not wait for any of them. `parallel_export_parquet`'s HINT is
+  unchanged, because its workers' ACCESS SHARE conflicts with neither function.
+  Like `CREATE INDEX`, two transactions that each add a projection and then
+  write to the other's table can now deadlock, which PostgreSQL detects.
+  docs/sql-reference.md and docs/limitations.md. `test/parallel_copy.sh`,
+  `test/projections.sh`, `test/parallel_export_parquet.sh` and their twins.
 - A lazy VACUUM no longer clears the all-visible bits of clean blocks that an
   earlier VACUUM had set, when a DELETE commits while it runs (#2170). Its
   second pass (#2059) cleared every block of its first list that had left the
