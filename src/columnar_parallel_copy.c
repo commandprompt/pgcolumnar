@@ -887,10 +887,10 @@ hex_digit_value(char c)
  *		Read one field of a COPY text-format line at p, as core COPY's text
  *		attribute reader does with the delimiter and NULL marker the loaders use
  *		(TAB and \N, the defaults) (#2202). The field ends at an unescaped TAB, at
- *		a CR or LF, or at a NUL byte: the end of the buffer, or a raw NUL in the
- *		line, which core refuses before it reads any field (22021), so a row
- *		that holds one is refused here with a different SQLSTATE than COPY's
- *		(jdatcmd's review of #2220). A backslash escapes the byte after
+ *		a CR or LF, or at a NUL byte: the end of the buffer. A raw NUL in the
+ *		line never gets here: core refuses it before it reads any field
+ *		(22021), and so pcopy_copy_refuses_record leaves such a row for the
+ *		loader (#2222). A backslash escapes the byte after
  *		it, whatever that byte is: a backslash and a raw TAB are a TAB inside the
  *		value, not the end of the field. \NNN (1-3 octal digits), \xH and \xHH
  *		(hex), and \b \f \n \r \t \v decode; any other escaped byte, a second
@@ -1010,6 +1010,61 @@ pcopy_text_field(const PcopyScan *scan, char *p, StringInfo out, bool *isnull)
 }
 
 /*
+ * pcopy_copy_refuses_record
+ *		Whether core COPY FROM refuses the record at p (len bytes, read in
+ *		`encoding`, with a NUL after them) before it reads any column's value, so
+ *		before the input function of the partition key could run (#2222). Core
+ *		checks three things first, and this checks the same three:
+ *
+ *		- the bytes are valid in the file's encoding. Core verifies (or converts)
+ *		  the raw input before it looks for a line end, and a NUL byte is never
+ *		  valid (22021).
+ *		- no unescaped \. that core refuses. PG 18 refuses \. anywhere but alone
+ *		  on its line. PG 15 to 17 refuse it unless a CR or LF follows; with one,
+ *		  they end the line there, and with the wrong one for the file they refuse
+ *		  it too, which this leaves to the key (22P04).
+ *		- the line has as many fields as the default column list has columns
+ *		  (22P04: extra data, or missing data). A record's one unescaped LF is its
+ *		  last byte, so every unescaped TAB in it ends a field of this line. On PG
+ *		  15 to 17 nothing but a line end follows a \. that ends the line.
+ *
+ *		So a record this says yes to never loads: the caller leaves it in the
+ *		current range, and that range's loader raises core's own error. A file
+ *		with CR line ends is one record here, and lands in one range either way.
+ */
+static bool
+pcopy_copy_refuses_record(int encoding, const char *p, int len, int ncols)
+{
+	PcopyScan	scan;
+	int			nfields = 1;
+	int			i;
+
+	if (pg_encoding_verifymbstr(encoding, p, len) != len)
+		return true;
+
+	pcopy_scan_init(&scan, encoding);
+	for (i = 0; i < len; i++)
+	{
+		bool		after_backslash = scan.escaped && scan.mb_left == 0;
+		char		c = pcopy_scan_byte(&scan, p[i]);
+
+		if (after_backslash && p[i] == '.')
+		{
+#if PG_VERSION_NUM >= 180000
+			return true;
+#else
+			/* p[len] is a NUL, so this reads no further than the record */
+			if (p[i + 1] != '\n' && p[i + 1] != '\r')
+				return true;
+#endif
+		}
+		if (c == '\t')
+			nfields++;
+	}
+	return nfields != ncols;
+}
+
+/*
  * pcopy_partition_aligned_offsets
  *		Split a COPY text-format file into *workers_io byte ranges ALIGNED to the
  *		range-partition boundaries of `parent`, so each worker's range routes to a
@@ -1037,6 +1092,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	TupleDesc	td = RelationGetDescr(parent);
 	AttrNumber	keyattno;
 	int			keyfield = 0;
+	int			ncols = 0;
 	Oid			keytype,
 				ioparam,
 				infnoid,
@@ -1097,6 +1153,15 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 
 		if (!att->attisdropped && att->attgenerated == '\0')
 			keyfield++;
+	}
+
+	/* the number of fields a row of the default column list has (#2222) */
+	for (a = 1; a <= td->natts; a++)
+	{
+		Form_pg_attribute att = TupleDescAttr(td, a - 1);
+
+		if (!att->attisdropped && att->attgenerated == '\0')
+			ncols++;
 	}
 
 	keytype = pkey->parttypid[0];
@@ -1265,6 +1330,18 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 				p = line;
 
 			/*
+			 * A record core COPY refuses before it reads a value: leave it in
+			 * the current range, and that range's loader raises core's error,
+			 * with core's SQLSTATE and message, rather than the key's (#2222).
+			 */
+			if (pcopy_copy_refuses_record(encoding, p,
+										  rec.len > 0 ? rec.len : (int) len, ncols))
+			{
+				bucket = prev_bucket;
+				goto place_row;
+			}
+
+			/*
 			 * Advance to the key field. Fields end at an unescaped TAB only: a
 			 * backslash and a TAB are data, as COPY reads them (#2202).
 			 */
@@ -1305,6 +1382,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 				if (!pkey->parttypbyval[0])
 					pfree(DatumGetPointer(kd));
 			}
+	place_row:
 			if (bucket < prev_bucket)
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_EXCEPTION),
