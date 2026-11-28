@@ -737,6 +737,8 @@ extern void PgColumnarDeleteProjectionRow(uint64 storageId, int projectionId);
 
 /* whether a relation uses the columnar table access method */
 extern bool PgColumnarIsColumnarRelation(Oid relid);
+extern Oid	PgColumnarAmOid(void);
+extern void PgColumnarAmOidCacheInit(void);
 
 /*
  * A snapshot suitable for reading the columnar metadata catalog during a scan

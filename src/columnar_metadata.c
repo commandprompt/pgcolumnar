@@ -35,9 +35,11 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 #include "storage/latch.h"
@@ -5044,9 +5046,71 @@ PgColumnarForgetRollup(Oid viewOid)
 }
 
 /*
+ * PgColumnarAmOid
+ *		Oid of the pgcolumnar table access method, or InvalidOid while the
+ *		extension is not installed in this database.
+ *
+ *		CACHED, AND THE CACHE IS DROPPED WHENEVER pg_am CHANGES (#2176). The
+ *		library outlives the extension: it is preloaded, and DROP EXTENSION
+ *		does not unload it. So DROP EXTENSION + CREATE EXTENSION gives the
+ *		access method a new oid while every backend that had already looked it
+ *		up keeps the old one. Before this cache was invalidated, that backend
+ *		stopped recognising every columnar table made afterwards: no custom
+ *		scan, get_storage_id and the maintenance functions refused with 42809
+ *		"is not a columnar table", and the DROP COLUMN and RENAME COLUMN hooks
+ *		skipped the table. The backend that ran the reinstall had the bug, and
+ *		so did every other backend that had cached the oid before it.
+ *
+ *		The syscache callback on AMOID resets the cache. A pg_am insert or
+ *		delete queues an invalidation for every catcache on pg_am, which this
+ *		backend applies at its next CommandCounterIncrement and other backends
+ *		at their next AcceptInvalidationMessages (transaction start, lock
+ *		acquisition). A sinval queue overflow calls every callback, so a
+ *		missed message cannot leave the cache stale either. The callback only
+ *		clears the oid. The next caller looks it up again, in a transaction,
+ *		where the catalog lookup is allowed.
+ *
+ *		The index-only-scan planner hook in columnar_tableam.c had a second
+ *		copy of the same cache with the same bug. It calls this function now,
+ *		so there is one cache to invalidate.
+ */
+static Oid	pgcolumnar_am_oid_cache = InvalidOid;
+
+#if PG_VERSION_NUM >= 190000
+static void
+pgcolumnar_am_oid_invalidate(Datum arg, SysCacheIdentifier cacheid,
+							 uint32 hashvalue)
+#else
+static void
+pgcolumnar_am_oid_invalidate(Datum arg, int cacheid, uint32 hashvalue)
+#endif
+{
+	pgcolumnar_am_oid_cache = InvalidOid;
+}
+
+/*
+ * PgColumnarAmOidCacheInit
+ *		Register the pg_am invalidation callback. Called once from _PG_init.
+ */
+void
+PgColumnarAmOidCacheInit(void)
+{
+	CacheRegisterSyscacheCallback(AMOID, pgcolumnar_am_oid_invalidate, (Datum) 0);
+}
+
+Oid
+PgColumnarAmOid(void)
+{
+	if (!OidIsValid(pgcolumnar_am_oid_cache))
+		pgcolumnar_am_oid_cache = get_am_oid("pgcolumnar", true);
+	return pgcolumnar_am_oid_cache;
+}
+
+/*
  * PgColumnarIsColumnarRelation
  *		Whether a relation uses the columnar table access method AND has
- *		storage of its own. The access method oid is resolved once and cached.
+ *		storage of its own. The access method oid comes from PgColumnarAmOid(),
+ *		which caches it until pg_am changes.
  *
  *		THE RELKIND TEST IS NOT DECORATION (#1259). From PostgreSQL 17 a
  *		PARTITIONED table may carry relam = pgcolumnar, as the default access
@@ -5074,10 +5138,7 @@ PgColumnarForgetRollup(Oid viewOid)
 bool
 PgColumnarIsColumnarRelation(Oid relid)
 {
-	static Oid	columnarAmOid = InvalidOid;
-
-	if (columnarAmOid == InvalidOid)
-		columnarAmOid = get_am_oid("pgcolumnar", true);
+	Oid			columnarAmOid = PgColumnarAmOid();
 
 	if (!OidIsValid(columnarAmOid) || get_rel_relam(relid) != columnarAmOid)
 		return false;

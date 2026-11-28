@@ -255,9 +255,6 @@ static build_simple_rel_hook_type prev_build_simple_rel_hook = NULL;
 static get_relation_info_hook_type prev_get_relation_info_hook = NULL;
 #endif
 
-/* cached OID of the "columnar" table access method (index-only-scan hook) */
-static Oid	pgcolumnar_am_oid_cache = InvalidOid;
-
 /* our scan descriptor wraps the base scan and the reader state */
 /*
  * ANALYZE sampling state (issue #154).
@@ -4521,14 +4518,13 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
  * editorializing on the index list. Both routes yield an identical plan.
  * ------------------------------------------------------------------------- */
 
+/* PgColumnarAmOid() is invalidated when pg_am changes (#2176) */
 static bool
 pgcolumnar_relation_is_columnar(Oid relid)
 {
-	if (pgcolumnar_am_oid_cache == InvalidOid)
-		pgcolumnar_am_oid_cache = get_am_oid("pgcolumnar", true);
+	Oid			amOid = PgColumnarAmOid();
 
-	return OidIsValid(pgcolumnar_am_oid_cache) &&
-		get_rel_relam(relid) == pgcolumnar_am_oid_cache;
+	return OidIsValid(amOid) && get_rel_relam(relid) == amOid;
 }
 
 /* GUC: when on, allow the planner to build index-only-scan paths for columnar
@@ -5403,4 +5399,7 @@ _PG_init(void)
 
 	/* register the unique-index cache invalidation callback (issue #5) */
 	PgColumnarUniqueInit();
+
+	/* drop the cached access method oid whenever pg_am changes (#2176) */
+	PgColumnarAmOidCacheInit();
 }
