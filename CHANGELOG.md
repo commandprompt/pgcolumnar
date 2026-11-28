@@ -650,6 +650,30 @@ true until the next version shipped.
   until the rewrite's transaction commits. docs/limitations.md,
   docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
   and `test_native_rewrite_conc.py`.
+- A lazy VACUUM no longer clears the all-visible bits of clean blocks that an
+  earlier VACUUM had set, when a DELETE commits while it runs (#2170). Its
+  second pass (#2059) cleared every block of its first list that had left the
+  all-visible row groups. That list works by row group, so a delete of one row
+  took the bits of every block in the group, and index-only scans fetched those
+  blocks again until the next VACUUM. Results stayed correct. The second pass
+  now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
+  already set is left to the writer, which clears its own rows' blocks after it
+  writes them. `test/index_only.sh` and `test_index_only.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` when a column's type is or contains a composite
+  whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
+  `TRUNCATE` or `LOCK TABLE` on that table (#2182). The column may be the
+  composite itself, an array of it, a domain over it, a range or multirange
+  over it, or a composite with it as a field. Each flush worker reads the type
+  cache, which opens a composite's table with ACCESS SHARE. The workers are not
+  in the inserting backend's lock group, so they waited on its lock, as in
+  #2072. A column whose type or collation was created in the same
+  transaction no longer makes a worker fail with a WARNING. The backend now
+  flushes such a row group serially, which stores the same bytes. A worker runs on its own snapshot, so
+  it cannot see what the transaction changed under the lock, such as an
+  attribute added to the composite; that is why the flush does not join the
+  workers to the backend's lock group instead. `parallel_flush_optin.sh` arm 8
+  and `test_parallel_flush_optin.py`.
 - Two writers to one table no longer deadlock on the chunk-group and
   storage-row locks (#2184). A writer holds the chunk-group lock of each row
   group it deletes from and the storage-row lock, which every flush of new

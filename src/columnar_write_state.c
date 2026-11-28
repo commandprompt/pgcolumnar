@@ -33,6 +33,7 @@
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "storage/shm_toc.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
@@ -3291,8 +3292,8 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
  *		Since #2072 no worker opens the relation: workers take the column
  *		attributes from the backend's copy. The check stays so that such a
  *		flush keeps its old serial behaviour. A worker still reads the type
- *		cache on its own snapshot, so a column whose type was created in the
- *		same transaction would still fail in a worker.
+ *		cache on its own snapshot; pflush_type_needs_backend keeps a flush
+ *		serial when that read would wait or fail (#2182).
  */
 static bool
 rel_new_in_current_xact(Oid relid)
@@ -3302,6 +3303,150 @@ rel_new_in_current_xact(Oid relid)
 
 	table_close(rel, NoLock);
 	return isnew;
+}
+
+/*
+ * pflush_type_needs_backend
+ *		True if a flush worker could not resolve typid in its own transaction
+ *		without waiting on this one, or could not see it at all (#2182). Such a
+ *		flush stays serial, silently.
+ *
+ *		A worker reads the type cache for each column it encodes: build_column_def
+ *		looks up the comparison and hash procs, and the encoders run them. For a
+ *		composite type the type cache opens the composite's relation with ACCESS
+ *		SHARE to build its tuple descriptor, and record_cmp and hash_record do the
+ *		same for each composite field. The worker is not in this backend's lock
+ *		group, and this backend waits for it on a latch the deadlock detector
+ *		cannot see. So after TRUNCATE, LOCK TABLE or ALTER TABLE on the
+ *		composite's table in the inserting transaction, the INSERT waited until
+ *		statement_timeout. That is #2072's wait on another table: #2072 stopped
+ *		the workers opening the columnar table, not the type's.
+ *
+ *		Letting the worker past the lock is not safe either. It runs on its own
+ *		snapshot, so it cannot see what this transaction did under the lock, such
+ *		as an attribute added to the composite. For the same reason a type created
+ *		(or changed) in this transaction is invisible to it: the worker failed,
+ *		logged a WARNING, and its columns were redone serially.
+ *
+ *		So the walk follows every type a worker would resolve: a domain's base, an
+ *		array's element, a range's subtype, a multirange's range, and a
+ *		composite's fields. It answers true for a type whose pg_type row this
+ *		transaction wrote, or a composite whose relation this transaction holds
+ *		in a mode that conflicts with ACCESS SHARE (read from the lock method's
+ *		conflict table: today that is ACCESS EXCLUSIVE only).
+ */
+static bool
+pflush_type_needs_backend(Oid typid)
+{
+	HeapTuple	tup;
+	Form_pg_type typ;
+	char		typtype;
+	Oid			typrelid;
+	Oid			next = InvalidOid;
+	bool		mine;
+
+	check_stack_depth();
+
+	tup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for type %u", typid);
+	typ = (Form_pg_type) GETSTRUCT(tup);
+	mine = TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tup->t_data));
+	typtype = typ->typtype;
+	typrelid = typ->typrelid;
+	if (typtype == TYPTYPE_DOMAIN)
+		next = typ->typbasetype;
+	else if (IsTrueArrayType(typ))
+		next = typ->typelem;
+	ReleaseSysCache(tup);
+
+	if (mine)
+		return true;
+	if (typtype == TYPTYPE_RANGE)
+		next = get_range_subtype(typid);
+	else if (typtype == TYPTYPE_MULTIRANGE)
+		next = get_multirange_range(typid);
+
+	if (typtype == TYPTYPE_COMPOSITE && OidIsValid(typrelid))
+	{
+		LOCKMODE	held;
+		TupleDesc	tupdesc;
+		bool		needs = false;
+		int			i;
+
+		for (held = MaxLockMode; held > NoLock; held--)
+		{
+			if (DoLockModesConflict(held, AccessShareLock) &&
+				CheckRelationOidLockedByMe(typrelid, held, false))
+				return true;
+		}
+
+		tupdesc = lookup_rowtype_tupdesc(typid, -1);
+		for (i = 0; i < tupdesc->natts && !needs; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+			if (!att->attisdropped)
+				needs = pflush_type_needs_backend(att->atttypid);
+		}
+		ReleaseTupleDesc(tupdesc);
+		return needs;
+	}
+
+	return OidIsValid(next) && pflush_type_needs_backend(next);
+}
+
+/*
+ * pflush_collation_is_mine
+ *		True if this transaction wrote collid's pg_collation row (#2182, #2250
+ *		review). A worker compares and hashes the column under it on its own
+ *		snapshot, where such a collation does not exist: the worker failed with
+ *		"cache lookup failed for collation", logged a WARNING, and its columns
+ *		were redone serially.
+ */
+static bool
+pflush_collation_is_mine(Oid collid)
+{
+	HeapTuple	tup;
+	bool		mine;
+
+	tup = SearchSysCache1(COLLOID, ObjectIdGetDatum(collid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for collation %u", collid);
+	mine = TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tup->t_data));
+	ReleaseSysCache(tup);
+	return mine;
+}
+
+/*
+ * pflush_columns_need_backend
+ *		True if any live column's type needs the backend (#2182), see
+ *		pflush_type_needs_backend, or its collation was created in this
+ *		transaction.
+ *
+ *		Only the column's own collation is checked. A composite field's
+ *		collation changes only under ACCESS EXCLUSIVE on the composite's table,
+ *		and a range's or a domain's collation is fixed when the type is created,
+ *		which the pg_type test covers.
+ */
+static bool
+pflush_columns_need_backend(PgColumnarWriteState *writeState)
+{
+	int			c;
+
+	for (c = 0; c < writeState->natts; c++)
+	{
+		Form_pg_attribute att = TupleDescAttr(writeState->tupdesc, c);
+
+		if (att->attisdropped)
+			continue;
+		if (pflush_type_needs_backend(att->atttypid))
+			return true;
+		if (OidIsValid(att->attcollation) &&
+			pflush_collation_is_mine(att->attcollation))
+			return true;
+	}
+	return false;
 }
 
 /*
@@ -3434,8 +3579,10 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 	 * to spread, dispatch flush_one_column across a worker pool, degrading to
 	 * serial completion of any column a worker did not produce (byte-identical to
 	 * the serial path either way). tupdescIsRel keeps a projection's inner writer
-	 * (synthetic tupdesc, not the base table's) on the serial path. With the GUC
-	 * off, keep slice 2's in-backend round-trip loop unchanged.
+	 * (synthetic tupdesc, not the base table's) on the serial path, and so does a
+	 * column type a worker cannot resolve without waiting on this transaction
+	 * (#2182). With the GUC off, keep slice 2's in-backend round-trip loop
+	 * unchanged.
 	 *
 	 * The GUC stays OFF by default. A gate to turn it on by default was measured
 	 * and REFUTED (#445): no metric computable here -- natts, buffered bytes, or
@@ -3450,7 +3597,8 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 	 * user can see how a flush was split. test/parallel_flush_optin.sh pins this.
 	 */
 	goParallel = pgcolumnar_parallel_flush && natts >= 2 &&
-		writeState->tupdescIsRel && !rel_new_in_current_xact(writeState->relid);
+		writeState->tupdescIsRel && !rel_new_in_current_xact(writeState->relid) &&
+		!pflush_columns_need_backend(writeState);
 
 	if (message_level_is_interesting(DEBUG1))
 	{
