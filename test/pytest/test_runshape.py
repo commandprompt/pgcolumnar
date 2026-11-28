@@ -441,8 +441,12 @@ def test_every_literal_fixture_slot_fits_a_workers_block(expect):
                 "every literal pick_port slot fits a worker's block of ports")
 
 
-def test_the_highest_slot_in_the_corpus_gets_a_port(expect):
+def test_the_highest_slot_in_the_corpus_gets_a_port(tmp_path, monkeypatch, expect):
     from pgc_cluster import aux_band, pick_port
+    # pick_port reserves the port it returns (#2165). In the user's real directory
+    # that reservation would block a port nothing binds, for as long as this
+    # process runs, and the pick would depend on what other runs reserved.
+    monkeypatch.setenv("PGC_PORT_RESERVE_DIR", str(tmp_path / "reserved"))
     top = max(_corpus_slots())
     lo, hi = aux_band(32768)
     try:
@@ -452,3 +456,298 @@ def test_the_highest_slot_in_the_corpus_gets_a_port(expect):
         reading = f"refused: {exc}"
     expect.text(reading, "in the band",
                 f"the highest slot the corpus uses ({top}) gets a port in the AUX band")
+
+
+# ---- two runs at once never share a fixture port (#2165) ---------------------------
+#
+# The worker blocks above keep one run's workers apart. Two RUNS at once are another
+# matter: run_all_versions runs suites in parallel, and a shell suite and a twin share
+# the AUX band. A picker proves a port free and returns it, and nothing holds the port
+# until the caller binds it, so two pickers that start from the same port are both
+# told it. In CI iceberg_rest_scan and iceberg_rest_vended both got 31732, and the
+# scan's arms got HTTP 401 from the vended suite's REST fixture.
+#
+# THESE ARMS DRIVE pick_port ONLY. The shell picker keeps the same reservations, and
+# a shell suite next to a twin is the CI shape, but a pytest arm that ran the shell
+# picker would be the shell's measurement in a Python wrapper (CONTEXT.md, "Tests"):
+# it agreed with the shell by construction, and it put this file in the harness
+# inventory, which is what reddened #2208's cluster jobs. So each harness tests its
+# own picker against one stated PROTOCOL, and two pickers that both keep it cannot
+# collide. pick_port's half is here; the shell's is selftest 660, with the same arms.
+# The protocol, as pgc_cluster.py states it:
+#
+#   the directory is PGC_PORT_RESERVE_DIR, else ${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>;
+#   a pick holds flock(LOCK_EX) on <dir>/lock from its first probe to its reservation;
+#   a reservation is the file <dir>/<port>, holding "<picker pid> <epoch seconds>";
+#   it holds while that pid runs, and for 120 s after its mtime once the pid has gone.
+#
+# Where an arm needs "another picker", it plays that picker by the protocol itself:
+# it takes the lock or writes a reservation file of its own under tmp_path.
+#
+# The collision arms start every picker at the same port, and nothing binds until all
+# of them have picked, which is the probe-then-bind gap held open. On main they are
+# red. Each pick also sleeps a second between its probe and its reservation
+# (PGC_PORT_PICK_DELAY), so without the lock the pickers would all probe the port
+# free before any reserved it. The pickers share a reservation directory of their
+# own, so the arms neither see nor leave reservations in the user's real one.
+_TWIN_PICK = ("import sys; sys.path.insert(0, sys.argv[1]); from pgc_cluster import pick_port; "
+              "print(pick_port(27, worker_id='gw0'))")
+
+
+def _pick_env(tmp_path, name="reserved"):
+    import os
+    # PGC_PORT_PICK_DELAY holds each pick's probe-to-reservation gap open for a
+    # second, so the pickers overlap there unless the lock serialises them.
+    env = dict(os.environ, PGC_PORT_RESERVE_DIR=str(tmp_path / name), PGC_PORT_PICK_DELAY="1")
+    env.pop("PYTEST_XDIST_WORKER", None)
+    return env
+
+
+def _twin_picker(env):
+    import subprocess
+    import sys
+    return subprocess.Popen([sys.executable, "-c", _TWIN_PICK,
+                             str(pathlib.Path(__file__).resolve().parent)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _picked(procs):
+    """-> the ports the pickers printed, in order, or their errors."""
+    out = []
+    for p in procs:
+        so, se = p.communicate(timeout=120)
+        out.append(so.strip() if p.returncode == 0 and so.strip().isdigit()
+                   else f"rc={p.returncode}: {se.strip()[-200:]}")
+    return out
+
+
+def _bind_all(ports):
+    """Binds every picked port at once, as the fixtures would: 'bound' or why not."""
+    import socket
+    held, got = [], []
+    try:
+        for p in ports:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            held.append(s)
+            try:
+                s.bind(("127.0.0.1", int(p)))
+                got.append("bound")
+            except (OSError, ValueError) as e:
+                got.append(f"{p}: {e}")
+    finally:
+        for s in held:
+            s.close()
+    return " ".join(got)
+
+
+def test_four_twin_runs_picking_one_slot_get_four_ports(tmp_path, expect):
+    """Four pytest runs (not workers of one run) ask for one slot of one worker at once."""
+    alone = _picked([_twin_picker(_pick_env(tmp_path, f"alone{i}")) for i in range(2)])
+    expect.num(len(set(alone)), 1,
+               f"premise: two twin pickers that share no reservations take one port: {alone}")
+    env = _pick_env(tmp_path)
+    ports = _picked([_twin_picker(env) for _ in range(4)])
+    expect.num(len(set(ports)), 4, f"four twin runs picking one slot at once get four ports: {ports}")
+    expect.text(_bind_all(ports), "bound bound bound bound",
+                "and each twin run binds the port it was given")
+
+
+def test_a_pick_waits_for_a_picker_that_holds_the_lock(tmp_path, expect):
+    """This test plays another picker, of either harness: it holds the lock, and
+    reserves the port pick_port would take just before it lets go."""
+    import fcntl
+    import os
+    import time
+    rdir = tmp_path / "held"
+    t0 = time.monotonic()
+    alone = _picked([_twin_picker(_quiet_env(tmp_path / "alone"))])[0]
+    # The hold must outlast the picker's own start, or a picker with no lock would
+    # still find the reservation written: so three times what an unblocked pick just
+    # took, and at least 3 s, on a loaded machine as on an idle one.
+    hold = max(3.0, 3 * (time.monotonic() - t0))
+    expect.text("a port" if alone.isdigit() else alone, "a port",
+                "premise: pick_port alone takes a port")
+    rdir.mkdir()
+    with open(rdir / "lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        t0 = time.monotonic()
+        proc = _twin_picker(_quiet_env(rdir))
+        # Whether the pick returned while the lock was held, and when.
+        while time.monotonic() - t0 < hold and proc.poll() is None:
+            time.sleep(0.05)
+        took = time.monotonic() - t0
+        early = proc.poll() is not None
+        time.sleep(max(0.0, hold - (time.monotonic() - t0)))
+        (rdir / alone).write_text(f"{os.getpid()} {int(time.time())}\n")
+    got = _picked([proc])[0]
+    expect.text((f"returned after {took:.1f} s of a {hold:.1f} s hold" if early else "waited")
+                + (", moved" if got.isdigit() and got != alone else f", took {got}"),
+                "waited, moved",
+                "a pick waits while another picker holds the lock, and skips the port it reserved")
+
+
+def test_a_pick_reserves_its_port_naming_its_picker(tmp_path, expect):
+    import time
+    rdir = tmp_path / "named"
+    proc = _twin_picker(_quiet_env(rdir))
+    port = _picked([proc])[0]
+    now = int(time.time())
+    try:
+        owner, then = (rdir / port).read_text().split()
+        mtime = int((rdir / port).stat().st_mtime)
+        got = ("pid " + ("ok" if int(owner) == proc.pid else f"{owner} not {proc.pid}")
+               + ", time " + ("ok" if abs(int(then) - now) <= 5 else f"{then} not ~{now}")
+               + ", mtime " + ("ok" if abs(mtime - now) <= 5 else f"{mtime} not ~{now}"))
+    except (OSError, ValueError) as exc:
+        got = f"no reservation for {port}: {exc}"
+    expect.text(got, "pid ok, time ok, mtime ok",
+                "a pick reserves its port in a file that names the picker's pid and the time")
+
+
+def test_pick_port_reserves_in_the_stated_directory_by_default(tmp_path, expect):
+    import os
+    import pgc_cluster
+    # main has no such function; a named red there rather than an AttributeError.
+    reserve_dir = getattr(pgc_cluster, "port_reserve_dir", lambda: "(no port_reserve_dir)")
+    saved = {k: os.environ.pop(k, None) for k in ("PGC_PORT_RESERVE_DIR", "TMPDIR")}
+    try:
+        bare = reserve_dir()
+        os.environ["TMPDIR"] = str(tmp_path)
+        moved = reserve_dir()
+    finally:
+        os.environ.pop("TMPDIR", None)
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    uid = os.getuid()
+    expect.text(f"{bare} | {moved}",
+                f"/tmp/pgcolumnar-ports-{uid} | {tmp_path}/pgcolumnar-ports-{uid}",
+                "with no PGC_PORT_RESERVE_DIR, a pick reserves in pgcolumnar-ports-<uid> under TMPDIR, or under /tmp")
+
+# ---- a fixture that never says READY stops the run (#2165) -------------------------
+#
+# Both REST twins start a fixture and wait for its READY through pgc_cluster's
+# await_ready. They used to wait 5 s and go on, so their arms read whatever answered
+# on the port: in CI another suite's REST fixture, which gave HTTP 401. The twins
+# reach await_ready only on the path where READY arrives, so nothing there notices a
+# raise turned into a return (review of #2208). These drive it against real
+# processes. The never-READY arm passes wait=1, so it takes a second, not 30.
+def _fixture(tmp_path, name, code):
+    import subprocess
+    import sys
+    out = tmp_path / f"{name}.out"
+    with open(out, "w") as fh:
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=fh, stderr=subprocess.STDOUT)
+    return out, proc
+
+
+def _await(out, proc, what, wait):
+    """-> ("returned" or "raised: <message>", seconds taken)."""
+    import time
+    from pgc_cluster import await_ready
+    t0 = time.monotonic()
+    try:
+        await_ready(out, proc, what, wait=wait)
+        got = "returned"
+    except RuntimeError as exc:
+        got = f"raised: {exc}"
+    return got.rstrip(), time.monotonic() - t0
+
+
+def test_a_fixture_that_exits_without_ready_stops_the_run(tmp_path, expect):
+    out, proc = _fixture(tmp_path, "exits",
+                         "print('bind: Address already in use', flush=True); raise SystemExit(3)")
+    got, took = _await(out, proc, "test fixture on port 1", 20)
+    expect.text(got, "raised: the test fixture on port 1 did not start (exited): "
+                "bind: Address already in use",
+                "a fixture that exits without READY stops the run, naming it")
+    expect.text("early" if took < 10 else f"after {took:.1f} s of 20", "early",
+                "and the wait ends when the fixture exits, not at the limit")
+
+
+def test_a_fixture_that_says_ready_late_is_waited_for(tmp_path, expect):
+    out, proc = _fixture(tmp_path, "late",
+                         "import time; time.sleep(1); print('READY', flush=True); time.sleep(30)")
+    try:
+        got, _ = _await(out, proc, "late fixture", 10)
+    finally:
+        proc.kill()
+        proc.wait()
+    expect.text(got, "returned", "a fixture that says READY late is waited for")
+
+
+def test_a_fixture_that_never_says_ready_stops_the_run(tmp_path, expect):
+    out, proc = _fixture(tmp_path, "silent", "import time; time.sleep(30)")
+    try:
+        got, _ = _await(out, proc, "silent fixture", 1)
+    finally:
+        proc.kill()
+        proc.wait()
+    expect.text(got, "raised: the silent fixture did not start "
+                "(still running with no READY after 1 s):",
+                "a fixture that never says READY stops the run, naming it")
+
+
+# ---- how long a reservation holds (#2165, review of #2208) ---------------------------
+#
+# A reservation holds while the pid it names runs, at any age, and for 120 s after
+# the pick once that pid has gone. Each arm learns the port pick_port takes alone,
+# rewrites that port's reservation with a chosen owner and age, as any picker could
+# have written it, and asks again in the same directory: a held reservation moves the
+# pick off that port. The shell picker has the same three arms in selftest 660. The
+# dead owner is pid_max + 1, which no process can have. The 60 s and 121 s ages sit
+# either side of the 120 s limit with room for a slow second, so a limit cut to 5 s
+# or 2 s fails the first arm and one raised past 121 s fails the second.
+def _quiet_env(rdir):
+    import os
+    env = dict(os.environ, PGC_PORT_RESERVE_DIR=str(rdir))
+    for k in ("PGC_PORT_PICK_DELAY", "PYTEST_XDIST_WORKER"):
+        env.pop(k, None)
+    return env
+
+
+def _reserve(rdir, port, owner, age):
+    import os
+    import time
+    then = time.time() - age
+    # The directory exists once the picker has reserved in it. Made here too, so a
+    # picker that reserves nothing (main's) reads as "same", not as a missing file.
+    rdir.mkdir(parents=True, exist_ok=True)
+    res = rdir / str(port)
+    res.write_text(f"{owner} {int(then)}\n")
+    os.utime(res, (then, then))
+
+
+def _repick(tmp_path, owner, age):
+    """-> 'same' or 'moved' for a reservation of the port pick_port takes alone,
+    rewritten with `owner` and `age`."""
+    rdir = tmp_path / f"twin-{owner}-{age}"
+    env = _quiet_env(rdir)
+    first = _picked([_twin_picker(env)])[0]
+    if not first.isdigit():
+        return first
+    _reserve(rdir, first, owner, age)
+    again = _picked([_twin_picker(env)])[0]
+    return "same" if again == first else "moved" if again.isdigit() else again
+
+
+def _dead_pid():
+    import pathlib as _p
+    return int(_p.Path("/proc/sys/kernel/pid_max").read_text()) + 1
+
+
+def test_a_dead_pickers_reservation_holds_for_sixty_seconds(tmp_path, expect):
+    expect.text(_repick(tmp_path, _dead_pid(), 60), "moved",
+                "a reservation 60 s old whose picker has gone blocks the pick")
+
+
+def test_a_dead_pickers_reservation_lapses_after_the_limit(tmp_path, expect):
+    expect.text(_repick(tmp_path, _dead_pid(), 121), "same",
+                "a reservation 121 s old whose picker has gone does not block the pick")
+
+
+def test_a_live_pickers_reservation_holds_at_any_age(tmp_path, expect):
+    """The owner is this test's own process, which runs throughout."""
+    import os
+    expect.text(_repick(tmp_path, os.getpid(), 3600), "moved",
+                "a reservation an hour old whose picker still runs blocks the pick")

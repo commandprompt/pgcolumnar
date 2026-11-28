@@ -18,6 +18,13 @@ check "premise: the auxiliary band has a width to wrap within" \
 
 _realfree=$(declare -f pgc_port_free)
 
+# The picks below reserve what the stubs call free (#2165), so they reserve in a
+# directory of their own. In the shared one a concurrent run's reservation of
+# lo+500 would move the far pick, and these would hold ports nothing binds.
+_rd_was="${PGC_PORT_RESERVE_DIR-unset}"
+PGC_PORT_RESERVE_DIR="$(mktemp -d)"
+export PGC_PORT_RESERVE_DIR
+
 # Every port in the TOP 400 is busy; everything below is free. A walk that stops
 # at hi finds nothing from a base inside that region. A walk that wraps lands in
 # the free part below.
@@ -57,6 +64,8 @@ check "a free port beyond the old 300-probe bound is still found" \
 	"$_far" "$(( PGC_AUX_PORT_LO + 500 ))"
 
 eval "$_realfree"
+rm -rf "$PGC_PORT_RESERVE_DIR"
+if [ "$_rd_was" = unset ]; then unset PGC_PORT_RESERVE_DIR; else PGC_PORT_RESERVE_DIR="$_rd_was"; fi
 check "premise: the real prober was restored, or every check after this lies" \
 	"$(pgc_port_free 1 && echo probing || echo stubbed)" "probing"
 

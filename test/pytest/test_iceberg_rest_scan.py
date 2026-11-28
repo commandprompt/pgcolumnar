@@ -169,7 +169,7 @@ def irs(pgc_cluster):
     if not _warehouse_present():
         yield "fixture"
         return
-    from pgc_cluster import Cluster, pick_port
+    from pgc_cluster import Cluster, await_ready, pick_port
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-icerestscan-"))
     os.chmod(work, 0o777)
@@ -282,10 +282,11 @@ def irs(pgc_cluster):
                  "--log", str(work / f"{name}.log"), "--token", TOKEN,
                  "--metadata-location", mdloc, *args],
                 stdout=open(fout, "w"), stderr=subprocess.STDOUT))
-            for _ in range(50):
-                if fout.is_file() and "READY" in fout.read_text(errors="replace"):
-                    break
-                time.sleep(0.1)
+            # Up to 30 s, less when the fixture exits; a fixture that never says READY
+            # stops the run (#2165), as the shell's pgc_await_ready does, rather than
+            # leaving its arms to read whatever answers on the port. test_runshape.py
+            # tests await_ready itself.
+            await_ready(fout, fx_srvs[-1], f"REST catalog fixture {name} on port {port}")
             return f"http://127.0.0.1:{port}"
 
         def nslist(c):
