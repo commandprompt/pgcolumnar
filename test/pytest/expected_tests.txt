@@ -2725,4 +2725,13 @@ guard_tests 910
 # statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
 # collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6617
+# cluster_tests 6617 -> 6625 for #2256's arm 9 in test_parallel_flush_optin.py: eight tests (the ordered two-session
+# cycle through a parallel flush worker ends in 40P01 with the worker, the backend or the other session as the victim,
+# and with every deadlock_timeout at 1 s; with two workers the backend waits for the second worker's run lock too;
+# the waits ignore lock_timeout and log_lock_waits, the session's settings read back, and no backend died), by
+# collection of that file (37 -> 45) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6625 -> 6626, still #2256, for the #2270 review's B1: test_cycle_a_cycle_while_a_worker_connects_ends_in_40p01
+# in test_parallel_flush_optin.py (a cycle through a worker that is still connecting, held up on pg_database, ends in
+# 40P01), by collection of that file (45 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+cluster_tests 6626
