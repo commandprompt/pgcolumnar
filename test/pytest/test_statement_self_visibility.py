@@ -599,13 +599,18 @@ LOOP_CNT = ("CREATE OR REPLACE FUNCTION loop_cnt(t regclass, n int) RETURNS bigi
             "BEGIN FOR i IN 1..n LOOP "
             "EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; total := total + c; "
             "END LOOP; RETURN total; END $$")
+# The loop and the rescan run 1,000 parallel queries each on heap too, more than
+# the server's segment slots, which is what makes them catch a copy left
+# attached. Under a loaded runner heap's side can pass the session's 60 s, so
+# these two get 300 s.
+SLOW = "SET LOCAL statement_timeout = '300s'"
 RESCAN = "SELECT sum((SELECT count(*) FROM %t WHERE pad % 7 <> 3 HAVING count(*) > g)) FROM generate_series(1, 1000) g"
 
 
 def test_a_loop_of_parallel_queries_after_a_write_completes(pgc_conn, expect):
     _fresh_pk(pgc_conn)
     pgc_conn.execute(LOOP_CNT)
-    expect.text(_same_tx(pgc_conn, ["SET LOCAL pgcolumnar.enable_custom_scan = on"] + PAR0 + [
+    expect.text(_same_tx(pgc_conn, [SLOW, "SET LOCAL pgcolumnar.enable_custom_scan = on"] + PAR0 + [
         "INSERT INTO %t VALUES (-1, -1)", "SELECT loop_cnt('%t', 1000)"]), "same",
                 "a loop of 1,000 parallel queries after a write in the same transaction completes, with heap's count")
 
@@ -618,7 +623,7 @@ def test_premise_the_rescanned_subquery_runs_a_gather(pgc_conn, expect):
 
 def test_a_rescanned_gather_after_a_write_completes(pgc_conn, expect):
     _fresh_pk(pgc_conn)
-    expect.text(_same_tx(pgc_conn, CSOFF + PAR0 + ["INSERT INTO %t VALUES (-1, -1)", RESCAN]), "same",
+    expect.text(_same_tx(pgc_conn, [SLOW] + CSOFF + PAR0 + ["INSERT INTO %t VALUES (-1, -1)", RESCAN]), "same",
                 "a Gather rescanned 1,000 times after a write in the same transaction completes, with heap's sum")
 
 

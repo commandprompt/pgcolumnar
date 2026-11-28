@@ -332,20 +332,22 @@ done
 # workers. A copy that is never detached piles up until the server's shared
 # memory segments run out, and is reported as a leak. These run many parallel
 # queries after a write, and read the server's warnings, which the comparisons
-# above do not see.
+# above do not see. The loop and the rescan run 1,000 parallel queries on heap
+# too, and under a loaded runner heap's side can pass the session's 60 s, so
+# these two get 300 s.
 psql_run "CREATE OR REPLACE FUNCTION loop_cnt(t regclass, n int) RETURNS bigint LANGUAGE plpgsql AS \$\$
           DECLARE c bigint; total bigint := 0;
           BEGIN FOR i IN 1..n LOOP
             EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; total := total + c;
           END LOOP; RETURN total; END \$\$;"
 check "a loop of 1,000 parallel queries after a write in the same transaction completes, with heap's count" \
-	"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = on; $PAR0 INSERT INTO %t VALUES (-1, -1);
+	"$(same "BEGIN; SET LOCAL statement_timeout = '300s'; SET LOCAL pgcolumnar.enable_custom_scan = on; $PAR0 INSERT INTO %t VALUES (-1, -1);
 	         SELECT loop_cnt('%t', 1000); ROLLBACK;")" "same"
 RESCAN="SELECT sum((SELECT count(*) FROM %t WHERE pad % 7 <> 3 HAVING count(*) > g)) FROM generate_series(1, 1000) g;"
 check "premise: the rescanned subquery runs a Gather" \
 	"$(plan_has "BEGIN; $CSOFF $PAR0 EXPLAIN (COSTS OFF) $RESCAN ROLLBACK;" 'Gather')" "yes"
 check "a Gather rescanned 1,000 times after a write in the same transaction completes, with heap's sum" \
-	"$(same "BEGIN; $CSOFF $PAR0 INSERT INTO %t VALUES (-1, -1); $RESCAN ROLLBACK;")" "same"
+	"$(same "BEGIN; SET LOCAL statement_timeout = '300s'; $CSOFF $PAR0 INSERT INTO %t VALUES (-1, -1); $RESCAN ROLLBACK;")" "same"
 # The warnings of a committed transaction: a copy never detached is reported at
 # the latest when the transaction's resource owner is released. PostgreSQL 17
 # and later word it "resource was not closed", 15 and 16 "dynamic shared memory
