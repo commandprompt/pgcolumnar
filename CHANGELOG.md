@@ -633,6 +633,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- A columnar table made after `DROP EXTENSION pgcolumnar CASCADE` and `CREATE
+  EXTENSION pgcolumnar` is recognised as columnar again in a session that used
+  the extension before the reinstall (#2176). The library stays loaded, and the
+  access method oid it had cached was never dropped, so such a session treated
+  every new columnar table as a heap: no custom scan, `get_storage_id` and the
+  maintenance functions refused with 42809, `RENAME COLUMN` did not rename the
+  declared sort key, `DROP COLUMN` left the ordering mark on the dropped name,
+  and `pgcolumnar.enable_index_only_scan = off` let index-only scans through.
+  The session that ran the reinstall had it, and so did every other session
+  that had cached the oid. A pg_am invalidation callback now drops the cached
+  oid, and the index-only-scan hook shares that one cache instead of keeping its
+  own. `test/am_oid_reinstall.sh` and `test_am_oid_reinstall.py`.
 - `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
   reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
   ends the line at the `\.` and loads the row, so `a<TAB>1200\.` then LF has

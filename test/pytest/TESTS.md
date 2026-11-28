@@ -414,6 +414,7 @@ behaviour, the source of that number is named.
 - [366. test_vacuum_retire_visibility.py: a reader during lazy VACUUM's retirement does not bring back a deleted row as NULLs](#366-test_vacuum_retire_visibilitypy-a-reader-during-lazy-vacuums-retirement-does-not-bring-back-a-deleted-row-as-nulls)
 - [367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile](#367-test_vacuum_retire_snapshotpy-a-group-lazy-vacuum-retires-stays-retired-when-another-session-reads-it-meanwhile)
 - [368. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own](#368-test_autovacuum_verb_txnpy-the-maintenance-daemon-runs-each-verb-in-a-transaction-of-its-own)
+- [369. test_am_oid_reinstall.py: a columnar table made after the extension is reinstalled is recognised as columnar](#369-test_am_oid_reinstallpy-a-columnar-table-made-after-the-extension-is-reinstalled-is-recognised-as-columnar)
 
 ## 1. How to read a test in here
 
@@ -15645,3 +15646,39 @@ The table is reclustered by id, then 300 rows are appended and a third of the fi
 | `test_the_locker_saw_the_paused_compact_rewrite` | the locker saw the daemon paused in its compact_rewrite |
 | `test_the_lock_table_was_granted` | a LOCK TABLE with a 1 s deadlock_timeout was granted beside the paused compact_rewrite |
 | `test_a_cancelled_verb_ends_the_pass` | after its cancelled compact_rewrite, the daemon's next verb on dl is the next pass's compact_rewrite, not a recluster |
+
+## 369. test_am_oid_reinstall.py: a columnar table made after the extension is reinstalled is recognised as columnar
+
+The twin of `test/am_oid_reinstall.sh`, with the same 23 check names (#2176). The library is preloaded and outlives the extension, so `DROP EXTENSION pgcolumnar CASCADE; CREATE EXTENSION pgcolumnar` gives the access method a new oid in a backend that already cached the old one. `PgColumnarIsColumnarRelation` kept that oid in a static and the index-only-scan planner hook kept a second copy, and neither was ever dropped. In that backend every columnar table made after the reinstall looked like a heap.
+
+Two scenarios, each on one connection. `self`: the connection warms both caches, reinstalls the extension, then makes and uses a new table. `other`: the connection warms both caches, a second connection reinstalls the extension, then the first makes and uses a new table. The ordering mark is set by a third connection, so the DROP COLUMN arm has a mark to clear on main. Every connection sets `lock_timeout` and `statement_timeout`.
+
+The fix is `PgColumnarAmOid` in `columnar_metadata.c`: one cache, dropped by a syscache callback on `AMOID`, which the index-only-scan hook calls too. Removal proof, in both harnesses on PG 17 and PG 18: on main, with no callback registered, with the callback on `NAMESPACEOID`, and with it clearing the oid only on a full reset (hashvalue 0), the same twelve checks are red. With the index-only-scan hook keeping its own cache, only its two checks are red; with `PgColumnarIsColumnarRelation` keeping its own, the other ten. With the oid cleared only from this backend's DROP hook, only the six `other` checks are red. The callback on `AMNAME` and no cache at all are equivalent and pass.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_self_premise_warmed` | self: premise: the session looked the access method up before the reinstall (`get_storage_id` of a warm-up table is not NULL) |
+| `test_self_premise_ios_hook_warmed` | self: premise: the session planned through the index-only-scan hook before the reinstall (an `Index Scan` on the warm-up table with `enable_index_only_scan = off`) |
+| `test_self_premise_new_am_oid` | self: premise: the reinstall gave the access method a new oid |
+| `test_self_rows` | self: control: the new table returns `90|4095|14995` (count, sum(a), sum(b)) after INSERT, UPDATE and DELETE |
+| `test_self_custom_scan` | self: the new table is read by `Custom Scan (PgColumnarScan)`. On main `Seq Scan` |
+| `test_self_get_storage_id` | self: `get_storage_id` of the new table is not NULL. On main 42809 "is not a columnar table" |
+| `test_self_index_only_scan_off` | self: with `enable_index_only_scan = off` (custom scan, seqscan and bitmapscan off) the plan is `Index Scan`. On main `Index Only Scan` |
+| `test_self_vacuum_sorted` | self: `vacuum_sorted(t, 'a')` runs. On main 42809 |
+| `test_self_rename_sort_key` | self: `RENAME COLUMN c TO c2` renames the declared `sort_by` to `{c2}`. On main it stays `{c}` |
+| `test_self_premise_mark_set` | self: premise: another session's `vacuum_sorted(t, 'b')` set the ordering mark `{b}/lexicographic` |
+| `test_self_drop_column_clears_mark` | self: `DROP COLUMN b` clears the ordering mark (`NULL/NULL`). On main it stays `{b}/lexicographic` |
+| `test_other_premise_warmed` | other: premise: the session looked the access method up before the reinstall (`get_storage_id` of a warm-up table is not NULL) |
+| `test_other_premise_ios_hook_warmed` | other: premise: the session planned through the index-only-scan hook before the reinstall (an `Index Scan` on the warm-up table with `enable_index_only_scan = off`) |
+| `test_other_premise_new_am_oid` | other: premise: the reinstall gave the access method a new oid |
+| `test_other_rows` | other: control: the new table returns `90|4095|14995` (count, sum(a), sum(b)) after INSERT, UPDATE and DELETE |
+| `test_other_custom_scan` | other: the new table is read by `Custom Scan (PgColumnarScan)`. On main `Seq Scan` |
+| `test_other_get_storage_id` | other: `get_storage_id` of the new table is not NULL. On main 42809 "is not a columnar table" |
+| `test_other_index_only_scan_off` | other: with `enable_index_only_scan = off` (custom scan, seqscan and bitmapscan off) the plan is `Index Scan`. On main `Index Only Scan` |
+| `test_other_vacuum_sorted` | other: `vacuum_sorted(t, 'a')` runs. On main 42809 |
+| `test_other_rename_sort_key` | other: `RENAME COLUMN c TO c2` renames the declared `sort_by` to `{c2}`. On main it stays `{c}` |
+| `test_other_premise_mark_set` | other: premise: another session's `vacuum_sorted(t, 'b')` set the ordering mark `{b}/lexicographic` |
+| `test_other_drop_column_clears_mark` | other: `DROP COLUMN b` clears the ordering mark (`NULL/NULL`). On main it stays `{b}/lexicographic` |
+| `test_no_backend_crashed_in_the_scenarios` | no `terminated by signal` in the server log during the two scenarios |

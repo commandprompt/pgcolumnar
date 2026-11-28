@@ -44,6 +44,7 @@ SUITES=(
 	alter_column_type
 	alter_table_scans
 	am_contracts
+	am_oid_reinstall
 	analyze_differential
 	analyze_function
 	analyze_reltuples
