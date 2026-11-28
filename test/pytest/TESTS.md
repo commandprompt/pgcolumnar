@@ -411,7 +411,9 @@ behaviour, the source of that number is named.
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
 - [365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees](#365-test_rewrite_snapshotpy-a-rewrite-inside-a-repeatable-read-transaction-does-not-change-what-it-sees)
-- [366. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own](#366-test_autovacuum_verb_txnpy-the-maintenance-daemon-runs-each-verb-in-a-transaction-of-its-own)
+- [366. test_vacuum_retire_visibility.py: a reader during lazy VACUUM's retirement does not bring back a deleted row as NULLs](#366-test_vacuum_retire_visibilitypy-a-reader-during-lazy-vacuums-retirement-does-not-bring-back-a-deleted-row-as-nulls)
+- [367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile](#367-test_vacuum_retire_snapshotpy-a-group-lazy-vacuum-retires-stays-retired-when-another-session-reads-it-meanwhile)
+- [368. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own](#368-test_autovacuum_verb_txnpy-the-maintenance-daemon-runs-each-verb-in-a-transaction-of-its-own)
 
 ## 1. How to read a test in here
 
@@ -4941,6 +4943,10 @@ failing for a reason that has nothing to do with projections.
 | `test_the_control_a_transaction_with_no_write_before_the_add` | the control -- that path always worked and must stay working |
 | `test_a_projection_dropped_mid_transaction_stops_receiving_writes` | the same latch with the opposite sign, including the orphan storage it would leave |
 | `test_the_control_a_drop_in_its_own_transaction` | pins the arm above to the CACHE rather than to `drop_projection`'s own cleanup |
+| `test_add_projection_holds_its_lock_until_its_transaction_ends` | (#2215) a second connection holds `add_projection` open; another session's SELECT runs, and its INSERT under a 1 s `lock_timeout` gets 55P03, not a write past the uncommitted projection. After the commit the projection holds every row and an id-range count planned on it answers as with projection scans off. A premise reads the holder's open transaction from `pg_stat_activity`, before and after |
+| `test_drop_projection_holds_its_lock_until_its_transaction_ends` | (#2215) the same with `drop_projection` open: the INSERT gets 55P03, and after the commit the dropped projection's storage holds no row group |
+| `test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends` | (#2215) the same with an `ALTER TABLE ... SET STATISTICS` open that materialized a declared projection with no storage: the INSERT gets 55P03, and after the commit the projection holds every row |
+| `test_add_projection_waits_for_a_writers_open_transaction` | (#2215) control: a writer's open transaction makes `add_projection` wait (55P03 under a 1 s `lock_timeout`) |
 
 ## 42. test_compression_reaches_the_cascade.py: the codec setting decides encodings too
 
@@ -7558,6 +7564,20 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_a_large_string_is_refused_by_type_at_any_depth` | (#2097) `import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)`; unpatched, both imported 2 rows |
 | `test_a_string_or_binary_view_is_refused_by_type_not_as_malformed` | (#2097) `import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)`; unpatched, both were XX001 |
 | `test_a_binary_or_string_file_still_imports_with_its_values` | (#2097) the control: `control: a binary and a string file still import into bytea and text, with their values (#2097)` |
+| `test_a_float64_field_with_no_type_table_is_refused_for_bigint` | (#2186) `import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored as bit patterns (#2186)`, by the patch report, SQLSTATE, message and an empty table; unpatched, 2 rows imported as bit patterns |
+| `test_a_float64_field_with_no_type_table_is_malformed_for_float8` | (#2186) `import_arrow refuses a float64 field with no type table for a float8 column as malformed with XX001 (#2186)`; unpatched, 2 rows imported |
+| `test_an_int64_field_with_no_type_table_is_malformed` | (#2186) `import_arrow refuses an int64 field with no type table as malformed with XX001 (#2186)`; unpatched, 2 rows imported |
+| `test_a_timestamp_field_with_no_type_table_is_malformed` | (#2186) `import_arrow refuses a timestamp field with no type table as malformed with XX001 (#2186)`; unpatched, 2 rows imported |
+| `test_a_decimal_field_with_no_type_table_is_malformed` | (#2186) `import_arrow refuses a decimal field with no type table as malformed with XX001 (#2186)`; unpatched, 2 rows imported |
+| `test_every_other_parameterised_field_with_no_type_table_is_malformed` | (#2186) `import_arrow refuses a date, time, fixed-size binary, duration or map field with no type table as malformed with XX001 (#2186)`, all five in one check; unpatched, each imported |
+| `test_a_list_element_with_no_type_table_is_refused` | (#2186) `import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one with XX001 (#2186)`; unpatched, both imported 2 rows |
+| `test_a_parameterless_field_with_no_type_table_still_imports` | (#2186) the control: `control: a string, binary, boolean, list or struct field with no type table still imports, with its values (#2186)`, each by its stored values |
+| `test_a_null_field_with_no_type_table_is_refused_by_type` | (#2186) `import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)`; unpatched, XX001 "too few buffers for the schema" |
+| `test_a_field_with_neither_tag_nor_type_table_is_refused_by_type` | (#2186, review of #2224) `import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)`; unpatched, 2 rows imported, and the `none` mutant (tag NONE read as nothing to check) imports them too |
+| `test_a_struct_child_or_map_value_with_no_type_table_is_refused` | (#2186, review of #2224) `import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)`, both in one check; unpatched, both imported |
+| `test_a_second_column_with_no_type_table_is_malformed` | (#2186, review of #2224) `import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)`; unpatched, 2 rows imported |
+| `test_a_list_field_with_no_children_vector_is_malformed` | (#2186, review of #2224) `import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)`; unpatched, both imported 2 rows |
+| `test_a_struct_or_map_field_with_no_children_vector_is_malformed` | (#2186, review of #2224 at b9747c41) `import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored as bit patterns (#2186)`, both in one check; red under a rewrite that refuses a list only, by node (`listkids`) or by tag (`listtag`) |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -12532,7 +12552,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A heap table with a primary key gets 42809 before that refusal, and a missing file gets the refusal before the file is opened (#2209). A `CREATE INDEX` that queues between the loaders' locks on the table no longer hangs the load, a loader that exits before it opens the table fails the load, a cancelled load returns only once its prepared transactions are gone, and a single table with a trigger on INSERT is refused with more than one worker; a loader's refusal carries its HINT (#2187). The trigger refusal also comes before the file is opened (#2252). On PostgreSQL 18 and later it refuses a temporal primary key too, whose one index is both unique and exclusion; the test needs btree_gist and declines before 18, which has no WITHOUT OVERLAPS (#2200). Into a partitioned target it reads the fields up to the key with COPY's text escapes, so a backslash and a TAB before the key, a key in octal or hex escapes, a `\N` key, a key that only starts with `\N`, `\x` with no hex digit, and a key that decodes to a NUL or a non-UTF-8 byte give heap `COPY`'s outcome and rows with 2 and 4 workers (#2202). A load into a table with a projection fills the projection (#2092). A load is refused with 55000, not left waiting, when the caller's transaction holds a lock that conflicts with the workers' ROW EXCLUSIVE on the target or a partition (#2183), or when it has already written to the target or a partition, whose storage-row lock the workers would wait on (#2211). A file that changes newline style (LF or CRLF), or has a `\.\r\n` line in a file with LF line ends, at a range start is refused with heap `COPY`'s SQLSTATE and message, and a file that keeps one style still loads (#2189). Probe files pin the first-line scan: a first line longer than one 64 KiB read, a CR or a backslash at the edge of a read, an escaped CR, and a style decided by the file's first byte (#2221 review). The workers read the file in the caller's `client_encoding`, and every split steps over whole characters in SJIS, BIG5, GBK and GB18030, where a character's second byte can be `0x5C`, so loads under those encodings, and under a database default `client_encoding` that is not the caller's, store what heap `COPY` stores; LATIN1, UTF8 and SJIS in a `SQL_ASCII` database, where such a byte is a backslash, still load as heap `COPY` does (#2188). A row that core `COPY` refuses before it reads a value (bad encoding, a raw NUL, a `\.` it refuses, the wrong field count) gets `COPY`'s SQLSTATE and message, and a row `COPY` loads still has its key read by the splitter (#2222). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database..
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A heap table with a primary key gets 42809 before that refusal, and a missing file gets the refusal before the file is opened (#2209). A `CREATE INDEX` that queues between the loaders' locks on the table no longer hangs the load, a loader that exits before it opens the table fails the load, a cancelled load returns only once its prepared transactions are gone, and a single table with a trigger on INSERT is refused with more than one worker; a loader's refusal carries its HINT (#2187). The trigger refusal also comes before the file is opened (#2252). On PostgreSQL 18 and later it refuses a temporal primary key too, whose one index is both unique and exclusion; the test needs btree_gist and declines before 18, which has no WITHOUT OVERLAPS (#2200). Into a partitioned target it reads the fields up to the key with COPY's text escapes, so a backslash and a TAB before the key, a key in octal or hex escapes, a `\N` key, a key that only starts with `\N`, `\x` with no hex digit, and a key that decodes to a NUL or a non-UTF-8 byte give heap `COPY`'s outcome and rows with 2 and 4 workers (#2202). A load into a table with a projection fills the projection (#2092). A load is refused with 55000, not left waiting, when the caller's transaction holds a lock that conflicts with the workers' ROW EXCLUSIVE on the target or a partition (#2183), or when it has already written to the target or a partition, whose storage-row lock the workers would wait on (#2211). It is refused the same way after `add_projection`, `drop_projection` or a `rebuild_projections` that materialized a projection in the caller's transaction, whose locks are now held to transaction end and whose uncommitted projection the workers could not see (#2215). A file that changes newline style (LF or CRLF), or has a `\.\r\n` line in a file with LF line ends, at a range start is refused with heap `COPY`'s SQLSTATE and message, and a file that keeps one style still loads (#2189). Probe files pin the first-line scan: a first line longer than one 64 KiB read, a CR or a backslash at the edge of a read, an escaped CR, and a style decided by the file's first byte (#2221 review). The workers read the file in the caller's `client_encoding`, and every split steps over whole characters in SJIS, BIG5, GBK and GB18030, where a character's second byte can be `0x5C`, so loads under those encodings, and under a database default `client_encoding` that is not the caller's, store what heap `COPY` stores; LATIN1, UTF8 and SJIS in a `SQL_ASCII` database, where such a byte is a backslash, still load as heap `COPY` does (#2188). A row that core `COPY` refuses before it reads a value (bad encoding, a raw NUL, a `\.` it refuses, the wrong field count) gets `COPY`'s SQLSTATE and message, and a row `COPY` loads still has its key read by the splitter (#2222). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database..
 
 ### Every test
 
@@ -12715,6 +12735,12 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_a_consistent_newline_style_still_loads` | (#2189) parametrized by the shell's nine names: a consistent LF file and a consistent CRLF file (single table and partitioned), `\.\r\n` on a range start in a CRLF file (single table), `\.\n` in the middle of a range (both), and a CRLF file whose first record holds an escaped LF and ends in an escaped backslash (both) load with 2, 3 and 4 workers as heap `COPY` loads them, outcome and row hash |
 | `test_parallel_copy_newline_probe_premise` | (#2189, #2221 review) `premise: ...`: `src/columnar_parallel_copy.c` defines `COLUMNAR_SPLIT_SCAN_CHUNK` as 65536; `p1` and `p2` hold CR LF at bytes 65535-65536 and `p4` a backslash and a CR; heap `COPY` refuses `p1` with 22P04 `literal newline found in data` and loads 40 rows from `p2`, `p3`, `p4` and `p5b` and 41 from `p5` |
 | `test_parallel_copy_newline_probe_matches_heap_copy` | (#2189, #2221 review) parametrized by the shell's eleven names: the first-line scan's probe files load as heap `COPY` loads them, or are refused with its SQLSTATE and message after `worker N failed: `, with 2, 3 and 4 workers into a single table and 8 range partitions: P1, a CRLF first line longer than one 64 KiB read, then LF lines (refused); P2, the first line's CR ending one read and its LF starting the next; P3, an escaped CR on line 1 of an LF file; P4, a backslash ending one read escaping a CR that starts the next; P5, an empty first line (one text column, single table only); P5b, a first byte that is a backslash escaping a CR. Each reddens under one mutant of the scan (one read only, the CR flag reset per read, no escape of a CR, the scan starting at byte 1, the escape flag reset per read) |
+| `test_parallel_copy_projection_ddl_premise` | (#2215) `premise: ...`: `t_dpx` has a committed projection holding its 1000 rows, and `t_rbx` a declared projection with no storage, inserted into `pgcolumnar.projection_declaration` directly |
+| `test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused` | (#2215) parametrized by the shell's four names: `parallel_copy` after `add_projection` (2 workers and 1), `drop_projection` and `rebuild_projections` in the same transaction is refused with 55000, naming SHARE or SHARE ROW EXCLUSIVE on the table. Before the fix each loaded |
+| `test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint` | (#2215) the refusal's HINT names `pgcolumnar.add_projection` and `pgcolumnar.drop_projection` |
+| `test_parallel_copy_refused_after_projection_ddl_loads_nothing` | (#2215) the refused loads leave no rows, `t_dpx`'s projection holding its 1000 rows, and no prepared transaction |
+| `test_parallel_copy_issue_sequence_answers_the_same_with_projection_scans_on_and_off` | (#2215) the issue's sequence with the refusal's way out: `add_projection`, a savepoint, a refused 2-worker `parallel_copy`, `ROLLBACK TO`, `COPY` of the same file, `COMMIT`. The projection holds all 5000 rows, the id-range count plans on it, and it answers 500 with projection scans on and off. Before the fix the load went through in its own transactions, so the table held 10000 rows and the projection 5000 |
+| `test_parallel_copy_into_a_committed_projection_answers_the_same_with_projection_scans_on_and_off` | (#2215) control: a projection committed before a 1-worker load holds every row and answers as the table does with projection scans on and off |
 | `test_parallel_copy_encoding_premise_sjis_and_big5` | (#2188) `premise: ...`: the scratch databases are UTF8 and SQL_ASCII (from `template0`, C locale); under `client_encoding` SJIS heap `COPY` loads 2000 rows from `sjis` and `sjisbs` and stores `sjis` row 1 as `61 31 e3 82 bd 0a 62` (83 5c is one character, then an escaped newline) and row 2 as `61 32 e3 82 bd`; under BIG5 2000 rows from `big5`, row 1 `61 31 e5 8a 9f 0a 62`; under SJIS 2000 rows from `sjistk`, row 1 `61 31 e3 82 bd` |
 | `test_parallel_copy_encoding_premise_first_line_and_chunk_files` | (#2188) `premise: ...`: under SJIS heap `COPY` loads 2000 rows from `sjiseol` and stores row 1 as `61 e3 82 bd 0d` (the backslash escapes the CR); 9363 rows from `chunknl`, whose bytes 65535-65538 are `83 5c 5c 0a`, and 4000 from `chunkcr`, whose bytes 65535-65539 are `83 5c 5c 0d 0a` |
 | `test_parallel_copy_encoding_premise_gb18030_and_gbk` | (#2188, review of #2228) `premise: ...`: under GB18030 heap `COPY` loads 2000 rows from `gb18030` and stores row 1 as `61 c2 80 e4 b9 97 7a 0a 62` (81 30 81 30 is U+0080, 81 5c is U+4E57) and row 2 as `61 e5 95 8a 7a 0a 79`; under GBK 2000 rows from `gbk`, row 1 `61 e4 b9 97 7a 0a 62` |
@@ -12862,6 +12888,7 @@ The source hashes and counts come from the generator that fills each table, not 
 | `test_pexport_the_server_survives_the_exports` | server still up after the exports |
 | `test_pexport_workers_use_the_callers_group_byte_cap` | the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group (#1843 review) |
 | `test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on` | (#2183) parametrized by the shell's six names: in one transaction under a 5s `statement_timeout`, an export after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE`, after `TRUNCATE`, and after `LOCK TABLE` on one leaf of the partitioned table is refused with 55000 and the message naming the lock and the relation; after `LOCK TABLE ... IN SHARE MODE`, and with ACCESS EXCLUSIVE on another table, it still exports the 20000 committed rows. In a savepoint after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` it keeps `25001 cannot export a snapshot from a subtransaction`, the error main gave, not 55000 (#2212 review). On main's code the three refused cases hit the timeout (57014) |
+| `test_pexport_lock_refusal_hint_does_not_name_the_projection_functions` | (#2215, #2226 review) the HINT of the refusal after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` is `... before the LOCK TABLE or TRUNCATE, or after COMMIT.`, without `pgcolumnar.add_projection` or `pgcolumnar.drop_projection`, whose locks do not conflict with the export workers' ACCESS SHARE. A mutant that gives export parallel_copy's HINT reddens it |
 | `test_pexport_queued_access_exclusive_on_the_table_does_not_hang` | (#2245) the caller selects from `t_lk`, waits until another session's `LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE` queues behind it, then exports `t_lk` with 2 workers under a 10 s statement_timeout: it returns 20000 within 6 s, the other session then gets its lock, and 20000 rows read back. On main's code the workers queued behind the request and the export hit 57014 at 10 s |
 | `test_pexport_queued_access_exclusive_on_a_leaf_does_not_hang` | (#2245) the same with the caller's `SELECT` and the queued ACCESS EXCLUSIVE on the leaf `t_p1`, exporting the partitioned `t_part`: 80000 within 6 s, 80000 read back. On main's code, 57014 at 10 s |
 | `test_pexport_control_a_cycle_through_the_dispatcher_ends_in_40p01` | (#2245) control: another session holds ACCESS EXCLUSIVE on `t_lk`, waits until the caller's export waits for `t_lk`, then asks for SHARE on `t_lk_other`, which the caller wrote: one side gets 40P01 within 5 s, on main's code as on the fix, since the dispatcher waits for the table in the lock manager |
@@ -15433,7 +15460,115 @@ Each arm reads `ok|<A's count|sum after the verb>|<count|sum after commit>`, or 
 | `test_read_committed_sees_what_its_statement_sees` | control: at READ COMMITTED, `recluster` runs and A sees B's insert and delete, as any statement would |
 | `test_the_daemon_runs_at_read_committed` | with `default_transaction_isolation = 'repeatable read'` set by ALTER SYSTEM, the daemon's `compact_rewrite` rewrites a group that a delete changed during its 3 s hold, and logs the rewrite, not a skip. Settings are reset at the end |
 
-## 366. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own
+## 366. test_vacuum_retire_visibility.py: a reader during lazy VACUUM's retirement does not bring back a deleted row as NULLs
+
+The twin of `test/vacuum_retire_visibility.sh` (#2263). Core runs a lazy VACUUM with PROC_IN_VACUUM set, and other backends leave its xid out of their snapshots. The VACUUM's retirement of a fully deleted row group deletes catalog rows. Before the fix, a reader that met one of those rows while the VACUUM was open took the delete for aborted and set HEAP_XMAX_INVALID, so that delete was lost at commit: the group's `row_group` row survived without its `column_chunk` and `delete_vector` rows, and the deleted row came back with every column NULL.
+
+Part 1 makes the window by hand. A blocker connection holds an uncommitted `free_space` row with the key the retirement inserts last, so the VACUUM waits there after its catalog deletes. A transaction commits so the next snapshot covers the VACUUM's xid. A reader then runs a statement it prepared and planned before the VACUUM (`plan_cache_mode = force_generic_plan`), because planning reads every `delete_vector` row of the table and would keep those deletes too. Part 2 is the reader's guard: a group with data and no `column_chunk` rows (made by deleting them by hand) is refused with XX001 by the sequential scan and by the index fetch, a group in the same table without the damage still reads, a table with no stored column (groups with no chunks and no bytes) still reads, and an aborted insert's index entry returns no row. Part 3 holds a VACUUM in its visibility-map step (`pgcolumnar.vm_set_hold_ms`) and checks that a VACUUM of another table still retires a group deleted after the held one started, so the held VACUUM still has PROC_IN_VACUUM there. Part 2 also reads a table that got a column after its data was written, by seq, index and index-only scans (#2266, review B2). Part 4 (#2266, review B1) runs INSERT ... ON CONFLICT DO NOTHING and DO UPDATE on a key whose row another connection is flushing, held by `pgcolumnar.flush_hold_ms` just before the flush inserts its row_group row, which a flush now inserts last.
+
+Removal proof, PG 17 and PG 18, each in both harnesses with the same names:
+
+| mutant | shell | twin |
+| --- | --- | --- |
+| no fix: main's `src/` | 6 red: the four #2263 arms and the two refusals | the same 6 |
+| the leave call dropped (the guard kept) | 4 red: the four #2263 arms; the scans fail with XX001 instead of returning the NULL row | the same 4 |
+| PROC_IN_VACUUM left after the retirement | the same 4 | the same 4 |
+| cleared in `MyProc` only, not in the `ProcGlobal` mirror | the same 4 | the same 4 |
+| left at the start of `relation_vacuum`, before the visibility-map step | `a vacuum of vb retires its dead group while va's vacuum is held` | the same |
+| the sequential scan's guard call dropped | the sequential refusal (`NULL:NULL,2:two`) | the same |
+| the index fetch's guard call dropped | the fetch refusal (`NULL:NULL`) | the same |
+| the guard without its `byte_length` condition | the two no-column-table arms | the same 2 |
+| the guard refusing every group that has chunks | 23 red | the same 23 |
+| the flush inserting the row_group row first, with the hold before the chunks (#2266 review B1) | the four part-4 arms: the upserts never wait and fail with XX001 | the same 4 |
+| the guard refusing a group with fewer chunks than the table has columns (#2266 review B2) | the seq and index-fetch arms of the added-column table | the same 2 |
+
+Two mutants pass: the flag cleared in the `ProcGlobal` mirror but not in `MyProc` (snapshots and horizons read only the mirror, and core clears both at transaction end), and every status flag cleared instead of PROC_IN_VACUUM alone (for a VACUUM a statement runs the flags are exactly PROC_IN_VACUUM; only an autovacuum worker would also lose PROC_IS_AUTOVACUUM, and no test drives one into a retirement).
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_premise_two_row_groups` | premise: two one-row groups before the vacuum |
+| `test_premise_first_group_fully_deleted` | premise: the first group's delete_vector counts its one row deleted |
+| `test_premise_horizon` | premise: no session is older than the delete |
+| `test_premise_vacuum_waits` | premise: the VACUUM waits on the blocker's `free_space` key, after its catalog deletes |
+| `test_premise_reader_ran` | premise: the prepared reader returned id 2 while the VACUUM was open |
+| `test_premise_vacuum_finished` | premise: the VACUUM finished once the blocker rolled back |
+| `test_premise_group_retired` | premise: the retired group's range is in the free list, so the retirement ran |
+| `test_row_group_row_gone` | the retired group's `row_group` row is gone (#2263) |
+| `test_seq_scan_matches_heap` | a sequential scan returns heap's rows, no all-NULL row (#2263) |
+| `test_no_all_null_row` | no row reads with every column NULL (#2263) |
+| `test_index_scan_deleted_id` | an index scan for the deleted id returns no row (#2263) |
+| `test_premise_index_scan` | premise: that query is an Index Scan |
+| `test_premise_damaged_group` | premise: the damaged group has data and no `column_chunk` rows |
+| `test_damaged_seq_refused` | a sequential scan of that group fails with XX001 and names the group and table |
+| `test_damaged_fetch_refused` | an index fetch of a row in that group fails with XX001 and names the group and table |
+| `test_other_group_fetch` | an index fetch of a row in another group of that table returns the row |
+| `test_premise_no_column_shape` | premise: a table with no stored column has two groups with no chunks and no bytes |
+| `test_no_column_seq` | a sequential scan of that table reads both rows, after a column was added |
+| `test_no_column_fetch` | an index fetch from that table reads both rows |
+| `test_aborted_index_entry` | an index entry whose row no group covers (an aborted insert) returns no row |
+| `test_premise_va_held` | premise: the VACUUM of va is held in its visibility-map step |
+| `test_vb_retired_while_va_held` | a VACUUM of vb retires a group deleted after va's VACUUM started, while va's is held |
+| `test_premise_va_still_held` | premise: va's VACUUM was still held at that moment |
+| `test_no_crash` | no backend terminated by signal over the run |
+| `test_premise_added_column_chunks` | premise: a 1000-row table given a column after its data was written has chunks for two columns only; its index is built before the column is added, so the index exists whatever the reader does |
+| `test_added_column_seq` | a sequential scan of it reads every row with the added column's default (#2266 B2) |
+| `test_added_column_fetch` | an index fetch from it reads the row with the default (#2266 B2) |
+| `test_premise_added_column_ios_plan` | premise: the third read is an Index Only Scan |
+| `test_added_column_ios` | an index-only scan of it reads the row (#2266 B2) |
+| `test_premise_upsert_nothing_writer_held` | premise: the writer of id 1 is held by `pgcolumnar.flush_hold_ms` before its row_group row |
+| `test_upsert_nothing_waits` | an upsert DO NOTHING of id 1 waits on a lock while the writer is held (#2266 B1) |
+| `test_premise_upsert_nothing_still_held` | premise: the writer was still held while the upsert waited |
+| `test_upsert_nothing_skips` | the upsert then returns INSERT 0 0, as on main (#2266 B1) |
+| `test_premise_upsert_nothing_writer_committed` | premise: the writer's INSERT committed |
+| `test_upsert_nothing_row` | id 1 holds the writer's row |
+| `test_premise_upsert_update_writer_held` | premise: the writer of id 2 is held before its row_group row |
+| `test_upsert_update_waits` | an upsert DO UPDATE of id 2 waits on a lock while the writer is held (#2266 B1) |
+| `test_premise_upsert_update_still_held` | premise: the writer was still held while the upsert waited |
+| `test_upsert_update_0a000` | the upsert then fails with 0A000, main's row-locking limitation (#2266 B1) |
+| `test_premise_upsert_update_writer_committed` | premise: the writer's INSERT committed |
+| `test_upsert_update_row` | id 2 holds the writer's row |
+
+## 367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile
+
+The twin of `test/vacuum_retire_snapshot.sh`, with the same 25 check names (#2264). Core sets PROC_IN_VACUUM for a lazy VACUUM, and GetSnapshotData leaves that backend's XID out of every other snapshot. pgColumnar's lazy VACUUM deletes a retired group's catalog rows and inserts its free_space row. A reader that saw those rows while the VACUUM ran took its XID for aborted and set a permanent hint bit. The group came back after the commit, while its range was also free, and the next VACUUM that retired it failed with 23505 on `free_space_pkey`.
+
+The race is ordered by locks. Three single-row inserts make three groups, and the first two are deleted. One connection locks the second group's row_group row FOR UPDATE and waits on advisory lock 2264. VACUUM retires the first group and waits on that row lock. `txid_current()` commits, and the reader reads the first group's rows. Variant `dv` reads its row_group and delete_vector rows; variant `rg` reads only row_group. Every wait is bounded.
+
+The fix is #2263's `pgcolumnar_leave_lazy_vacuum`. Removal proof: on main, and with each mutant of that fix (the call dropped, only `MyProc->statusFlags` cleared, the call after the retirement), the same six checks are red in both harnesses on PG 17 and PG 18.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_dv_premise_three_groups` | premise: three single-row inserts made three row groups |
+| `test_dv_premise_locker_waits` | premise: the connection holding the second group's row lock waits on advisory lock 2264 |
+| `test_dv_premise_vacuum_paused` | premise: VACUUM waits on that row lock, inside its retirement |
+| `test_dv_premise_xid_below_committed` | premise: the paused VACUUM's XID is below one that committed after it, so a new snapshot's xmax is above it |
+| `test_dv_premise_reader_saw_group` | premise: the reader saw the first group's row_group and delete_vector rows (`1|1`) |
+| `test_dv_premise_still_paused` | premise: VACUUM was still waiting after the read |
+| `test_dv_premise_vacuum_finished` | premise: the paused VACUUM finished with `VACUUM` |
+| `test_dv_group_stays_retired` | the first group's row_group row is gone after the VACUUM commits. On main it is live again (1) |
+| `test_dv_no_free_live_overlap` | no free_space range overlaps a live row group. On main 1 does |
+| `test_dv_free_space_sum` | control: free_space holds exactly the page footprints of the two retired groups |
+| `test_dv_next_vacuum_no_23505` | the next VACUUM returns `VACUUM`. On main it fails with 23505 on `free_space_pkey` |
+| `test_dv_table_rows` | the table returns only row `3:p3`. With #2263's reader check and no fix, the scan fails with XX001 (a live group with no column chunks) |
+| `test_rg_premise_three_groups` | as the dv premise, for the variant whose reader reads only row_group |
+| `test_rg_premise_locker_waits` | as the dv premise |
+| `test_rg_premise_vacuum_paused` | as the dv premise |
+| `test_rg_premise_xid_below_committed` | as the dv premise |
+| `test_rg_premise_reader_saw_group` | premise: the reader saw the first group's row_group row (`1`) |
+| `test_rg_premise_still_paused` | as the dv premise |
+| `test_rg_premise_vacuum_finished` | as the dv premise |
+| `test_rg_group_stays_retired` | the first group's row_group row is gone. On main it is live again (1) |
+| `test_rg_no_free_live_overlap` | no free_space range overlaps a live row group. On main 1 does |
+| `test_rg_free_space_sum` | control: free_space holds exactly the two retired groups' page footprints |
+| `test_rg_table_rows` | the table returns only row `3:p3`. On main before #2263 it also returns `NULL:NULL`, the retired group's deleted row with every column NULL; with #2263's reader check and no fix, the scan fails with XX001 |
+| `test_rg_next_vacuum_succeeds` | control: the next VACUUM returns `VACUUM` |
+| `test_no_backend_crashed` | no `terminated by signal` in the server log during the two races |
+
+## 368. test_autovacuum_verb_txn.py: the maintenance daemon runs each verb in a transaction of its own
 
 The twin of `test/autovacuum_verb_txn.sh` (#2194), every check by the shell's name, on a private database with the daemon's settings by ALTER SYSTEM (naptime 1 s, both thresholds 0.05, `deadlock_timeout` 20 s), reset at teardown. When both verbs were due, the daemon ran compact_rewrite and then recluster in one transaction, so the recluster waited for a busy row group while it held the storage-row lock the compact_rewrite kept to commit. A writer that held that group's lock and waited for the storage-row lock closed the #2074 cycle. On main the writer got 40P01.
 

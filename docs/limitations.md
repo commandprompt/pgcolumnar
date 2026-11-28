@@ -362,11 +362,17 @@ these constraints.
 - The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
   or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
   refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
-  locks. The workers take ROW EXCLUSIVE in their own transactions, so they
-  would wait for the caller until the statement timed out.
+  locks. So do `pgcolumnar.add_projection` and `pgcolumnar.drop_projection`, and
+  `pgcolumnar.rebuild_projections` when it materializes a projection (#2215). The
+  workers take ROW EXCLUSIVE in their own transactions, so they would wait for
+  the caller until the statement timed out. They also could not see a projection
+  the caller added or dropped.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
-- The check covers only the target and its partitions. When the calling
+- The check covers the target, its partitions, and its inheritance children. A
+  lock on an inheritance child that is not a partition is refused too, although
+  the workers never lock that child.
+- The check covers no other table. When the calling
   transaction locks another table the loaders need, the load fails with
   `deadlock_detected` (40P01) after `deadlock_timeout` (#2216). One example is a
   table the target references through a foreign key. Others are a table a
@@ -439,6 +445,19 @@ returning no rows.
   refused: storage-parameter validation belongs to PostgreSQL and is driven by the
   relation kind rather than by the access method. Setting it is harmless and
   pointless.
+- A lazy `VACUUM` stops hiding its transaction from other sessions' snapshots
+  (PostgreSQL's PROC_IN_VACUUM) before it retires row groups, because the
+  retirement deletes catalog rows (#2263). From then until it commits, it holds
+  back the horizon of other VACUUMs like any short transaction. It keeps the
+  flag while it sets the visibility map.
+- Before #2263 was fixed, a reader could keep a retired group's `row_group`
+  row while its other catalog rows were deleted. Reading such a table now fails
+  with SQLSTATE XX001, `columnar row group N of relation "t" has no column
+  chunks`, rather than returning the group's rows with every column NULL. Every
+  row of a retired group had been deleted. A superuser can remove the leftover
+  by hand: `DELETE FROM pgcolumnar.<catalog> WHERE storage_id =
+  pgcolumnar.get_storage_id('t') AND group_number = N` for `zone_map`, `bloom`,
+  `delete_vector` and then `row_group`.
 - `REPACK`, `VACUUM FULL` and `CLUSTER` are not supported on a columnar table; the
   copy-for-cluster path raises an error. `REPACK` arrives in PostgreSQL 19 and
   replaces the other two, and it dispatches through the same path, so it is

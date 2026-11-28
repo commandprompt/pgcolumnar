@@ -107,6 +107,7 @@ bool		pgcolumnar_autovacuum_expire = false;
 int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
 int			pgcolumnar_rewrite_lock_timeout = 10000;	/* ms; 0 waits without limit (#2074) */
 int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
+int			pgcolumnar_flush_hold_ms = 0;	/* dev/test: #2266 flush catalog order */
 
 /* pgcolumnar.objstore_s3_addressing (#621, #2091) */
 static const struct config_enum_entry pgcolumnar_s3_addressing_options[] = {
@@ -1923,6 +1924,41 @@ pgcolumnar_scan_analyze_next_tuple(COLUMNAR_ANALYZE_NEXT_TUPLE_ARGS)
 	}
 }
 
+/*
+ * pgcolumnar_leave_lazy_vacuum
+ *		Take this backend out of PROC_IN_VACUUM before lazy VACUUM writes its
+ *		first catalog row (#2263).
+ *
+ * Core sets PROC_IN_VACUUM for a lazy VACUUM, and GetSnapshotData leaves the
+ * xid of such a backend out of every other backend's snapshot. Core's own lazy
+ * VACUUM therefore writes nothing transactional: "we mustn't do any regular
+ * updates" (vacuum.c, above vac_update_relstats). The retirement below deletes
+ * catalog rows and inserts free_space rows. A reader that ran while the VACUUM
+ * was still open found the deleting xid neither in its snapshot nor committed,
+ * took it for aborted, and set HEAP_XMAX_INVALID on the tuple, so the delete
+ * was lost when the VACUUM committed. Measured: the row_group row of a retired
+ * group survived while its column_chunk and delete_vector rows were deleted,
+ * and the group's one deleted row came back with every column NULL.
+ *
+ * Clearing the flag before this transaction has an xid is enough. A snapshot
+ * taken before the xid exists has its xmax at or below it and treats it as
+ * running, and every snapshot taken after the clear lists it. The flag's other
+ * effect, that other VACUUMs ignore this backend's xmin, ends here too, which
+ * only makes their horizon more conservative for the rest of this short
+ * transaction. Core clears the remaining vacuum flags at transaction end.
+ */
+static void
+pgcolumnar_leave_lazy_vacuum(void)
+{
+	/* nothing earlier in relation_vacuum writes, so there is no xid to hide */
+	Assert(!TransactionIdIsValid(GetTopTransactionIdIfAny()));
+
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	MyProc->statusFlags &= ~PROC_IN_VACUUM;
+	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
+	LWLockRelease(ProcArrayLock);
+}
+
 /* VACUUM: mark all-visible groups in the VM fork and retire fully-deleted
  * groups online, both under ShareUpdateExclusiveLock */
 static void
@@ -2008,7 +2044,12 @@ pgcolumnar_relation_vacuum(Relation rel, COLUMNAR_VACUUM_PARAMS params,
 	 * every snapshot agrees are dead) and is safe under ShareUpdateExclusiveLock,
 	 * so a plain VACUUM / autovacuum reclaims fully-deleted groups online without
 	 * the AccessExclusiveLock rewrite.
+	 *
+	 * Those catalog writes are transactional, so the VACUUM first stops
+	 * hiding its xid from other snapshots (#2263). The steps above write only
+	 * the VM fork and pg_class in place, and keep PROC_IN_VACUUM.
 	 */
+	pgcolumnar_leave_lazy_vacuum();
 	PgColumnarRetireFullyDeletedGroups(rel);
 }
 
@@ -5276,6 +5317,22 @@ _PG_init(void)
 							"the all-visible blocks and setting them.",
 							NULL,
 							&pgcolumnar_vm_set_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
+							NULL, NULL, NULL);
+
+	/*
+	 * A developer pause for the row-group flush (#2266): it waits this long after
+	 * the group's column_chunk, zone_map, bloom and sketch rows and before its
+	 * row_group row, so a test can run a reader in that window. Superuser-only
+	 * and off by default.
+	 */
+	DefineCustomIntVariable("pgcolumnar.flush_hold_ms",
+							"Dev/test: wait this many ms in a row-group flush before "
+							"its row_group catalog row is inserted.",
+							NULL,
+							&pgcolumnar_flush_hold_ms,
 							0, 0, 600000,
 							PGC_SUSET,
 							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,

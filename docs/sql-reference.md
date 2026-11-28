@@ -579,6 +579,17 @@ than the base table, the planner scans the projection instead. See
 Declares a projection on `rel` named `name`, storing `columns`, sorted on
 `sort_key`. When you add the projection, pgColumnar fills it with the rows that exist.
 
+It takes a SHARE lock on `rel` and holds it until the transaction ends, as
+`CREATE INDEX` does (#2215). Writes from other sessions wait for that
+transaction, and it waits for theirs, so every row reaches the projection. Reads
+do not wait. `pgcolumnar.parallel_copy` into `rel` later in the same transaction
+is refused with `55000`, because its workers could not see the uncommitted
+projection. Load with `COPY` in that transaction, or commit first.
+
+Like `CREATE INDEX`, two transactions that each add a projection and then write
+to the other's table can deadlock. PostgreSQL detects the deadlock and rolls one
+of them back.
+
 ```sql
 SELECT pgcolumnar.add_projection(
     'events', 'events_by_customer',
@@ -590,6 +601,12 @@ SELECT pgcolumnar.add_projection(
 
 Drops a projection and frees its storage. It also removes the declaration, so a
 later rebuild does not create the projection again.
+
+It takes a SHARE ROW EXCLUSIVE lock on `rel` and holds it until the transaction
+ends (#2215). Writes from other sessions wait for that transaction, so none of
+them writes into the storage being freed. Reads do not wait. As after
+`add_projection`, `pgcolumnar.parallel_copy` into `rel` later in the same
+transaction is refused with `55000`.
 
 ```sql
 SELECT pgcolumnar.drop_projection('events', 'events_by_customer');
@@ -1008,6 +1025,15 @@ reads into `bytea`. A `Binary` column reads into `text`, `varchar`, `json`,
 `jsonb`, or a `numeric` declared without a precision or with one above 38. It
 does not read into a `numeric(p,s)` with `p` up to 38. A `LargeUtf8`,
 `LargeBinary` or `Null` column is refused for every target.
+
+The reader checks a field's type against the target column even when the
+field has no type table (#2186). Such a field is refused with `42804` if the
+column cannot hold its type. It is refused as a damaged file, with `XX001`, if
+its type has parameters in the Arrow schema. Those types are integer, float,
+decimal, date, time, timestamp, duration, fixed-size binary and map. A string,
+binary, boolean, list or struct field with no type table still imports. A list,
+map or struct field with no child fields is refused with `XX001` too. pyarrow
+does not write such files.
 
 A `Decimal` column reads only into a `numeric(p,s)` with `p` up to 38. It is
 refused with `42804` for a `numeric` declared without a precision or with one

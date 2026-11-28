@@ -26,6 +26,8 @@
 #include "catalog/pg_type.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
+#include "pgstat.h"
+#include "storage/latch.h"
 #include "libpq/pqsignal.h"
 #include "port/atomics.h"
 #include "port/pg_bitutils.h"
@@ -3498,6 +3500,31 @@ reset_stripe(PgColumnarWriteState *writeState)
 }
 
 /*
+ * flush_hold
+ *		Dev/test pause (#2266): wait pgcolumnar.flush_hold_ms, interruptibly,
+ *		before a flush inserts its row_group row. Zero (the default) returns at
+ *		once.
+ */
+static void
+flush_hold(void)
+{
+	long		remaining = (long) pgcolumnar_flush_hold_ms;
+
+	while (remaining > 0)
+	{
+		long		slice = Min(remaining, 1000L);
+		int			rc;
+
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   slice, PG_WAIT_EXTENSION);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		remaining -= slice;
+	}
+}
+
+/*
  * flush_row_group
  *		Write the buffered stripe as one row group. With `keep`, the buffer and
  *		its reservation survive the write, so the same rows can be written again,
@@ -3751,17 +3778,6 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 	PgColumnarBeginMetadataFlush();
 	PG_TRY();
 	{
-		{
-			NativeRowGroupMetadata rg;
-
-			rg.storageId = writeState->storageId;
-			rg.groupNumber = groupNumber;
-			rg.fileOffset = fileOffset;
-			rg.rowCount = rowCount;
-			rg.byteLength = dataLength;
-			rg.firstRowNumber = writeState->stripeFirstRowNumber;
-			PgColumnarInsertRowGroupRow(&rg);
-		}
 		for (c = 0; c < natts; c++)
 		{
 			NativeColumnChunkMetadata cc;
@@ -3793,6 +3809,32 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 											  writeState->sketchRegs[c],
 											  PGC_SKETCH_REGISTERS);
 				}
+
+		/*
+		 * THE row_group ROW GOES LAST (#2266). A reader finds a group through
+		 * its row_group row, and a dirty or SnapshotAny reader sees this
+		 * transaction's rows as soon as they are inserted: the unique check of
+		 * a concurrent INSERT ... ON CONFLICT does, and then decodes the row.
+		 * Inserted first, the row_group row was visible to it before its
+		 * column_chunk rows, and the reader's refusal of a group with data and
+		 * no chunks fired on a correct statement. Inserted last, whoever sees
+		 * the row_group row also sees every other catalog row of the group,
+		 * and the data bytes, written above, are already on disk. Before this
+		 * insert the rows are as invisible to other backends as rows still
+		 * buffered in memory, which the unique-key locks already cover.
+		 */
+		flush_hold();
+		{
+			NativeRowGroupMetadata rg;
+
+			rg.storageId = writeState->storageId;
+			rg.groupNumber = groupNumber;
+			rg.fileOffset = fileOffset;
+			rg.rowCount = rowCount;
+			rg.byteLength = dataLength;
+			rg.firstRowNumber = writeState->stripeFirstRowNumber;
+			PgColumnarInsertRowGroupRow(&rg);
+		}
 
 		PgColumnarEndMetadataFlush();
 	}

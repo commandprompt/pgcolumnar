@@ -340,6 +340,8 @@ SUITES=(
 	unique_conc
 	update_conc
 	vacuum_lock_privilege
+	vacuum_retire_snapshot
+	vacuum_retire_visibility
 	vacuum_sorted_gate
 	vacuum_stripe_count
 	validity_elision
