@@ -282,6 +282,17 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/unique_conc.sh` and `test_unique_conc.py` pin the scope of the insert
+  key lock from the side that must not wait (#2192). With the first inserter
+  still mid-statement, a second inserter does not wait in four cases: a NULL
+  range on a gist exclusion constraint, a different key on a DEFERRABLE unique
+  constraint, a row outside a partial exclusion constraint's WHERE, and the same
+  key on a table whose only index is not unique. A row inside that WHERE still
+  waits and gets `23P01`. Before this, locking every index, locking a deferrable
+  unique index as one bucket, locking NULL keys or ignoring the predicate on a
+  coarse index, or never locking a partial coarse index, each passed both
+  suites. The pytest twin's teardown now cancels a statement still running and
+  waits until the race's sessions are gone before the next test. Test-only.
 - A lock of the `parallel_copy` caller's own on a table its loaders reach
   through a foreign key, a trigger or a sequence, or a write to a fresh
   columnar table a trigger writes, ends with `40P01` within `deadlock_timeout`

@@ -42,7 +42,10 @@
 # outside the predicate), NULLS DISTINCT (no false conflict) and NULLS NOT
 # DISTINCT (PG15+), a same-statement duplicate, an aborted first inserter, and
 # (#2063) exclusion constraints (gist && and btree =, plain and DEFERRABLE)
-# and a DEFERRABLE unique constraint.
+# and a DEFERRABLE unique constraint. (#2192) The lock's scope from the other
+# side: a NULL range on an exclusion constraint, a different key on a DEFERRABLE
+# unique constraint, a row outside a partial exclusion constraint's predicate,
+# and a non-unique index must not wait.
 #
 # Written fresh for pgColumnar; it reuses no upstream test file or expected
 # output. Derived from the format/interface spec, the issue #5 design analysis,
@@ -290,6 +293,22 @@ returned() {
 # index name alone would also match another error that named it (#1341).
 violated() {
 	out_has "$1" "ERROR:  23505: duplicate key value violates unique constraint \"$2\"" && echo yes || echo no
+}
+
+# t2_no_wait TAG SQL: with T1 already paused, T2 runs SQL under a 5s lock_timeout
+# and commits. Sets T2_SEEN to "<sessions waiting once T2's INSERT returned>|returned",
+# or "...|refused" when the INSERT waited and was refused (#2192). It sets a variable
+# rather than printing, because a bounded wait that runs out records its failure, and
+# a $(...) subshell would lose that record.
+t2_no_wait() {
+	local tag="$1" sql="$2"
+	send_wait s2 "${tag}_beg" "BEGIN;"
+	send s2 "SET LOCAL lock_timeout = '5s';"
+	send_wait s2 "${tag}_ins" "$sql"
+	send_wait s2 "${tag}_ok" "SELECT 'returned_${tag}';"
+	[ "$(returned s2 "returned_${tag}")" = returned ] && wait_idle_intx cc_s2
+	T2_SEEN="$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")|$(returned s2 "returned_${tag}")"
+	send_wait s2 "${tag}_com" "COMMIT;"
 }
 
 ctl_q "CREATE EXTENSION pgcolumnar;" >/dev/null
@@ -655,6 +674,19 @@ check "9 exclusion constraint: the overlapping inserter got an exclusion_violati
 check "9 exclusion constraint: exactly one row overlaps [5,15)" \
 	"$(ctl_q "SELECT count(*) FROM s_ex WHERE r && int4range(5,15);")" "1"
 
+# 9, NULL (#2192): a NULL range overlaps nothing, so it takes no lock even on a
+# coarse index, and T2 must not wait behind T1. T1 stays paused, because once T1's
+# statement ends any second insert into the table waits for T1's transaction.
+# T1's pausing row differs from scenario 9's, or T1 would conflict with it.
+HKEY=1019
+pause_s1 "INSERT INTO s_ex SELECT CASE WHEN g=2 THEN cq_block($HKEY, int4range(200,201)) ELSE int4range(20,30) END FROM generate_series(1,2) g;"
+t2_no_wait exn "INSERT INTO s_ex VALUES (NULL);"
+check "9 exclusion constraint: a NULL range does not wait behind T1" "$T2_SEEN" "0|returned"
+release_s1
+send_wait s1 "s1_com_9n" "COMMIT;"
+check "9 exclusion constraint: the NULL range and T1's row are both kept" \
+	"$(ctl_q "SELECT count(*) FILTER (WHERE r IS NULL) || ',' || count(*) FILTER (WHERE r = int4range(20,30)) FROM s_ex;")" "1,1"
+
 # 10, 11: a DEFERRABLE unique constraint, checked at statement end (10) and at
 # commit (11). Both must wait for T1 and then fail with 23505.
 for dd in "10 di IMMEDIATE" "11 dd DEFERRED"; do
@@ -678,6 +710,16 @@ for dd in "10 di IMMEDIATE" "11 dd DEFERRED"; do
 		"$(violated s2 "s_${tag}_u")" "yes"
 	check "$num deferrable initially $mode unique: exactly one row with key 1" \
 		"$(ctl_q "SELECT count(*) FROM s_$tag WHERE k = 1;")" "1"
+	# A different key hashes to its own bucket, so T2 must not wait (#2192). A
+	# deferrable index locked as one bucket made this T2 wait for T1.
+	HKEY=$((1020 + num))
+	pause_s1 "INSERT INTO s_$tag SELECT CASE WHEN g=2 THEN cq_block($HKEY, -2) ELSE 2 END FROM generate_series(1,2) g;"
+	t2_no_wait "${tag}_k3" "INSERT INTO s_$tag VALUES (3);"
+	check "$num deferrable initially $mode unique: a different-key inserter does not wait" "$T2_SEEN" "0|returned"
+	release_s1
+	send_wait s1 "s1_com_${num}k" "COMMIT;"
+	check "$num deferrable initially $mode unique: both different keys are kept" \
+		"$(ctl_q "SELECT string_agg(k::text, ',' ORDER BY k) FROM s_$tag WHERE k IN (2, 3);")" "2,3"
 done
 
 # 12: a btree exclusion constraint with equality, (id WITH =), the second form
@@ -732,6 +774,53 @@ for xf in "xg|DEFERRED|gist|int4range|r WITH &&|int4range(1,10)|int4range(100,10
 	check "$xname: exactly one conflicting row" \
 		"$(ctl_q "SELECT count(*) FROM s_$tag WHERE $hit;")" "1"
 done
+
+# ===========================================================================
+# Scenarios 14-15 (#2192): the scope of the key lock, pinned from both sides.
+# ===========================================================================
+# 14: a partial exclusion constraint. A row inside its WHERE takes the index's
+# one lock, so an overlapping T2 waits and gets 23P01. A row outside it is not
+# covered, so T2 must not wait, even though the index is locked as one bucket.
+ctl_q "CREATE TABLE s_xp (r int4range, active boolean, CONSTRAINT s_xp_excl EXCLUDE USING gist (r WITH &&) WHERE (active)) USING pgcolumnar;" >/dev/null
+HKEY=1033
+pause_s1 "INSERT INTO s_xp SELECT CASE WHEN g=2 THEN cq_block($HKEY, int4range(100,101)) ELSE int4range(1,10) END, true FROM generate_series(1,2) g;"
+send_wait s2 "xp_beg" "BEGIN;"
+send s2 "INSERT INTO s_xp VALUES (int4range(5,15), true);"
+send s2 "\\echo <<xp_ins>>"
+wait_blocked cc_s2 asserted
+check "14 partial exclusion constraint: an overlapping row inside the predicate blocks" \
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
+send s2 "COMMIT;"
+send s2 "\\echo <<xp_com>>"
+release_s1
+send_wait s1 "s1_com_14a" "COMMIT;"
+wait_sentinel s2 xp_ins
+wait_sentinel s2 xp_com
+check "14 partial exclusion constraint: the inside overlapping row got an exclusion_violation" \
+	"$(out_has s2 'ERROR:  23P01: conflicting key value violates exclusion constraint "s_xp_excl"' && echo yes || echo no)" "yes"
+check "14 partial exclusion constraint: exactly one active row overlaps [5,15)" \
+	"$(ctl_q "SELECT count(*) FROM s_xp WHERE active AND r && int4range(5,15);")" "1"
+HKEY=1034
+pause_s1 "INSERT INTO s_xp SELECT CASE WHEN g=2 THEN cq_block($HKEY, int4range(200,201)) ELSE int4range(40,50) END, true FROM generate_series(1,2) g;"
+t2_no_wait xpo "INSERT INTO s_xp VALUES (int4range(45,55), false);"
+check "14 partial exclusion constraint: an overlapping row outside the predicate does not wait" "$T2_SEEN" "0|returned"
+release_s1
+send_wait s1 "s1_com_14b" "COMMIT;"
+check "14 partial exclusion constraint: the inactive overlapping row and T1's row are both kept" \
+	"$(ctl_q "SELECT count(*) FILTER (WHERE NOT active AND r && int4range(40,50)) || ',' || count(*) FILTER (WHERE active AND r = int4range(40,50)) FROM s_xp;")" "1,1"
+
+# 15: a table whose only index on k is not unique. No constraint is checked, so
+# no key lock is taken, and a same-key T2 must not wait while T1's statement runs.
+ctl_q "CREATE TABLE s_nu (k int) USING pgcolumnar;" >/dev/null
+ctl_q "CREATE INDEX s_nu_idx ON s_nu (k);" >/dev/null
+HKEY=1035
+pause_s1 "INSERT INTO s_nu SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 1 END FROM generate_series(1,2) g;"
+t2_no_wait nu "INSERT INTO s_nu VALUES (1);"
+check "15 non-unique index: a same-key inserter does not wait" "$T2_SEEN" "0|returned"
+release_s1
+send_wait s1 "s1_com_15" "COMMIT;"
+check "15 non-unique index: both same-key rows are kept" \
+	"$(ctl_q "SELECT count(*) FROM s_nu WHERE k = 1;")" "2"
 
 send s1 "\\q"
 send s2 "\\q"
