@@ -1177,6 +1177,21 @@ The target may be one of two kinds:
 - A partitioned table whose partitions are columnar. Each worker takes a distinct
   set of partitions and writes one file per partition.
 
+The dispatcher takes ACCESS SHARE on the table and on every leaf partition. It
+does so before any worker starts, and holds the lock to the end of the
+transaction. Each worker takes ACCESS SHARE again in its own transaction. The
+caller waits for its workers in the lock manager (#2245). Each worker holds an
+advisory lock of class 108 while it runs, and these show in `pg_locks`. Another
+session's ACCESS EXCLUSIVE request can queue behind the caller's lock, for
+example from `LOCK TABLE`, `TRUNCATE` or `ALTER TABLE`. The workers then queue
+behind that request. The deadlock detector moves them ahead of it after
+`deadlock_timeout`, and the export goes on. Before, the export waited until
+`statement_timeout`. The caller's waits on its workers are not limited by
+`lock_timeout`, and `log_lock_waits` does not report them. Its wait for the
+table itself is, as before. A worker's error reaches the caller with its
+SQLSTATE, detail and hint. So a worker that the deadlock detector picks as the
+victim gives the caller `40P01`.
+
 The export is read-only and consistent. The dispatcher exports one snapshot and
 every worker imports it. The files together are the committed image of the table
 at call time. This holds even when the call runs inside a transaction with

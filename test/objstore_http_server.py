@@ -105,6 +105,15 @@
 #                    application-data record header and 64 random bytes, so
 #                    SSL_read fails with "decryption failed or bad record mac".
 #
+# Interim heads and the keep-alive race (#2258):
+#   /fin103/<file>   answer the first request on a connection; answer a later
+#                    GET with a complete 103 Early Hints head, then close: a FIN
+#                    over plain TCP, a FIN and no close_notify over TLS. The
+#                    server has begun to answer, so the client must not take
+#                    the close for a stale keep-alive connection.
+#   /hint103/<file>  serve normally, but send a 103 Early Hints head before
+#                    every answer to a HEAD or GET.
+#
 # --reset-all resets every request, of any method and on every connection, once
 # its head is read and before any answer: a read, a LIST, a write and a REST
 # catalog request all fail on a fresh connection with ECONNRESET.
@@ -276,6 +285,7 @@ class TLSServer(ThreadingHTTPServer):
             f.write("HANDSHAKE - -\n")
         return self.tls_ctx.wrap_socket(sock, server_side=True), addr
 
+EARLY_HINTS = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 VERSIONED = ("vswap", "vnull", "vlong", "vdeny", "vhswap")
 AUTH_RE = re.compile(
@@ -360,7 +370,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _reset_mode_later(self, mode):
         """True when a reset mode's request is a later one on its connection."""
-        return mode in ("rsthead", "rstbody", "finka", "finbody", "garbka", "badmac") and \
+        return mode in ("rsthead", "rstbody", "finka", "finbody", "garbka", "badmac",
+                        "fin103") and \
             getattr(self, "_served", 0) > 0
 
     def handle_expect_100(self):
@@ -457,7 +468,7 @@ class Handler(BaseHTTPRequestHandler):
                        "/hswap/", "/vhswap/", "/whswap/",
                        "/closeka/", "/rstka/", "/rsthead/", "/rstbody/", "/rstall/",
                        "/rstfin/", "/finka/", "/finbody/", "/finfresh/", "/garbka/",
-                       "/badmac/"):
+                       "/badmac/", "/fin103/", "/hint103/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -621,6 +632,8 @@ class Handler(BaseHTTPRequestHandler):
             self._after = "rstnext"
         if mode == "finfresh":
             self._after = "close"
+        if mode == "hint103":
+            self.wfile.write(EARLY_HINTS)
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
@@ -828,6 +841,11 @@ class Handler(BaseHTTPRequestHandler):
                 f.write("FINKA - -\n")
             self._after = "close"
             return
+        if mode == "fin103" and self._reset_mode_later(mode):
+            self.wfile.write(EARLY_HINTS)
+            self.wfile.flush()
+            self._after = "close"
+            return
         if mode == "garbka" and self._reset_mode_later(mode):
             self.wfile.flush()
             os.write(self.connection.fileno(), b"HTTP/1.1 206 Partial Content\r\n\r\n")
@@ -875,6 +893,8 @@ class Handler(BaseHTTPRequestHandler):
         if want is not None and (mode in ("weak", "whswap") or want.strip() != etag):
             self._deny(412, "PreconditionFailed")
             return
+        if mode == "hint103":
+            self.wfile.write(EARLY_HINTS)
 
         rng = self.headers.get("Range")
         m = RANGE_RE.match(rng.replace(" ", "")) if rng else None
