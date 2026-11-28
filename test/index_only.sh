@@ -473,4 +473,45 @@ check "#2170 delete between vacuum's two steps: the 68 blocks this vacuum set in
 check "#2170 delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
 check "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows" "$vm_all" "39798"
 
+# #2257 review, B1: the second pass must reach the LAST block of a run. In
+# vr_last's 20,000 rows, row group 1's run is blocks 1..67, and ids
+# 19500..19510 lie in block 67 (rows 19497..19787), its last block. The DELETE
+# commits during the hold, so the set flips block 67 back and only the second
+# pass can clear it.
+vm_mid vr_last 20000 "DELETE FROM vr_last WHERE id BETWEEN 19500 AND 19510;" \
+	"SELECT pgcolumnar.vm_is_visible('vr_last', 67);" "SELECT pgcolumnar.vm_is_visible('vr_last', 67);" \
+	"SELECT count(*) FROM vr_last WHERE id BETWEEN 19500 AND 19510;"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: block 67 all-visible before the writer starts" "$vm_before" "t"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "#2170 delete in the last block of a run between vacuum's two steps: block 67 not all-visible after vacuum" "$vm_after" "f"
+check "#2170 delete in the last block of a run between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
+# #2257 review, B2: the set must stop at the end of a run. vr_edge holds three
+# contiguous 1000-row groups (stripe_row_limit 1000): rows 1..1000, 1001..2000
+# and 2001..3000. Block 3 (rows 873..1163) straddles groups 1 and 2. A committed
+# DELETE of id 1100 (group 2, block 3), then a plain VACUUM: groups 1 and 3 are
+# all-visible, their runs are blocks 1..2 and 7..9, and block 3, one past the
+# first run, must stay unset.
+psql_run "CREATE TABLE vr_edge (id int, pad int) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('vr_edge', stripe_row_limit => 1000);"
+psql_run "INSERT INTO vr_edge SELECT g, g FROM generate_series(1, 3000) g;"
+psql_run "CREATE INDEX vr_edge_id ON vr_edge (id);"
+psql_run "DELETE FROM vr_edge WHERE id = 1100;"
+psql_run "VACUUM vr_edge;"
+edge_blocks="$(q "SELECT string_agg((ctid::text::point)[0]::int::text, '|' ORDER BY id) FROM vr_edge WHERE id IN (1000, 1001, 1099, 1101);")"
+edge_set="$(q "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_edge', b)) FROM (VALUES (1), (2), (7), (8), (9)) v(b);")"
+edge_b3="$(q "SELECT pgcolumnar.vm_is_visible('vr_edge', 3);")"
+plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_edge WHERE id = 1100;")"
+case "$plan" in
+*'Index Only Scan'*)
+	edge_ios="$(q "SELECT count(*) FROM vr_edge WHERE id = 1100;")" ;;
+*)
+	edge_ios="no index-only scan was planned: $plan" ;;
+esac
+check "#2170 premise: a delete in a block shared by two row groups: ids 1000, 1001, 1099 and 1101 all lie in block 3" "$edge_blocks" "3|3|3|3"
+check "#2170 premise: a delete in a block shared by two row groups: vacuum set the five blocks of the clean groups' runs" "$edge_set" "5"
+check "#2170 a delete in a block shared by two row groups: block 3 not all-visible after vacuum" "$edge_b3" "f"
+check "#2170 a delete in a block shared by two row groups: index-only scan returns no deleted row" "$edge_ios" "0"
+
 pgc_summary

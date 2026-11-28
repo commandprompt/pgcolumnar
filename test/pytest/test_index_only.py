@@ -324,6 +324,25 @@ def io(pgc_cluster):
                 "INSERT INTO vr_keep SELECT g, g FROM generate_series(20001, 40000) g")
         r["keep fresh"] = _value(dsn, keep.format(g2))
         r["keep all"] = _ios(dsn, "SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000")
+        # #2257 review, B1: ids 19500..19510 lie in block 67, the last block of row
+        # group 1's run (blocks 1..67); the second pass must reach it.
+        _vm_mid(dsn, r, "last", "vr_last", 20000, "DELETE FROM vr_last WHERE id BETWEEN 19500 AND 19510",
+                _vis("vr_last", 67), _vis("vr_last", 67), rng.format("vr_last", 19500, 19510))
+        # B2: three contiguous 1000-row groups; block 3 straddles groups 1 and 2, and
+        # id 1100 (group 2) is deleted before a plain VACUUM. The runs of the clean
+        # groups are blocks 1..2 and 7..9; block 3, one past the first, stays unset.
+        _run(dsn, "CREATE TABLE vr_edge (id int, pad int) USING pgcolumnar; "
+                  "SELECT pgcolumnar.set_options('vr_edge', stripe_row_limit => 1000); "
+                  "INSERT INTO vr_edge SELECT g, g FROM generate_series(1, 3000) g; "
+                  "CREATE INDEX vr_edge_id ON vr_edge (id); "
+                  "DELETE FROM vr_edge WHERE id = 1100;")
+        _run(dsn, "VACUUM vr_edge")
+        r["edge blocks"] = _value(dsn, "SELECT string_agg((ctid::text::point)[0]::int::text, '|' ORDER BY id) "
+                                       "FROM vr_edge WHERE id IN (1000, 1001, 1099, 1101)")
+        r["edge set"] = _value(dsn, "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_edge', b)) "
+                                    "FROM (VALUES (1), (2), (7), (8), (9)) v(b)")
+        r["edge b3"] = _value(dsn, _vis("vr_edge", 3))
+        r["edge ios"] = _ios(dsn, "SELECT count(*) FROM vr_edge WHERE id = 1100")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -689,3 +708,48 @@ def test_2170_index_only_scan_returns_no_deleted_row(io, expect):
 def test_2170_index_only_count_of_every_id_matches_live_rows(io, expect):
     expect.text(io["keep all"], "39798",
                 "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows")
+
+
+def test_2170_premise_last_block_67_all_visible_before(io, expect):
+    expect.text(io["last before"], "t",
+                "#2170 premise: delete in the last block of a run between vacuum's two steps: block 67 all-visible before the writer starts")
+
+
+def test_2170_premise_last_block_vacuum_paused_before_its_set(io, expect):
+    expect.text(io["last held"], "yes",
+                "#2170 premise: delete in the last block of a run between vacuum's two steps: vacuum paused before its set")
+
+
+def test_2170_premise_last_block_delete_committed_while_paused(io, expect):
+    expect.text(io.get("last still", "not reached"), "yes",
+                "#2170 premise: delete in the last block of a run between vacuum's two steps: the delete committed while vacuum was paused")
+
+
+def test_2170_last_block_67_not_all_visible_after(io, expect):
+    expect.text(io["last after"], "f",
+                "#2170 delete in the last block of a run between vacuum's two steps: block 67 not all-visible after vacuum")
+
+
+def test_2170_last_block_index_only_scan_returns_no_deleted_row(io, expect):
+    expect.text(io["last ios"], "0",
+                "#2170 delete in the last block of a run between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_2170_premise_shared_block_ids_lie_in_block_3(io, expect):
+    expect.text(io["edge blocks"], "3|3|3|3",
+                "#2170 premise: a delete in a block shared by two row groups: ids 1000, 1001, 1099 and 1101 all lie in block 3")
+
+
+def test_2170_premise_shared_block_vacuum_set_clean_runs(io, expect):
+    expect.text(io["edge set"], "5",
+                "#2170 premise: a delete in a block shared by two row groups: vacuum set the five blocks of the clean groups' runs")
+
+
+def test_2170_shared_block_3_not_all_visible_after(io, expect):
+    expect.text(io["edge b3"], "f",
+                "#2170 a delete in a block shared by two row groups: block 3 not all-visible after vacuum")
+
+
+def test_2170_shared_block_index_only_scan_returns_no_deleted_row(io, expect):
+    expect.text(io["edge ios"], "0",
+                "#2170 a delete in a block shared by two row groups: index-only scan returns no deleted row")
