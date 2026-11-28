@@ -2696,7 +2696,17 @@ guard_tests 910
 # cluster_tests 6551 -> 6552, still #2215, for the review of #2226 at d49f08e1:
 # test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6552 -> 6563 for #2161's eleven tests in test_parallel_copy.py:
+# cluster_tests 6552 -> 6561 for #2186's nine tests in test_arrow_import.py: a float64 field with no type table
+# refused for bigint (42804) and malformed for float8 (XX001), int64, timestamp and decimal malformed, the other
+# parameterised tags malformed, a list element with no type table, the parameterless control and the null field,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6127 collected.
+# cluster_tests 6561 -> 6565 for the review of #2224 (#2186): four tests in test_arrow_import.py, a field with
+# neither tag nor type table, a struct child and a map value, a second column, and a list with no children vector,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6131 collected.
+# cluster_tests 6565 -> 6566 for the review of #2224 at b9747c41 (#2186): one test in test_arrow_import.py, a
+# struct or map field with no children vector, by collection over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it): 6132 collected.
+# cluster_tests 6566 -> 6577 for #2161's eleven tests in test_parallel_copy.py:
 # test_parallel_copy_into_an_empty_projection_loads_every_row (5 parametrized: 2 and 4 workers into a projection
 # that holds no rows yet load every row and fill the projection; 1 worker, a projection that already holds rows
 # and no projection are the controls), test_parallel_copy_records_the_empty_projections_storage_row_as_one_worker_does,
@@ -2706,10 +2716,10 @@ guard_tests 910
 # test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
 # test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6563 -> 6565, still #2161, after #2226 (#2215) made the add_projection race unreachable: the two
+# cluster_tests 6577 -> 6579, still #2161, after #2226 (#2215) made the add_projection race unreachable: the two
 # race tests, test_parallel_copy_projection_committed_during_the_load_premise and _fails_cleanly, are replaced by
 # test_parallel_copy_truncated_projections_premise, test_parallel_copy_after_truncate_fills_both_projections,
 # test_parallel_copy_storage_row_gone_during_the_load_premise and
 # test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6565
+cluster_tests 6579
