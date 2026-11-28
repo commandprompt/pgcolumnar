@@ -674,6 +674,13 @@ true until the next version shipped.
   data is on disk but whose column_chunk rows are gone, with XX001, instead of
   returning its rows as NULLs. A table damaged by an earlier version reports
   that error until the leftover group is removed (docs/limitations.md).
+  A row-group flush now inserts its `row_group` row after the group's other
+  catalog rows (#2266). The unique check of a concurrent `INSERT ... ON
+  CONFLICT` reads another transaction's rows as they are inserted. It had
+  found the `row_group` row before its column chunks, and the refusal turned
+  that into XX001. It now waits for the writer, as before. A new
+  superuser setting for tests, `pgcolumnar.flush_hold_ms`, pauses a flush
+  just before that insert (docs/configuration.md).
   `test/vacuum_retire_visibility.sh` and `test_vacuum_retire_visibility.py`.
 - The same change fixes a plain VACUUM that failed with `duplicate key value
   violates unique constraint "free_space_pkey"` under concurrent deletes
