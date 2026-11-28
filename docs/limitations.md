@@ -829,7 +829,7 @@ wrong results, and no error:
   next restart sees that stripe. The row just after the stripe boundary can then
   match both the old and the new version of a row.
 
-This is tracked in #2064. Until it is fixed, read the table through an index
+This is tracked in #2267, part of #2064. Until it is fixed, read the table through an index
 in these statements. For the third case, a plan that reads the inner side once
 also avoids it, such as a hash join or a `Materialize` node.
 

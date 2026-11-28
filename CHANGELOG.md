@@ -634,7 +634,7 @@ true until the next version shipped.
   parallel worker refuses to run if the leader wrote under a command its
   snapshot could not hide. `pgcolumnar.debug_registry_cid_skew`, an internal
   setting for tests, drives that refusal. Sequential scans still see such rows
-  in three cases, now in docs/limitations.md and tracked in #2064.
+  in three cases, now in docs/limitations.md and tracked in #2267, part of #2064.
   `test/statement_self_visibility.sh` and `test_statement_self_visibility.py`.
 
 - Two writers to one table no longer deadlock on the chunk-group and
