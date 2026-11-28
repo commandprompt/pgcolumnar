@@ -136,13 +136,6 @@ def _restart(cluster, datadir, log, env):
     return _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], env).returncode == 0
 
 
-def _ready(out):
-    for _ in range(50):
-        if out.is_file() and "READY" in out.read_text(errors="replace"):
-            return
-        time.sleep(0.1)
-
-
 def _s3_state(proc, out, port):
     """-> "up" once the S3 fixture prints READY, which it does right after it binds its
     port. Otherwise, what was seen: whether the process is still running or exited,
@@ -198,7 +191,7 @@ def irv(pgc_cluster):
     if not _module_installed(pgc_cluster.pg_config):
         yield "objstore"
         return
-    from pgc_cluster import Cluster, pick_port
+    from pgc_cluster import Cluster, await_ready, pick_port
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-icevend-"))
     os.chmod(work, 0o777)
@@ -232,7 +225,9 @@ def irv(pgc_cluster):
              "--log", str(work / f"rest_{port}.log"), "--namespace", "db", "--table", "t",
              "--metadata-location", f"s3://{BUCKET}/db/t/metadata/apply.metadata.json", *extra],
             stdout=open(out, "w"), stderr=subprocess.STDOUT))
-        _ready(out)
+        # Stops the run when the fixture never says READY (#2165), as the shell's
+        # pgc_await_ready does; test_runshape.py tests await_ready itself.
+        await_ready(out, procs[-1], f"REST catalog fixture on port {port}")
         return f"http://127.0.0.1:{port}"
 
     def scan(cat, cols=COLS):
