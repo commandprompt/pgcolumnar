@@ -7742,6 +7742,10 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 | `test_a_stable_function_parallel_sequential_scan_inside_a_cte_delete[setting]` | the same inside a DELETE in a WITH clause |
 | `test_a_stable_function_parallel_sequential_scan_in_a_cursor[setting]` | the same in a cursor fetched after a later DELETE |
 | `test_without_preload_a_parallel_index_scan_is_refused_or_right` | review of #2269: on a private cluster started without pgcolumnar in `shared_preload_libraries`, the STABLE function's parallel index scan inside an UPDATE is refused or answers as heap does, never wrongly; today the library refuses to load with `cannot create PGC_POSTMASTER variables after startup` |
+| `test_a_loop_of_parallel_queries_after_a_write_completes` | second review of #2269: after a write in the transaction, a PL/pgSQL loop of 1,000 parallel queries completes with heap's total, so no registry copy is left attached per query |
+| `test_premise_the_rescanned_subquery_runs_a_gather` | premise: the correlated subquery below plans as a Gather |
+| `test_a_rescanned_gather_after_a_write_completes` | after a write, a Gather rescanned 1,000 times completes with heap's sum |
+| `test_a_write_then_a_parallel_query_leaks_no_segment` | a committed transaction with a write and two parallel queries gets no `resource was not closed` or `dynamic shared memory leak` warning, read through the connection's notices |
 | `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
 | `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
 | `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |
