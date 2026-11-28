@@ -425,7 +425,7 @@ SELECT 'end';
 SQL
 )"
 crash_after="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
-check "premise: both parallel queries failed with division by zero, and both later counts ran" \
+check "both parallel queries failed with division by zero, and both later counts ran" \
 	"$(grep -c 'division by zero' <<<"$a_out") $(grep -c '^[0-9][0-9]*$' <<<"$a_out")" "2 2"
 check "after a parallel query fails at top level and in a savepoint, the next transaction's write and parallel query run, and no backend crashes" \
 	"$( { [ -n "$crash_before" ] && [ -n "$crash_after" ]; } && echo "$((crash_after - crash_before)) crashes" || echo "the server log could not be read") $(tail -1 <<<"$a_out")" "0 crashes end"

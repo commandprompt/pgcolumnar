@@ -787,7 +787,7 @@ def test_after_failed_parallel_queries_the_next_transaction_does_not_crash(pgc_c
         last = str(exc).splitlines()[0]
     after = _crashes(pgc_cluster)
     expect.text(f"{errors} {counts}", "2 2",
-                "premise: both parallel queries failed with division by zero, and both later counts ran")
+                "both parallel queries failed with division by zero, and both later counts ran")
     crashes = "the server log could not be read" if before is None or after is None else f"{after - before} crashes"
     expect.text(f"{crashes} {last}", "0 crashes end",
                 "after a parallel query fails at top level and in a savepoint, the next transaction's write and "
