@@ -75,8 +75,12 @@ PG_FUNCTION_INFO_V1(pgcolumnar_vm_is_visible);
  *		WAL-logged. Idempotent: a no-op if the bit is already set. This writes
  *		only the VM fork -- there is no heap page to flag -- which is why it does
  *		not go through visibilitymap_set().
+ *
+ *		Returns true when this call flipped the bit from 0 to 1, false when it
+ *		was already set. The test and the set happen under the VM page's
+ *		exclusive lock, the lock a writer's clear takes too (#2170).
  */
-static void
+static bool
 PgColumnarVMSetVisible(Relation rel, BlockNumber blk)
 {
 	Buffer		vmbuf = InvalidBuffer;
@@ -84,6 +88,7 @@ PgColumnarVMSetVisible(Relation rel, BlockNumber blk)
 	char	   *map;
 	uint32		mapByte = COLUMNAR_VM_TO_MAPBYTE(blk);
 	uint8		mapBit = (uint8) (VISIBILITYMAP_ALL_VISIBLE << COLUMNAR_VM_TO_OFFSET(blk));
+	bool		flipped = false;
 
 	/* pin (extending the VM fork as needed) the page that holds blk's bit */
 	visibilitymap_pin(rel, blk, &vmbuf);
@@ -104,10 +109,12 @@ PgColumnarVMSetVisible(Relation rel, BlockNumber blk)
 			PageSetLSN(page, recptr);
 		}
 		END_CRIT_SECTION();
+		flipped = true;
 	}
 
 	LockBuffer(vmbuf, BUFFER_LOCK_UNLOCK);
 	ReleaseBuffer(vmbuf);
+	return flipped;
 }
 
 /*
@@ -320,7 +327,22 @@ vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
  *		pgcolumnar.vm_set_hold_ms pauses between the first computation and
  *		the set, so a test can commit a delete in that window.
  *
- *		Returns how many ROWS the surviving bits cover, which is what the caller
+ *		"Every bit it set" means the bits this VACUUM flipped from 0 to 1, not
+ *		every block of its first list (#2170). The second computation works by
+ *		row group, so a delete anywhere in a group takes every block of the
+ *		group out of the list, including blocks the delete did not touch. A bit
+ *		that was already 1 when this VACUUM reached it was not set by it, and
+ *		clearing it threw away an earlier VACUUM's index-only coverage of a
+ *		clean block until the next VACUUM. Leaving it is safe: only lazy VACUUM
+ *		sets bits, and two lazy VACUUMs of one table do not run at once
+ *		(ShareUpdateExclusiveLock). Every writer clears its rows' bits after it
+ *		writes them. A writer whose clear ran before this set left the bit 0,
+ *		so the set flips it and the second pass judges it. A bit still 1 at the
+ *		set means the writer's clear has not run yet, and it runs after the set.
+ *
+ *		Returns how many ROWS the blocks still all-visible at the second
+ *		computation cover (a kept bit of a block outside that list is not
+ *		counted: its group holds a change), which is what the caller
  *		needs to record the result in pg_class (#507). Rows and not blocks on
  *		purpose: these are *synthetic* blocks, rowNumber / K, and relpages counts
  *		stored pages -- on a 20,000,000-row table that is 68,730 against 45,994.
@@ -361,6 +383,9 @@ PgColumnarVMSetVisibleForRelation(Relation rel)
 	uint64		K = COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
 	VMBlockRun *runs;
 	VMBlockRun *again;
+	bool	   *flipped;
+	uint64		nblocks = 0;
+	uint64		pos;
 	int			n;
 	int			nagain;
 	int			i;
@@ -370,33 +395,41 @@ PgColumnarVMSetVisibleForRelation(Relation rel)
 	if (n == 0)
 		return 0;
 
+	for (i = 0; i < n; i++)
+		nblocks += runs[i].end - runs[i].start;
+	/* one flag per block of the first list, in walk order (#2170) */
+	flipped = palloc_extended(nblocks * sizeof(bool), MCXT_ALLOC_HUGE);
+
 	vm_set_hold();
 
+	pos = 0;
 	for (i = 0; i < n; i++)
 	{
 		BlockNumber b;
 
 		for (b = runs[i].start; b < runs[i].end; b++)
-			PgColumnarVMSetVisible(rel, b);
+			flipped[pos++] = PgColumnarVMSetVisible(rel, b);
 	}
 
 	/* both lists are sorted and disjoint, so one forward walk compares them */
 	again = vm_all_visible_runs(storageId, oldestXmin, &nagain);
+	pos = 0;
 	for (i = 0; i < n; i++)
 	{
 		BlockNumber b;
 
-		for (b = runs[i].start; b < runs[i].end; b++)
+		for (b = runs[i].start; b < runs[i].end; b++, pos++)
 		{
 			while (j < nagain && again[j].end <= b)
 				j++;
 			if (j < nagain && again[j].start <= b)
 				visibleRows += K;
-			else
+			else if (flipped[pos])
 				PgColumnarVMClearVisible(rel, b);
 		}
 	}
 
+	pfree(flipped);
 	pfree(runs);
 	if (again != NULL)
 		pfree(again);

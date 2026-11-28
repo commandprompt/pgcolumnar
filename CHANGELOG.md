@@ -637,6 +637,30 @@ true until the next version shipped.
   in three cases, now in docs/limitations.md and tracked in #2267, part of #2064.
   `test/statement_self_visibility.sh` and `test_statement_self_visibility.py`.
 
+- A lazy VACUUM no longer clears the all-visible bits of clean blocks that an
+  earlier VACUUM had set, when a DELETE commits while it runs (#2170). Its
+  second pass (#2059) cleared every block of its first list that had left the
+  all-visible row groups. That list works by row group, so a delete of one row
+  took the bits of every block in the group, and index-only scans fetched those
+  blocks again until the next VACUUM. Results stayed correct. The second pass
+  now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
+  already set is left to the writer, which clears its own rows' blocks after it
+  writes them. `test/index_only.sh` and `test_index_only.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` when a column's type is or contains a composite
+  whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
+  `TRUNCATE` or `LOCK TABLE` on that table (#2182). The column may be the
+  composite itself, an array of it, a domain over it, a range or multirange
+  over it, or a composite with it as a field. Each flush worker reads the type
+  cache, which opens a composite's table with ACCESS SHARE. The workers are not
+  in the inserting backend's lock group, so they waited on its lock, as in
+  #2072. A column whose type or collation was created in the same
+  transaction no longer makes a worker fail with a WARNING. The backend now
+  flushes such a row group serially, which stores the same bytes. A worker runs on its own snapshot, so
+  it cannot see what the transaction changed under the lock, such as an
+  attribute added to the composite; that is why the flush does not join the
+  workers to the backend's lock group instead. `parallel_flush_optin.sh` arm 8
+  and `test_parallel_flush_optin.py`.
 - Two writers to one table no longer deadlock on the chunk-group and
   storage-row locks (#2184). A writer holds the chunk-group lock of each row
   group it deletes from and the storage-row lock, which every flush of new
@@ -730,6 +754,38 @@ true until the next version shipped.
   `default_transaction_isolation` of `repeatable read` does not make it skip a
   busy table. docs/limitations.md and docs/sql-reference.md.
   `test/rewrite_snapshot.sh` and `test_rewrite_snapshot.py`.
+- A lazy VACUUM that retires a fully deleted row group no longer brings back a
+  deleted row with every column NULL (#2263). Core runs a lazy VACUUM with
+  PROC_IN_VACUUM set, and other backends leave its xid out of their snapshots.
+  The retirement deletes catalog rows inside that VACUUM's transaction. A
+  reader that met one of those rows before the VACUUM committed took the delete
+  for aborted and set a hint bit that kept the row for good. Measured on main:
+  the group's row_group row survived while its column_chunk and delete_vector
+  rows were deleted, so a sequential scan and an index scan returned the
+  deleted row with every column NULL, one row more than heap. A VACUUM now
+  leaves PROC_IN_VACUUM before the retirement writes anything; it keeps the
+  flag while it sets the visibility map. Readers now refuse a row group whose
+  data is on disk but whose column_chunk rows are gone, with XX001, instead of
+  returning its rows as NULLs. A table damaged by an earlier version reports
+  that error until the leftover group is removed (docs/limitations.md).
+  A row-group flush now inserts its `row_group` row after the group's other
+  catalog rows (#2266). The unique check of a concurrent `INSERT ... ON
+  CONFLICT` reads another transaction's rows as they are inserted. It had
+  found the `row_group` row before its column chunks, and the refusal turned
+  that into XX001. It now waits for the writer, as before. A new
+  superuser setting for tests, `pgcolumnar.flush_hold_ms`, pauses a flush
+  just before that insert (docs/configuration.md).
+  `test/vacuum_retire_visibility.sh` and `test_vacuum_retire_visibility.py`.
+- The same change fixes a plain VACUUM that failed with `duplicate key value
+  violates unique constraint "free_space_pkey"` under concurrent deletes
+  (#2264). The lost delete left a retired group live while its range was also
+  in free_space, so the next VACUUM that retired it inserted the same
+  `(storage_id, file_offset)` again. Measured on PG 18, three workers of
+  single-row DELETE and UPDATE against a VACUUM loop for 60 s: 1426 of 1619
+  VACUUMs failed on main, 0 of 2835 with the fix. `test/vacuum_retire_snapshot.sh`
+  and `test_vacuum_retire_snapshot.py` pin the duplicate key and the free-space
+  accounting: no free range over a live group, and exactly the retired groups'
+  pages free. Reported by @jdatcmd.
 - An AFTER trigger of a DELETE or UPDATE that reads the table through an
   index-only scan no longer counts rows its own statement deleted, when a
   VACUUM ran during the statement (#2169). The writer keeps its delete marks in
