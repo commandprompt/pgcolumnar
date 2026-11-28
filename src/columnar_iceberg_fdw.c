@@ -1502,6 +1502,14 @@ icefdwBeginForeignScan(ForeignScanState *node, int eflags)
 				 errmsg("foreign table \"%s\" has no \"metadata_path\" option",
 						RelationGetRelationName(rel))));
 
+	/*
+	 * Refuse a column type the reader refuses for every file of the field's
+	 * current type before any pruning below, so the answer does not depend on
+	 * which files a filter prunes (#2190).
+	 */
+	PgColumnarIcebergCheckColumnTypes(st->metadata_path, NULL, tupdesc,
+									  RelationGetRelationName(rel));
+
 	/* the identity-partition -> column map, and the current spec id */
 	PgColumnarIcebergIdentityPartMap(st->metadata_path, NULL, tupdesc,
 									 &st->partAttno, &st->npart, &st->specid);

@@ -93,6 +93,16 @@ extern int *PgColumnarIcebergColumnFieldIds(const char *path,
 											TupleDesc tupdesc);
 
 /*
+ * Refuse (42804) a column whose declared type the reader refuses for every data
+ * file written under its Iceberg field's current type, before any file is pruned
+ * (#2190), so a filter cannot turn the refusal into rows or an empty answer.
+ */
+extern void PgColumnarIcebergCheckColumnTypes(const char *path,
+											  const PgColumnarObjStoreConfig *cfg,
+											  TupleDesc tupdesc,
+											  const char *relname);
+
+/*
  * Map the current spec's bucket[N] fields to columns for FDW bucket pruning: per
  * bucket field, its partition-tuple position (*out_pos), source column attno
  * (*out_attno), and bucket count (*out_n); *out_count fields; *out_specid the

@@ -2204,6 +2204,127 @@ PgColumnarIcebergColumnFieldIds(const char *path,
 	return out;
 }
 
+/*
+ * The Parquet physical type a data file written under an Iceberg primitive type
+ * stores it as, per the Iceberg spec, and the declaration a foreign table should
+ * use for it. These are the types a filter can prune on with a column the reader
+ * refuses: their bounds or partition cells are integers, booleans or strings.
+ * Any other type is left to the reader's per-file check: a float, double, uuid or
+ * fixed partition cell is never compared, a decimal is gated by
+ * ice_field_prunes_as_column_type, and binary reads as text.
+ */
+typedef enum IcePhys
+{
+	ICE_PHYS_UNKNOWN = 0,
+	ICE_PHYS_BOOLEAN,
+	ICE_PHYS_INT32,
+	ICE_PHYS_INT64,
+	ICE_PHYS_BYTES
+} IcePhys;
+
+static const struct
+{
+	const char *name;
+	IcePhys		phys;
+	const char *declare;
+}			ice_prim_phys[] = {
+	{"boolean", ICE_PHYS_BOOLEAN, "boolean"},
+	{"int", ICE_PHYS_INT32, "integer"},
+	{"long", ICE_PHYS_INT64, "bigint"},
+	{"date", ICE_PHYS_INT32, "date"},
+	{"time", ICE_PHYS_INT64, "time"},
+	{"timestamp", ICE_PHYS_INT64, "timestamp"},
+	{"timestamptz", ICE_PHYS_INT64, "timestamp with time zone"},
+	{"string", ICE_PHYS_BYTES, "text"},
+};
+
+/*
+ * The physical type the reader requires for a column of type `typid`, for the
+ * column types a filter can prune on: int2, int4, int8 and bool (bounds,
+ * identity, bucket, truncate), text and varchar (identity, bucket), date (day,
+ * year, month) and timestamp/timestamptz (year, month, day, hour). This mirrors
+ * the reader's pq_want_phys(). Any other column type has no pruning that could
+ * hide the reader's per-file refusal, so it is not checked up front.
+ */
+static IcePhys
+ice_column_phys(Oid typid)
+{
+	switch (typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case DATEOID:
+			return ICE_PHYS_INT32;
+		case INT8OID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return ICE_PHYS_INT64;
+		case BOOLOID:
+			return ICE_PHYS_BOOLEAN;
+		case TEXTOID:
+		case VARCHAROID:
+			return ICE_PHYS_BYTES;
+		default:
+			return ICE_PHYS_UNKNOWN;
+	}
+}
+
+/*
+ * Refuse, before any data file is pruned, a column whose declared type the
+ * reader refuses for every data file written under the field's current Iceberg
+ * type (#2190). The reader checks each file it opens, and the FDW prunes files
+ * on their partition values and bounds before it opens them, so without this a
+ * filter that pruned every refused file turned the refusal into rows, or into an
+ * empty answer. The answer must not depend on the filter.
+ *
+ * The test is the current schema's type, not the files: an int column over an
+ * Iceberg long promoted from int is refused even while every file still holds
+ * the pre-promotion INT32, because the next file written holds INT64 and the
+ * column cannot hold a long's values. A bigint over an Iceberg int is the one
+ * widening the reader performs for a plain integer (pq_field_id_widens).
+ */
+void
+PgColumnarIcebergCheckColumnTypes(const char *path,
+								  const PgColumnarObjStoreConfig *cfg,
+								  TupleDesc tupdesc, const char *relname)
+{
+	char	   *json = ice_slurp_text(path, cfg);
+	Jsonb	   *jb = DatumGetJsonbP(DirectFunctionCall1(jsonb_in,
+													   CStringGetDatum(json)));
+	JsonbContainer *fieldsc = ice_current_schema_fields(&jb->root, path);
+	uint32		nf = JsonContainerSize(fieldsc);
+	int			a;
+
+	for (a = 0; a < tupdesc->natts; a++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, a);
+		IcePhys		want = ice_column_phys(att->atttypid);
+		int			k;
+
+		if (att->attisdropped || want == ICE_PHYS_UNKNOWN)
+			continue;
+		for (k = 0; k < (int) lengthof(ice_prim_phys); k++)
+		{
+			if (!ice_field_type_is(fieldsc, nf, NameStr(att->attname),
+								   ice_prim_phys[k].name))
+				continue;
+			if (ice_prim_phys[k].phys == want)
+				break;
+			/* the reader widens a plain Iceberg int into a bigint */
+			if (att->atttypid == INT8OID &&
+				strcmp(ice_prim_phys[k].name, "int") == 0)
+				break;
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("column \"%s\" of foreign table \"%s\" has type %s, which cannot read the Iceberg type %s",
+							NameStr(att->attname), relname,
+							format_type_be(att->atttypid), ice_prim_phys[k].name),
+					 errdetail("The reader refuses this column type for every data file written under the table's current schema, so the scan is refused before any file is pruned."),
+					 errhint("Declare the column as %s.", ice_prim_phys[k].declare)));
+		}
+	}
+}
+
 /* A name mapping has one entry per top-level column plus a few aliases; a real
  * schema is well under this. The metadata.json is capped at 64 MB, so without a
  * bound a crafted mapping could carry millions of names -- refuse rather than

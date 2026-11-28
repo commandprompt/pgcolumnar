@@ -706,6 +706,196 @@ check "bucket: k = 5 after a gated bucket[2](decimal) field prunes 3 of 4 files 
 check "bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00" \
 	"$(q "SELECT coalesce(string_agg(k::text || ':' || d::text, ',' ORDER BY k), 'none') FROM two WHERE k = 5")" "5:1.00"
 
+# ---- a filter does not decide whether a column type is refused (#2190) -------
+# The reader refuses a column type per data file: an int over a file that stores
+# the field as Parquet INT64, say. The FDW prunes files on their partition
+# values and bounds before it opens them, so a filter that pruned every refused
+# file used to return rows, or nothing, where the same scan without the filter
+# was refused. The FDW now checks each column's type against the Iceberg
+# field's current type before it prunes anything, so every query below is
+# refused with the same 42804, whatever the filter prunes.
+# fr_state SQL REL COL TYPE ICETYPE DECLARE -> "42804" when SQL is refused with
+# the up-front message for that column and the hint to declare it DECLARE,
+# "SQLSTATE (another refusal: MESSAGE / HINT)" for any other error, and
+# "no error (<first output line>)" when it ran.
+fr_state() {
+	local out st msg hint want
+	want="column \"$3\" of foreign table \"$2\" has type $4, which cannot read the Iceberg type $5"
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	hint="$(sed -n 's/^HINT:  //p' <<<"$out" | head -1)"
+	if [ -z "$st" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif [ "$msg" = "$want" ] && [ "$hint" = "Declare the column as $6." ]; then echo "$st"
+	else echo "$st (another refusal: $msg / $hint)"
+	fi
+}
+# an id-ordered answer, "none" for no rows
+fr_rows() { q "SELECT coalesce(string_agg($2, ',' ORDER BY id), 'none') FROM $1"; }
+
+# An Iceberg long that was always a long, declared int and smallint. events has
+# id long, region (the identity partition: eu ids 1-2, us ids 3-5) and amount
+# int with bounds eu [10,20], us [30,50]. ev declares id bigint.
+q "CREATE FOREIGN TABLE evi (id int, region text, amount int)
+   SERVER ice OPTIONS (metadata_path '$MD')" >/dev/null
+q "CREATE FOREIGN TABLE evsm (id smallint, region text, amount int)
+   SERVER ice OPTIONS (metadata_path '$MD')" >/dev/null
+check "filter refusal: a full scan of an Iceberg long declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM evi" evi id integer long bigint)" "42804"
+check "filter refusal: region = 'zz' (partition prunes every file) on an int over a long is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM evi WHERE region = 'zz'" evi id integer long bigint)" "42804"
+check "filter refusal: region = 'eu' (partition prunes one file) on an int over a long is refused (42804)" \
+	"$(fr_state "SELECT * FROM evi WHERE region = 'eu'" evi id integer long bigint)" "42804"
+check "filter refusal: amount > 100 (bounds prune every file) on an int over a long is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM evi WHERE amount > 100" evi id integer long bigint)" "42804"
+check "filter refusal: amount > 25 (bounds prune one file) on an int over a long is refused (42804)" \
+	"$(fr_state "SELECT * FROM evi WHERE amount > 25" evi id integer long bigint)" "42804"
+check "filter refusal: amount > 0 (prunes no file) on an int over a long is refused (42804)" \
+	"$(fr_state "SELECT * FROM evi WHERE amount > 0" evi id integer long bigint)" "42804"
+check "filter refusal: id = 99 (the refused column's own bounds prune every file) is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM evi WHERE id = 99" evi id integer long bigint)" "42804"
+check "filter refusal: region = 'zz' on a smallint over a long is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM evsm WHERE region = 'zz'" evsm id smallint long bigint)" "42804"
+check "filter refusal: control: id = 3 on a bigint over the long returns id 3" \
+	"$(fr_rows "ev WHERE id = 3" "id::text")" "3"
+check "filter refusal: control: id = 3 on a bigint over the long prunes the eu file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM ev WHERE id = 3")" "1"
+check "filter refusal: control: amount > 100 on the bigint table prunes both files (Files Pruned: 2)" \
+	"$(fp "SELECT * FROM ev WHERE amount > 100")" "2"
+# The one widening the reader does for a plain integer: a bigint over an Iceberg
+# int (booli, b = 5 to 8 in one file) is read, not refused.
+check "filter refusal: control: b = 8 on a bigint over an Iceberg int returns id 8" \
+	"$(fr_rows "bib WHERE b = 8" "id::text")" "8"
+check "filter refusal: control: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM bib WHERE b > 8")" "1"
+
+# An Iceberg string declared int: no filter can prune on it, and it is refused
+# up front all the same.
+q "CREATE FOREIGN TABLE evri (id bigint, region int, amount int)
+   SERVER ice OPTIONS (metadata_path '$MD')" >/dev/null
+check "filter refusal: a full scan of an Iceberg string declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM evri" evri region integer string text)" "42804"
+
+# An Iceberg int promoted to long (the issue's case). prom: id long, r string
+# (identity partition), v; d0 (1, a, -5) and d1 (2, b, 7) were added while v was
+# an int and store it as INT32, d2 (3, c, 9) after the promotion as INT64. The
+# second metadata version has the promotion and only the INT32 files, the first
+# has neither.
+MD_PROM="$(ls "$DCWH"/db/prom/metadata/*.metadata.json | sort | tail -1)"
+MD_PROM1="$(ls "$DCWH"/db/prom/metadata/00001-*.metadata.json)"
+MD_PROM2="$(ls "$DCWH"/db/prom/metadata/00002-*.metadata.json)"
+q "CREATE FOREIGN TABLE prom (id bigint, r text, v int)
+   SERVER ice OPTIONS (metadata_path '$MD_PROM')" >/dev/null
+q "CREATE FOREIGN TABLE promb (id bigint, r text, v bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_PROM')" >/dev/null
+q "CREATE FOREIGN TABLE prom1 (id bigint, r text, v int)
+   SERVER ice OPTIONS (metadata_path '$MD_PROM1')" >/dev/null
+q "CREATE FOREIGN TABLE prom2 (id bigint, r text, v int)
+   SERVER ice OPTIONS (metadata_path '$MD_PROM2')" >/dev/null
+check "filter refusal: a full scan of a promoted long declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM prom" prom v integer long bigint)" "42804"
+check "filter refusal: v = -5 (bounds prune the INT64 file) on a promoted long declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM prom WHERE v = -5" prom v integer long bigint)" "42804"
+check "filter refusal: r = 'a' (partition prunes the INT64 file) on a promoted long declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM prom WHERE r = 'a'" prom v integer long bigint)" "42804"
+check "filter refusal: v > 100 (bounds prune every file) on a promoted long declared int is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM prom WHERE v > 100" prom v integer long bigint)" "42804"
+check "filter refusal: r = 'c' (reads only the INT64 file) on a promoted long declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM prom WHERE r = 'c'" prom v integer long bigint)" "42804"
+check "filter refusal: a promoted long declared int is refused while every file is still INT32 (42804)" \
+	"$(fr_state "SELECT * FROM prom2" prom2 v integer long bigint)" "42804"
+check "filter refusal: control: before the promotion an int column reads both INT32 files" \
+	"$(fr_rows prom1 "id || '|' || r || '|' || v")" "1|a|-5,2|b|7"
+check "filter refusal: control: v = 7 before the promotion prunes the other file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM prom1 WHERE v = 7")" "1"
+check "filter refusal: control: a bigint over the promoted long reads all three files" \
+	"$(fr_rows promb "id || '|' || r || '|' || v")" "1|a|-5,2|b|7,3|c|9"
+check "filter refusal: control: v = -5 on the bigint returns id 1" \
+	"$(fr_rows "promb WHERE v = -5" "id::text")" "1"
+check "filter refusal: control: v = -5 on the bigint prunes the other two files (Files Pruned: 2)" \
+	"$(fp "SELECT * FROM promb WHERE v = -5")" "2"
+check "filter refusal: control: r = 'c' on the bigint returns id 3 from the INT64 file" \
+	"$(fr_rows "promb WHERE r = 'c'" "id || '|' || v")" "3|9"
+check "filter refusal: control: r = 'c' on the bigint prunes the two INT32 files (Files Pruned: 2)" \
+	"$(fp "SELECT * FROM promb WHERE r = 'c'")" "2"
+
+# An identity partition on an Iceberg boolean, declared int. boolp: ids 1, 2 in
+# the b = false file, ids 3, 4 in the b = true file. The partition cells are 0
+# and 1, so b = 5 pruned both files and returned nothing.
+MD_BP="$(ls "$DCWH"/db/boolp/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE boolpi (id bigint, b int)
+   SERVER ice OPTIONS (metadata_path '$MD_BP')" >/dev/null
+q "CREATE FOREIGN TABLE boolpb (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BP')" >/dev/null
+check "filter refusal: a full scan of a boolean identity partition declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM boolpi" boolpi b integer boolean boolean)" "42804"
+check "filter refusal: b = 5 (partition prunes every file) on a boolean declared int is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM boolpi WHERE b = 5" boolpi b integer boolean boolean)" "42804"
+check "filter refusal: b = 1 (partition prunes one file) on a boolean declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM boolpi WHERE b = 1" boolpi b integer boolean boolean)" "42804"
+check "filter refusal: control: NOT b on the boolean partition returns ids 1 and 2" \
+	"$(fr_rows "boolpb WHERE NOT b" "id::text")" "1,2"
+check "filter refusal: control: NOT b on the boolean partition prunes the true file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM boolpb WHERE NOT b")" "1"
+
+# An identity partition on an Iceberg time, declared int. timep: ids 1, 2 at
+# 01:00 and id 3 at 02:00; the cells are microseconds.
+MD_TP="$(ls "$DCWH"/db/timep/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE timepi (id bigint, t int)
+   SERVER ice OPTIONS (metadata_path '$MD_TP')" >/dev/null
+q "CREATE FOREIGN TABLE timepb (id bigint, t bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_TP')" >/dev/null
+check "filter refusal: a full scan of a time identity partition declared int is refused (42804)" \
+	"$(fr_state "SELECT * FROM timepi" timepi t integer time time)" "42804"
+check "filter refusal: t = 5 (partition prunes every file) on a time declared int is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM timepi WHERE t = 5" timepi t integer time time)" "42804"
+check "filter refusal: control: a bigint over the time partition returns ids 1 and 2 for 01:00" \
+	"$(fr_rows "timepb WHERE t = 3600000000" "id::text")" "1,2"
+check "filter refusal: control: t = 01:00 in microseconds on the bigint prunes the 02:00 file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM timepb WHERE t = 3600000000")" "1"
+
+# Temporal transforms read a date or timestamp column the reader refuses: a date
+# over an Iceberg timestamp or timestamptz (year), a timestamp or timestamptz over
+# an Iceberg date (day, month). A constant before 1900 pruned every file.
+q "CREATE FOREIGN TABLE tyd (id bigint, ts date)
+   SERVER ice OPTIONS (metadata_path '${MD_ty:-}')" >/dev/null
+check "filter refusal: ts < 1900-01-01 (year prunes every file) on a date over an Iceberg timestamp is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM tyd WHERE ts < DATE '1900-01-01'" tyd ts date timestamp timestamp)" "42804"
+q "CREATE FOREIGN TABLE tzd (id bigint, tt date)
+   SERVER ice OPTIONS (metadata_path '${MD_yz:-}')" >/dev/null
+check "filter refusal: tt < 1900-01-01 (year prunes every file) on a date over an Iceberg timestamptz is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM tzd WHERE tt < DATE '1900-01-01'" tzd tt date "timestamptz" "timestamp with time zone")" "42804"
+q "CREATE FOREIGN TABLE dts (id bigint, dt timestamp)
+   SERVER ice OPTIONS (metadata_path '${MDY:-}')" >/dev/null
+check "filter refusal: dt < 1900-01-01 (day prunes every file) on a timestamp over an Iceberg date is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM dts WHERE dt < TIMESTAMP '1900-01-01'" dts dt "timestamp without time zone" date date)" "42804"
+q "CREATE FOREIGN TABLE mdz (id bigint, dt timestamptz)
+   SERVER ice OPTIONS (metadata_path '${MD_mo:-}')" >/dev/null
+check "filter refusal: dt < 1900-01-01 (month prunes every file) on a timestamptz over an Iceberg date is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM mdz WHERE dt < TIMESTAMPTZ '1900-01-01 00:00+00'" mdz dt "timestamp with time zone" date date)" "42804"
+# A date identity partition declared bigint: the reader widens only a plain int
+# into a bigint, never a date, and dt = 5 pruned both files on the day numbers.
+q "CREATE FOREIGN TABLE evd8 (id bigint, dt bigint, amount int)
+   SERVER ice OPTIONS (metadata_path '${MDD:-}')" >/dev/null
+check "filter refusal: dt = 5 (partition prunes every file) on a bigint over an Iceberg date is refused (42804)" \
+	"$(fr_state "SELECT count(*) FROM evd8 WHERE dt = 5" evd8 dt bigint date date)" "42804"
+
+# The other declarations the reader refuses for an Iceberg int, now refused by
+# name up front: a bool, a text and a varchar column.
+check "filter refusal: b < true on a bool over an Iceberg int is refused up front (42804)" \
+	"$(fr_state "SELECT * FROM booli WHERE b < true" booli b boolean int integer)" "42804"
+check "filter refusal: k = 'a' on a text column over an Iceberg int is refused up front (42804)" \
+	"$(fr_state "SELECT * FROM byintt WHERE k = 'a'" byintt k text int integer)" "42804"
+q "CREATE FOREIGN TABLE byv (k varchar)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "filter refusal: a full scan of an Iceberg int declared varchar is refused up front (42804)" \
+	"$(fr_state "SELECT * FROM byv" byv k "character varying" int integer)" "42804"
+
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1

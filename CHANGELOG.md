@@ -633,6 +633,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg foreign data wrapper gives the same answer to a query with and
+  without a filter when a column's type is one the reader refuses (#2190). The
+  reader refuses a column type per data file, for example an `int` over a file
+  that stores the field as Parquet INT64. The FDW prunes files on their
+  partition values and bounds before it opens them, so a filter that pruned
+  every refused file returned rows, or no rows, where the full scan failed with
+  SQLSTATE 42804. This happened for an `int` or `smallint` over an Iceberg
+  `long`, promoted from `int` or not, an `int` over a `boolean` or `time`
+  identity partition, a `date` over a `timestamp` or `timestamptz` partitioned
+  by year, a `timestamp` or `timestamptz` over a `date` partitioned by day or
+  month, and a `bigint` over a `date` identity partition. The FDW now checks
+  each column's type against its Iceberg field's current type when the scan
+  starts, before it prunes anything, and refuses with 42804 and a hint naming
+  the type to declare. The check covers the column types the FDW can prune on
+  (`smallint`, `integer`, `bigint`, `boolean`, `text`, `varchar`, `date`,
+  `timestamp`, `timestamptz`) over the Iceberg types `boolean`, `int`, `long`,
+  `date`, `time`, `timestamp`, `timestamptz` and `string`. An `int` column over
+  a `long` promoted from `int` is now refused even while every data file still
+  holds the pre-promotion INT32, which it used to read: the next file written
+  holds INT64. Declare it `bigint`. docs/limitations.md.
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
 - `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
   reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
   ends the line at the `\.` and loads the row, so `a<TAB>1200\.` then LF has

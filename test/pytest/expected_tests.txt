@@ -2771,4 +2771,10 @@ guard_tests 910
 # cluster_tests 6662 -> 6663 for #2191 in test_parallel_export_parquet.py:
 # test_pexport_the_documented_worker_counts_fit_a_default_server, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6663
+# cluster_tests 6663 -> 6707 for #2190's 44 tests in test_iceberg_fdw.py: 28 queries refused with 42804 and the
+# up-front message whatever their filter prunes (an int or smallint over an Iceberg long, promoted or not, over a
+# boolean or a time identity partition, date and timestamp columns over the other temporal type, a bigint over a
+# date partition, and four declarations over an int or string), 8 controls that return their rows and 8 that
+# still prune, by collection of that file (100 -> 144) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+cluster_tests 6707

@@ -41,11 +41,26 @@
 #              bucket[4](k). k = 1 to 16, d = 1.00 in every row, so the files
 #              split by k's bucket only: four files. The bucket map must skip
 #              the gated decimal field and still keep k's bucket field.
+#   db.prom  : id long, r string, v int promoted to long (#2190), identity
+#              partitioned by r, with column metrics. d0 (1, 'a', -5) and
+#              d1 (2, 'b', 7) were added before the promotion and store v as
+#              Parquet INT32; d2 (3, 'c', 9) was added after it and stores v as
+#              INT64. The reader refuses an int column over d2 only, so a filter
+#              that prunes d2 used to hide the refusal.
+#   db.boolp : id long, b boolean, identity partitioned by b (#2190). One file
+#              with ids 1, 2 (b false), one with ids 3, 4 (b true). The
+#              partition cells are 0 and 1, so an int column's filter could
+#              prune on them while the reader refuses an int over a boolean.
+#   db.timep : id long, t time, identity partitioned by t (#2190). One file
+#              with ids 1, 2 (t 01:00), one with id 3 (t 02:00). The cells are
+#              microseconds, a long, which an int column's filter could prune
+#              on while the reader refuses an int over a time (Parquet INT64).
 #
 # Run: ~/icevenv/bin/python gen_iceberg_decimal.py <out warehouse> <scratch root>
 #      [table ...]
 # with pyiceberg 0.12.0, pyiceberg-core 0.10.1 and pyarrow. Name tables to write only those; with no
 # names it writes all of them.
+import datetime
 import decimal
 import os
 import shutil
@@ -56,9 +71,9 @@ import pyarrow.parquet as pq
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.transforms import BucketTransform
+from pyiceberg.transforms import BucketTransform, IdentityTransform
 from pyiceberg.types import (BooleanType, DecimalType, IntegerType, LongType,
-                             NestedField)
+                             NestedField, StringType, TimeType)
 
 OUT = sys.argv[1]
 ROOT = sys.argv[2]
@@ -157,6 +172,67 @@ def make_bucket_two(name):
     publish(name, t, loc, 1)
 
 
+def make_promoted(name):
+    """id long, r string, v int: two files added while v is an int (Parquet
+    INT32), then v promoted to long and one file added (INT64). Identity
+    partitioned by r, so each file has its own partition value."""
+    if ONLY and name not in ONLY:
+        return
+    schema = Schema(NestedField(1, "id", LongType(), required=False),
+                    NestedField(2, "r", StringType(), required=False),
+                    NestedField(3, "v", IntegerType(), required=False))
+    spec = PartitionSpec(PartitionField(source_id=2, field_id=1000,
+                                        transform=IdentityTransform(), name="r"))
+    t = cat.create_table(f"db.{name}", schema=schema, partition_spec=spec)
+    loc = t.metadata.location.replace("file://", "")
+    os.makedirs(os.path.join(loc, "data"), exist_ok=True)
+
+    def put(i, row, vtype):
+        f = os.path.join(loc, "data", f"d{i}.parquet")
+        pq.write_table(pa.table({"id": pa.array([row[0]], pa.int64()),
+                                 "r": pa.array([row[1]], pa.string()),
+                                 "v": pa.array([row[2]], vtype)}), f)
+        return f"file://{f}"
+    t.add_files([put(0, (1, "a", -5), pa.int32()), put(1, (2, "b", 7), pa.int32())])
+    with t.update_schema() as u:
+        u.update_column("v", LongType())
+    t = cat.load_table(f"db.{name}")
+    t.add_files([put(2, (3, "c", 9), pa.int64())])
+    publish(name, t, loc, 3)
+
+
+def make_bool_identity(name):
+    """id long, b boolean, identity partitioned by b, appended by pyiceberg so
+    that pyiceberg computes the partition values."""
+    if ONLY and name not in ONLY:
+        return
+    schema = Schema(NestedField(1, "id", LongType(), required=False),
+                    NestedField(2, "b", BooleanType(), required=False))
+    spec = PartitionSpec(PartitionField(source_id=2, field_id=1000,
+                                        transform=IdentityTransform(), name="b"))
+    t = cat.create_table(f"db.{name}", schema=schema, partition_spec=spec)
+    loc = t.metadata.location.replace("file://", "")
+    t.append(pa.table({"id": pa.array([1, 2, 3, 4], pa.int64()),
+                       "b": pa.array([False, False, True, True], pa.bool_())}))
+    publish(name, t, loc, 2)
+
+
+def make_time_identity(name):
+    """id long, t time, identity partitioned by t, appended by pyiceberg."""
+    if ONLY and name not in ONLY:
+        return
+    schema = Schema(NestedField(1, "id", LongType(), required=False),
+                    NestedField(2, "t", TimeType(), required=False))
+    spec = PartitionSpec(PartitionField(source_id=2, field_id=1000,
+                                        transform=IdentityTransform(), name="t"))
+    t = cat.create_table(f"db.{name}", schema=schema, partition_spec=spec)
+    loc = t.metadata.location.replace("file://", "")
+    hour = datetime.time
+    t.append(pa.table({"id": pa.array([1, 2, 3], pa.int64()),
+                       "t": pa.array([hour(1), hour(1), hour(2)], pa.time64("us"))}))
+    publish(name, t, loc, 2)
+
+
 def publish(name, t, loc, fid):
     """Copy the table's metadata and data into the output warehouse, and print
     each data file's partition and its bounds for field `fid`."""
@@ -198,3 +274,6 @@ make_plain("booll",
            [[(5, 5), (6, 6), (7, 7), (8, 8)]])
 make_bucket_int("byint")
 make_bucket_two("two")
+make_promoted("prom")
+make_bool_identity("boolp")
+make_time_identity("timep")

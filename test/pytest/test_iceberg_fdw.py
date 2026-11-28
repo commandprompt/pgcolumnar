@@ -88,6 +88,25 @@ WAREHOUSES = {
     "byb":    ("warehouse_decimal", "byint",       "k bigint"),
     "byn":    ("warehouse_decimal", "byint",       "k name"),
     "two":    ("warehouse_decimal", "two",         "k int, d numeric"),
+    # column types the reader refuses, whatever a filter prunes (#2190). A fourth
+    # element names the metadata version to read instead of the latest.
+    "evi":    ("warehouse",          "events",  "id int, region text, amount int"),
+    "evsm":   ("warehouse",          "events",  "id smallint, region text, amount int"),
+    "evri":   ("warehouse",          "events",  "id bigint, region int, amount int"),
+    "prom":   ("warehouse_decimal",  "prom",    "id bigint, r text, v int"),
+    "promb":  ("warehouse_decimal",  "prom",    "id bigint, r text, v bigint"),
+    "prom1":  ("warehouse_decimal",  "prom",    "id bigint, r text, v int", "00001-"),
+    "prom2":  ("warehouse_decimal",  "prom",    "id bigint, r text, v int", "00002-"),
+    "boolpi": ("warehouse_decimal",  "boolp",   "id bigint, b int"),
+    "boolpb": ("warehouse_decimal",  "boolp",   "id bigint, b bool"),
+    "timepi": ("warehouse_decimal",  "timep",   "id bigint, t int"),
+    "timepb": ("warehouse_decimal",  "timep",   "id bigint, t bigint"),
+    "tyd":    ("warehouse_temporal", "byyear",  "id bigint, ts date"),
+    "tzd":    ("warehouse_temporal_xt", "byyear_tz", "id bigint, tt date"),
+    "dts":    ("warehouse_day",      "byday",   "id bigint, dt timestamp"),
+    "mdz":    ("warehouse_temporal_xt", "bymonth_d", "id bigint, dt timestamptz"),
+    "evd8":   ("warehouse_datepart", "byday",   "id bigint, dt bigint, amount int"),
+    "byv":    ("warehouse_decimal",  "byint",   "k varchar"),
 }
 
 
@@ -121,7 +140,9 @@ def ice(pgc_cluster, tmp_path_factory):
 
     stage = tmp_path_factory.mktemp("iceberg")
     meta = {}
-    for alias, (wh, table, _cols) in WAREHOUSES.items():
+    for alias, spec in WAREHOUSES.items():
+        wh, table = spec[0], spec[1]
+        version = spec[3] if len(spec) > 3 else ""
         src = FIXTURES / wh / "db" / table
         if not (src / "metadata").is_dir():
             continue
@@ -129,7 +150,7 @@ def ice(pgc_cluster, tmp_path_factory):
             continue
         dest = stage / alias / table
         shutil.copytree(src, dest)
-        found = sorted((dest / "metadata").glob("*.metadata.json"))
+        found = sorted((dest / "metadata").glob(version + "*.metadata.json"))
         if found:
             meta[alias] = found[-1]
     _open_to_the_server(stage)
@@ -1223,6 +1244,195 @@ def test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field(ice, ex
     expect.text(_one(conn, "SELECT string_agg(k::text || ':' || d::text, ',' ORDER BY k) "
                            "FROM two WHERE k = 5") or "none", "5:1.00",
                 "bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00")
+
+
+# ------------------------------------ a filter does not decide a column type refusal (#2190)
+#
+# The reader refuses a column type per data file: an int over a file that stores the
+# field as Parquet INT64, say. The FDW prunes files on their partition values and bounds
+# before it opens them, so a filter that pruned every refused file used to return rows,
+# or nothing, where the same scan without the filter was refused. The FDW now checks each
+# column's type against the Iceberg field's current type before it prunes anything.
+#
+# events: id long, region (identity: eu ids 1-2, us ids 3-5), amount int with bounds eu
+# [10,20], us [30,50]. prom: id long, r string (identity), v int promoted to long; d0
+# (1, a, -5) and d1 (2, b, 7) store v as INT32, d2 (3, c, 9) as INT64; prom2 reads the
+# metadata version with the promotion and only the INT32 files, prom1 the one before the
+# promotion. boolp: identity on a boolean, ids 1-2 false, 3-4 true. timep: identity on a
+# time, ids 1-2 at 01:00, id 3 at 02:00 (cells in microseconds).
+
+# the type each Iceberg type's refusal hint tells the user to declare
+DECLARE_AS = {"long": "bigint", "string": "text", "boolean": "boolean", "time": "time",
+              "timestamp": "timestamp", "timestamptz": "timestamp with time zone",
+              "date": "date", "int": "integer"}
+
+
+def _refusal(conn, sql, rel, col, typ, icetype):
+    """-> '42804' when `sql` is refused with the up-front message for that column and
+    the hint to declare it as DECLARE_AS[icetype], 'SQLSTATE (another refusal:
+    MESSAGE / HINT)' for any other error, and 'no error (<rows>)' when it ran."""
+    import psycopg
+    want = (f'column "{col}" of foreign table "{rel}" has type {typ}, '
+            f"which cannot read the Iceberg type {icetype}")
+    want_hint = f"Declare the column as {DECLARE_AS[icetype]}."
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return f"no error ({cur.fetchall()!r})"
+    except psycopg.Error as e:
+        msg = e.diag.message_primary
+        hint = e.diag.message_hint
+        if msg == want and hint == want_hint:
+            return e.sqlstate
+        return f"{e.sqlstate} (another refusal: {msg} / {hint})"
+
+
+FILTER_REFUSALS = [
+    ("SELECT * FROM evi", "evi", "id", "integer", "long",
+     "filter refusal: a full scan of an Iceberg long declared int is refused (42804)"),
+    ("SELECT count(*) FROM evi WHERE region = 'zz'", "evi", "id", "integer", "long",
+     "filter refusal: region = 'zz' (partition prunes every file) on an int over a long is refused (42804)"),
+    ("SELECT * FROM evi WHERE region = 'eu'", "evi", "id", "integer", "long",
+     "filter refusal: region = 'eu' (partition prunes one file) on an int over a long is refused (42804)"),
+    ("SELECT count(*) FROM evi WHERE amount > 100", "evi", "id", "integer", "long",
+     "filter refusal: amount > 100 (bounds prune every file) on an int over a long is refused (42804)"),
+    ("SELECT * FROM evi WHERE amount > 25", "evi", "id", "integer", "long",
+     "filter refusal: amount > 25 (bounds prune one file) on an int over a long is refused (42804)"),
+    ("SELECT * FROM evi WHERE amount > 0", "evi", "id", "integer", "long",
+     "filter refusal: amount > 0 (prunes no file) on an int over a long is refused (42804)"),
+    ("SELECT count(*) FROM evi WHERE id = 99", "evi", "id", "integer", "long",
+     "filter refusal: id = 99 (the refused column's own bounds prune every file) is refused (42804)"),
+    ("SELECT count(*) FROM evsm WHERE region = 'zz'", "evsm", "id", "smallint", "long",
+     "filter refusal: region = 'zz' on a smallint over a long is refused (42804)"),
+    ("SELECT * FROM evri", "evri", "region", "integer", "string",
+     "filter refusal: a full scan of an Iceberg string declared int is refused (42804)"),
+    ("SELECT * FROM prom", "prom", "v", "integer", "long",
+     "filter refusal: a full scan of a promoted long declared int is refused (42804)"),
+    ("SELECT * FROM prom WHERE v = -5", "prom", "v", "integer", "long",
+     "filter refusal: v = -5 (bounds prune the INT64 file) on a promoted long declared int is refused (42804)"),
+    ("SELECT * FROM prom WHERE r = 'a'", "prom", "v", "integer", "long",
+     "filter refusal: r = 'a' (partition prunes the INT64 file) on a promoted long declared int is refused (42804)"),
+    ("SELECT count(*) FROM prom WHERE v > 100", "prom", "v", "integer", "long",
+     "filter refusal: v > 100 (bounds prune every file) on a promoted long declared int is refused (42804)"),
+    ("SELECT * FROM prom WHERE r = 'c'", "prom", "v", "integer", "long",
+     "filter refusal: r = 'c' (reads only the INT64 file) on a promoted long declared int is refused (42804)"),
+    ("SELECT * FROM prom2", "prom2", "v", "integer", "long",
+     "filter refusal: a promoted long declared int is refused while every file is still INT32 (42804)"),
+    ("SELECT * FROM boolpi", "boolpi", "b", "integer", "boolean",
+     "filter refusal: a full scan of a boolean identity partition declared int is refused (42804)"),
+    ("SELECT count(*) FROM boolpi WHERE b = 5", "boolpi", "b", "integer", "boolean",
+     "filter refusal: b = 5 (partition prunes every file) on a boolean declared int is refused (42804)"),
+    ("SELECT * FROM boolpi WHERE b = 1", "boolpi", "b", "integer", "boolean",
+     "filter refusal: b = 1 (partition prunes one file) on a boolean declared int is refused (42804)"),
+    ("SELECT * FROM timepi", "timepi", "t", "integer", "time",
+     "filter refusal: a full scan of a time identity partition declared int is refused (42804)"),
+    ("SELECT count(*) FROM timepi WHERE t = 5", "timepi", "t", "integer", "time",
+     "filter refusal: t = 5 (partition prunes every file) on a time declared int is refused (42804)"),
+    ("SELECT count(*) FROM tyd WHERE ts < DATE '1900-01-01'", "tyd", "ts", "date", "timestamp",
+     "filter refusal: ts < 1900-01-01 (year prunes every file) on a date over an Iceberg timestamp is refused (42804)"),
+    ("SELECT count(*) FROM tzd WHERE tt < DATE '1900-01-01'", "tzd", "tt", "date", "timestamptz",
+     "filter refusal: tt < 1900-01-01 (year prunes every file) on a date over an Iceberg timestamptz is refused (42804)"),
+    ("SELECT count(*) FROM dts WHERE dt < TIMESTAMP '1900-01-01'", "dts", "dt",
+     "timestamp without time zone", "date",
+     "filter refusal: dt < 1900-01-01 (day prunes every file) on a timestamp over an Iceberg date is refused (42804)"),
+    ("SELECT count(*) FROM mdz WHERE dt < TIMESTAMPTZ '1900-01-01 00:00+00'", "mdz", "dt",
+     "timestamp with time zone", "date",
+     "filter refusal: dt < 1900-01-01 (month prunes every file) on a timestamptz over an Iceberg date is refused (42804)"),
+    ("SELECT count(*) FROM evd8 WHERE dt = 5", "evd8", "dt", "bigint", "date",
+     "filter refusal: dt = 5 (partition prunes every file) on a bigint over an Iceberg date is refused (42804)"),
+    ("SELECT * FROM booli WHERE b < true", "booli", "b", "boolean", "int",
+     "filter refusal: b < true on a bool over an Iceberg int is refused up front (42804)"),
+    ("SELECT * FROM byintt WHERE k = 'a'", "byintt", "k", "text", "int",
+     "filter refusal: k = 'a' on a text column over an Iceberg int is refused up front (42804)"),
+    ("SELECT * FROM byv", "byv", "k", "character varying", "int",
+     "filter refusal: a full scan of an Iceberg int declared varchar is refused up front (42804)"),
+]
+
+
+@pytest.mark.parametrize("sql,rel,col,typ,icetype,name", FILTER_REFUSALS)
+def test_a_filter_does_not_hide_a_column_type_refusal(ice, expect, sql, rel, col, typ,
+                                                       icetype, name):
+    conn, meta = ice
+    if not _need(expect, meta, rel):
+        return
+    expect.text(_refusal(conn, sql, rel, col, typ, icetype), "42804", name)
+
+
+def _rows(conn, rel, expr):
+    """-> the id-ordered answer, 'none' for no rows, or 'error SQLSTATE' when the
+    query is refused, so a control that is wrongly refused fails by its name."""
+    import psycopg
+    try:
+        return _one(conn, f"SELECT string_agg({expr}, ',' ORDER BY id) FROM {rel}") or "none"
+    except psycopg.Error as e:
+        return f"error {e.sqlstate}"
+
+
+def _pruned_or_refused(conn, sql):
+    """-> _pruned's count, or -1 when the query is refused, so a control that is
+    wrongly refused fails by its name (no plan prunes a negative number of files)."""
+    import psycopg
+    try:
+        return _pruned(conn, sql)
+    except psycopg.Error:
+        return -1
+
+
+FILTER_REFUSAL_CONTROL_ROWS = [
+    ("ev", "ev WHERE id = 3", "id::text", "3",
+     "filter refusal: control: id = 3 on a bigint over the long returns id 3"),
+    ("bib", "bib WHERE b = 8", "id::text", "8",
+     "filter refusal: control: b = 8 on a bigint over an Iceberg int returns id 8"),
+    ("prom1", "prom1", "id || '|' || r || '|' || v", "1|a|-5,2|b|7",
+     "filter refusal: control: before the promotion an int column reads both INT32 files"),
+    ("promb", "promb", "id || '|' || r || '|' || v", "1|a|-5,2|b|7,3|c|9",
+     "filter refusal: control: a bigint over the promoted long reads all three files"),
+    ("promb", "promb WHERE v = -5", "id::text", "1",
+     "filter refusal: control: v = -5 on the bigint returns id 1"),
+    ("promb", "promb WHERE r = 'c'", "id || '|' || v", "3|9",
+     "filter refusal: control: r = 'c' on the bigint returns id 3 from the INT64 file"),
+    ("boolpb", "boolpb WHERE NOT b", "id::text", "1,2",
+     "filter refusal: control: NOT b on the boolean partition returns ids 1 and 2"),
+    ("timepb", "timepb WHERE t = 3600000000", "id::text", "1,2",
+     "filter refusal: control: a bigint over the time partition returns ids 1 and 2 for 01:00"),
+]
+
+
+@pytest.mark.parametrize("alias,rel,expr,rows,name", FILTER_REFUSAL_CONTROL_ROWS)
+def test_a_column_type_the_reader_accepts_still_returns_its_rows(ice, expect, alias, rel,
+                                                                 expr, rows, name):
+    conn, meta = ice
+    if not _need(expect, meta, alias):
+        return
+    expect.text(_rows(conn, rel, expr), rows, name)
+
+
+FILTER_REFUSAL_CONTROL_PRUNED = [
+    ("ev", "SELECT * FROM ev WHERE id = 3", 1,
+     "filter refusal: control: id = 3 on a bigint over the long prunes the eu file (Files Pruned: 1)"),
+    ("ev", "SELECT * FROM ev WHERE amount > 100", 2,
+     "filter refusal: control: amount > 100 on the bigint table prunes both files (Files Pruned: 2)"),
+    ("bib", "SELECT * FROM bib WHERE b > 8", 1,
+     "filter refusal: control: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)"),
+    ("prom1", "SELECT * FROM prom1 WHERE v = 7", 1,
+     "filter refusal: control: v = 7 before the promotion prunes the other file (Files Pruned: 1)"),
+    ("promb", "SELECT * FROM promb WHERE v = -5", 2,
+     "filter refusal: control: v = -5 on the bigint prunes the other two files (Files Pruned: 2)"),
+    ("promb", "SELECT * FROM promb WHERE r = 'c'", 2,
+     "filter refusal: control: r = 'c' on the bigint prunes the two INT32 files (Files Pruned: 2)"),
+    ("boolpb", "SELECT * FROM boolpb WHERE NOT b", 1,
+     "filter refusal: control: NOT b on the boolean partition prunes the true file (Files Pruned: 1)"),
+    ("timepb", "SELECT * FROM timepb WHERE t = 3600000000", 1,
+     "filter refusal: control: t = 01:00 in microseconds on the bigint prunes the 02:00 file (Files Pruned: 1)"),
+]
+
+
+@pytest.mark.parametrize("alias,sql,files,name", FILTER_REFUSAL_CONTROL_PRUNED)
+def test_a_column_type_the_reader_accepts_still_prunes(ice, expect, alias, sql, files, name):
+    conn, meta = ice
+    if not _need(expect, meta, alias):
+        return
+    expect.num(_pruned_or_refused(conn, sql), files, name)
 
 
 # ------------------------------------------------------------------- option validation
