@@ -74,6 +74,7 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "columnar_objstore.h"
 
 PG_MODULE_MAGIC;
@@ -1066,6 +1067,61 @@ pgcolumnar_plan_ids(Plan *plan, Bitmapset **seen, bool *dup)
 }
 #endif
 
+/*
+ * The rewrite turnstile, before a DELETE, UPDATE or MERGE runs (#2185).
+ *
+ * A statement that may delete from a columnar table waits here, while it is
+ * planned, for a rewrite of that table that holds the turnstile, for at most
+ * deadlock_timeout in all. Planning comes before the statement takes the
+ * snapshot it scans with, so a writer that waited reads the groups the rewrite
+ * wrote, not the ones it retired (see PgColumnarRewriteTurnstileBeforeWrite).
+ * An INSERT retires nothing and does not wait.
+ */
+static void
+pgcolumnar_turnstile_before_write(PlannedStmt *stmt)
+{
+	TimestampTz deadline = 0;
+#if PG_VERSION_NUM >= 190000
+	int			rti = -1;
+#else
+	ListCell   *lc;
+#endif
+
+	if (stmt->commandType == CMD_INSERT)
+		return;
+	/*
+	 * At REPEATABLE READ and SERIALIZABLE the transaction's snapshot already
+	 * exists, so a writer held until the rewrite commits would read the groups
+	 * it retired and fail with 40001; it goes on as on main instead (review of
+	 * #2253 at 3de3537e; see PgColumnarRewriteTurnstileBeforeWrite).
+	 */
+	if (IsolationUsesXactSnapshot())
+		return;
+	/* PostgreSQL 19 keeps the result relations as a Bitmapset of RT indexes */
+#if PG_VERSION_NUM >= 190000
+	while ((rti = bms_next_member(stmt->resultRelationRelids, rti)) >= 0)
+	{
+		RangeTblEntry *rte = rt_fetch(rti, stmt->rtable);
+#else
+	foreach(lc, stmt->resultRelations)
+	{
+		RangeTblEntry *rte = rt_fetch(lfirst_int(lc), stmt->rtable);
+#endif
+		Relation	rel;
+		uint64		storageId;
+
+		if (rte->rtekind != RTE_RELATION || !PgColumnarIsColumnarRelation(rte->relid))
+			continue;
+		/* the parser locked every result relation */
+		rel = relation_open(rte->relid, NoLock);
+		storageId = PgColumnarStorageId(rel);
+		relation_close(rel, NoLock);
+		if (deadline == 0)
+			deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), DeadlockTimeout);
+		PgColumnarRewriteTurnstileBeforeWrite(storageId, deadline);
+	}
+}
+
 static PlannedStmt *
 pgcolumnar_planner(PGC_PLANNER_PARAMS)
 {
@@ -1075,6 +1131,8 @@ pgcolumnar_planner(PGC_PLANNER_PARAMS)
 	stmt = pgcolumnar_prev_planner_hook
 		? pgcolumnar_prev_planner_hook(PGC_PLANNER_ARGS)
 		: standard_planner(PGC_PLANNER_ARGS);
+
+	pgcolumnar_turnstile_before_write(stmt);
 
 	/*
 	 * A cursor that may scroll: SCROLL, or a DECLARE (CURSOR_OPT_FAST_PLAN)
@@ -2990,6 +3048,7 @@ pgcolumnar_xact_callback(XactEvent event, void *arg)
 			PgColumnarDiscardAllDeleteVectors();
 			PgColumnarDiscardFetchCache();
 			PgColumnarExtentAtXactEnd();
+			PgColumnarRewriteTurnstileAtXactEnd();
 			/*
 			 * Descriptors only: the memo contexts are TopTransactionContext
 			 * children, still live at callback time but taken by the

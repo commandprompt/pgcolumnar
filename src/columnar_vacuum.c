@@ -589,14 +589,20 @@ wait_rewrite_lock(Relation rel, uint64 storageId, bool storageRow, uint64 group,
  * One exception remains: a lock this transaction held before the call (its
  * own earlier write to the table, in the same transaction as the rewrite)
  * stays held through the wait, since an unlock undoes only this call's
- * acquisition. The maintenance daemon does not avoid this case: when both
- * verbs are due it runs compact_rewrite and then recluster in one transaction,
- * so the recluster can wait on a busy group while it holds the storage-row
- * lock the compact_rewrite kept, and a writer can deadlock with it (#2194).
+ * acquisition. The maintenance daemon avoids this case: it runs each verb in a
+ * transaction of its own (#2194; see av_maintain_one).
  *
- * The waiting has a bound, pgcolumnar.rewrite_lock_timeout. Writers never
- * queue behind the rewrite, so a steady stream of them can keep one group busy
- * at every try. When the time runs out the rewrite stops with SQLSTATE 55P03
+ * Writers do not queue behind the rewrite in the lock manager, since it never
+ * waits there while it holds a lock they need. So that a steady stream of them
+ * cannot keep some group busy at every try, the rewrite takes its storage's
+ * turnstile first and keeps it to commit; a DELETE or UPDATE planned in a
+ * transaction that holds no lock yet waits a bounded time for it (#2185; see
+ * PgColumnarRewriteTurnstileBeforeWrite in columnar_metadata.c). The writers
+ * already in flight finish, and the rewrite gets every lock. The writers that
+ * waited then read the rewritten groups, so their deletes are not lost to it.
+ *
+ * The waiting has a bound, pgcolumnar.rewrite_lock_timeout. When the time runs
+ * out, behind a writer that stays open, the rewrite stops with SQLSTATE 55P03
  * and has changed nothing; the maintenance daemon logs a skip and moves on.
  * Each wait runs with lock_timeout lowered to the time left, so a writer that
  * stays open cannot hold the rewrite past the limit either.
@@ -611,6 +617,8 @@ lock_rewrite_groups(Relation rel, uint64 storageId, const uint64 *groups, int nG
 	if (pgcolumnar_rewrite_lock_timeout > 0)
 		deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
 											   pgcolumnar_rewrite_lock_timeout);
+	/* held to commit; writers hold it only for an instant, and another rewrite is excluded by SUEL */
+	PgColumnarLockRewriteTurnstile(storageId);
 	for (;;)
 	{
 		int			i;

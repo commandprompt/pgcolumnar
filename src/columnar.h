@@ -1124,6 +1124,15 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
  * on a latch, and the deadlock detector sees that wait (#2229).
  */
 #define PGCOLUMNAR_LOCKCLASS_PCOPY_RUN		107
+/*
+ * The rewrite turnstile of one storage (#2185). recluster and compact_rewrite
+ * take it before their row-group locks and keep it to commit; a DELETE or
+ * UPDATE planned in a transaction that holds no row-group or storage-row lock
+ * yet waits a bounded time for it to come free (see
+ * PgColumnarRewriteTurnstileBeforeWrite in columnar_metadata.c). 108 is
+ * taken by #2245.
+ */
+#define PGCOLUMNAR_LOCKCLASS_REWRITE_TURNSTILE	109
 
 /*
  * Each parallel_export_parquet worker holds this from just after it connects,
@@ -1131,6 +1140,14 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
  * latch, and the deadlock detector sees that wait (#2245).
  */
 #define PGCOLUMNAR_LOCKCLASS_PEXPORT_RUN	108
+
+/*
+ * Each parallel_flush worker holds this from just before it connects, so the
+ * inserting backend waits for it in the lock manager rather than on a latch,
+ * and the deadlock detector sees that wait (#2256). 109 is kept for the rewrite
+ * turnstile (#2253).
+ */
+#define PGCOLUMNAR_LOCKCLASS_PFLUSH_RUN		110
 
 /* -------------------------------------------------------------------------
  * concurrent unique-key insert serialization (pgcolumnar_unique.c, issue #5)

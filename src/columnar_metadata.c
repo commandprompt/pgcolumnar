@@ -38,6 +38,10 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
+#include "utils/wait_event.h"
+#include "storage/latch.h"
+#include "storage/proc.h"
 
 /* attribute numbers for columnar.options (spec 7.4) */
 #define Anum_options_regclass 1
@@ -1797,11 +1801,151 @@ delete_vector_chunk_lock_key(uint64 storageId, uint64 stripeId, int chunkId)
  *		acquire chunk-group locks in a consistent global order (see
  *		delete_vector_flush_buffer) so two transactions cannot form an AB-BA cycle.
  */
+/* -------------------------------------------------------------------------
+ * The rewrite turnstile (#2185)
+ *
+ * recluster and compact_rewrite take every row-group lock (class 101) they need,
+ * and the storage-row lock (class 102), without ever waiting while they hold one
+ * (#2074; see lock_rewrite_groups in columnar_vacuum.c). Nothing kept their
+ * place, so under a steady stream of short deletes new deleters took a group's
+ * lock ahead of them at every try, and they stopped with 55P03 at
+ * rewrite_lock_timeout.
+ *
+ * The turnstile gives the rewrite its place. The rewrite takes it, in
+ * ExclusiveLock, before it takes its other locks, and keeps it to commit. A
+ * DELETE, UPDATE or MERGE on a columnar table, in a transaction that holds no
+ * 101 or 102 lock yet, waits for the turnstile while it is planned
+ * (PgColumnarRewriteTurnstileBeforeWrite, from the planner hook). So the
+ * writers that start after the rewrite hold off, the ones already in flight
+ * finish, and the rewrite gets every lock within about the longest of those.
+ *
+ * WHEN THE WRITER WAITS (review of #2253 at 815dce06). The wait used to sit at
+ * the delete-vector flush, after the statement had chosen and marked its rows.
+ * A writer held there let the rewrite retire the very group it had marked, and
+ * then failed with 40001 ("row group was compacted concurrently"), where on
+ * main it would have taken the group's lock first and committed. Waiting while
+ * the statement is planned comes before the statement takes the snapshot it
+ * scans with: at READ COMMITTED, PortalStart takes a fresh one after planning.
+ * The rewrite keeps the turnstile to commit, so a writer that waited reads the
+ * rewritten groups and marks rows that are still there. Giving the turnstile
+ * back once the rewrite had its locks let the writer read the old groups again,
+ * and its flush then waited for the rewrite and failed the same way.
+ *
+ * NOT AT REPEATABLE READ OR SERIALIZABLE (review of #2253 at 3de3537e). There
+ * the transaction snapshot is taken when the first statement is parsed, so it
+ * exists before the planner hook polls, even for the transaction's first
+ * statement. A writer held until the rewrite commits then reads the retired
+ * groups through it and fails with 40001, where on main it would have taken
+ * its group's lock first and committed. So such a writer does not wait at all
+ * and behaves as on main; it gives up #2185's queueing, and steady deletes at
+ * those levels can still keep a rewrite from its locks until
+ * rewrite_lock_timeout.
+ *
+ * What still fails: a statement whose plan is reused without planning (a
+ * generic plan of a prepared statement or of PL/pgSQL) does not wait, and a
+ * READ COMMITTED writer whose wait ended at deadlock_timeout goes on before the
+ * rewrite committed. Either can fail with 40001 when it deletes in a group the
+ * rewrite then retires, as such a writer can on main.
+ *
+ * Two rules keep the wait from adding a deadlock or a stall:
+ *
+ *   - It is a poll (a conditional try every 10 ms), not a lock wait. The
+ *     waiter adds no edge to the lock manager's wait-for graph, so no cycle
+ *     passes through it, and the maintenance daemon, which a blocked backend
+ *     would cancel after deadlock_timeout, is not cancelled by it.
+ *   - It lasts at most deadlock_timeout, the time PostgreSQL itself lets a lock
+ *     wait run before it looks for a cycle. Then the writer goes on as before.
+ *
+ * A transaction that already holds a 101 or 102 lock skips the turnstile: the
+ * rewrite may be waiting for that very lock. It is noted per transaction, for
+ * every table, because a lock on one table can be what another table's rewrite
+ * waits for through a third session. The rewrite's own flush notes it too.
+ * An INSERT does not wait: it retires nothing, and the storage-row lock it
+ * needs is one the rewrite waits for in the lock manager, so it queues there.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Has this transaction taken, or set out to take, a 101 or 102 lock? Set before
+ * the delete path's 101 (delete_vector_lock_chunk_group) and the insert path's
+ * 102 (PgColumnarInsertNativeStorageRow).
+ */
+static bool rewrite_turnstile_passed = false;
+
+static void
+rewrite_turnstile_tag(LOCKTAG *tag, uint64 storageId)
+{
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_REWRITE_TURNSTILE);
+}
+
+/*
+ * PgColumnarRewriteTurnstileBeforeWrite
+ *		Wait, until `deadline` at the latest, while a rewrite of storageId holds
+ *		its turnstile. Returns at once when this transaction holds a 101 or 102
+ *		lock already. A rewrite passes its own turnstile at once: a backend's own
+ *		lock never conflicts with its request.
+ */
+void
+PgColumnarRewriteTurnstileBeforeWrite(uint64 storageId, TimestampTz deadline)
+{
+	LOCKTAG		tag;
+
+	if (rewrite_turnstile_passed)
+		return;
+	rewrite_turnstile_tag(&tag, storageId);
+	for (;;)
+	{
+		if (LockAcquire(&tag, ShareLock, false, true) != LOCKACQUIRE_NOT_AVAIL)
+		{
+			LockRelease(&tag, ShareLock, false);
+			return;
+		}
+		if (GetCurrentTimestamp() >= deadline)
+			return;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/*
+ * PgColumnarLockRewriteTurnstile
+ *		A rewrite takes the turnstile before its other locks
+ *		(lock_rewrite_groups) and keeps it to commit, as a transaction lock, so
+ *		an error or a cancel gives it back with the rest. Writers hold it only
+ *		for an instant, so the wait is short.
+ */
+void
+PgColumnarLockRewriteTurnstile(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	rewrite_turnstile_tag(&tag, storageId);
+	(void) LockAcquire(&tag, ExclusiveLock, false, false);
+}
+
+/*
+ * At commit and abort: the next transaction holds no lock yet. PREPARE does not
+ * reach here, so the transaction after one skips the turnstile, which costs
+ * that transaction's place behind a rewrite and nothing else.
+ */
+void
+PgColumnarRewriteTurnstileAtXactEnd(void)
+{
+	rewrite_turnstile_passed = false;
+}
+
 static void
 delete_vector_lock_chunk_group(uint64 storageId, uint64 stripeId, int chunkId)
 {
 	LOCKTAG		tag;
 	uint64		key = delete_vector_chunk_lock_key(storageId, stripeId, chunkId);
+
+	/* this transaction now holds a 101 lock: see PgColumnarRewriteTurnstileBeforeWrite */
+	rewrite_turnstile_passed = true;
 
 	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
 						 (uint32) (key >> 32), (uint32) (key & 0xFFFFFFFF),
@@ -2389,6 +2533,8 @@ storage_row_lock_for_write(Relation rel, uint64 storageId, int32 formatVersion,
 		return state;
 	}
 
+	/* this transaction may keep 102 to commit: see PgColumnarRewriteTurnstileBeforeWrite */
+	rewrite_turnstile_passed = true;
 	(void) LockAcquire(&tag, ExclusiveLock, false, false);
 	state = storage_row_latest(rel, storageId, formatVersion, true);
 	if (state == STORAGE_ROW_CURRENT)
@@ -2520,6 +2666,8 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 		}
 		goto insert_row;
 	}
+	/* the storage-row lock below: see PgColumnarRewriteTurnstileBeforeWrite (#2185) */
+	rewrite_turnstile_passed = true;
 
 	/* see storage_row_lock_for_write (#2184) */
 	if (storage_row_lock_for_write(rel, s->storageId, s->formatVersion, false) !=

@@ -31,6 +31,9 @@ extern void PgColumnarLockStorageRow(uint64 storageId);
 extern void PgColumnarUnlockStorageRow(uint64 storageId);
 extern bool PgColumnarConditionalLockStorageRow(uint64 storageId);
 extern bool PgColumnarStorageRowShareHeldByMe(uint64 storageId);
+extern void PgColumnarLockRewriteTurnstile(uint64 storageId);
+extern void PgColumnarRewriteTurnstileBeforeWrite(uint64 storageId, TimestampTz deadline);
+extern void PgColumnarRewriteTurnstileAtXactEnd(void);
 
 extern bool PgColumnarAllocateFreeSpace(uint64 storageId, uint64 dataLength,
 									  TransactionId oldestXmin, uint64 *fileOffset);
