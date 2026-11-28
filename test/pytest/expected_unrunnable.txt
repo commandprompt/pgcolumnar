@@ -70,6 +70,24 @@
 16 test_parallel_copy.py::test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers
 17 test_parallel_copy.py::test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers
 
+# PostgreSQL 18 and later: they refuse \. anywhere but alone on its line, where 15
+# to 17 end the line at a \. that a CR or LF follows, so the #2260 tests of the key
+# reader at such a \. decline; the shell records SKIPs.
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_premise
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodlfk]
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodcrlfk]
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodcrk]
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodlfcrlf]
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_null_key_is_a_null_key
+18 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_out_of_order_is_refused
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_premise
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodlfk]
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodcrlfk]
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodcrk]
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does[eodlfcrlf]
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_null_key_is_a_null_key
+19 test_parallel_copy.py::test_parallel_copy_eod_marker_after_key_out_of_order_is_refused
+
 # PostgreSQL 15 to 17: virtual generated columns arrived in PostgreSQL 18, so the
 # virtual arm of test_generated_columns.py declines, as the shell records its skip.
 15 test_generated_columns.py::test_virtual_generated_row_count
