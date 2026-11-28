@@ -887,6 +887,21 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   verb in the same transaction then waits for a busy row group while it holds that
   lock, and a writer can get 40P01. The maintenance daemon runs each verb in its
   own transaction (#2194).
+- With `pgcolumnar.parallel_flush` on, each flush worker reads the type cache in
+  a transaction of its own. For a column whose type is or contains a composite,
+  that takes ACCESS SHARE on the composite's table. The inserting backend waits
+  for its workers in the lock manager, on advisory locks of class 110 that show
+  in `pg_locks` (#2256). Each worker takes its lock before it connects, because
+  connecting reads `pg_database`. Another session may hold a conflicting lock on that table
+  and then wait for a lock the inserting transaction holds. The deadlock detector
+  then ends the cycle after `deadlock_timeout`. If it picks a worker, the backend
+  logs a WARNING with the worker's SQLSTATE `40P01` and its detail. It then
+  encodes that worker's columns itself, and the statement goes on. If it picks
+  the backend or the other session, that statement fails with 40P01. The
+  backend's waits on its workers are not limited by `lock_timeout`, and
+  `log_lock_waits` does not report them. The backend waits for its workers one
+  at a time. A cycle that closes only when it moves on to a later worker is
+  found after the backend's own `deadlock_timeout`.
 
 ## Row locking
 

@@ -1766,7 +1766,11 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 	 * never contends, so the flag stays off there.
 	 */
 	if (hdr->single_table)
+	{
 		pgcolumnar_bulk_parallel_writer = true;
+		/* and fail, rather than wait, on a target row created during the load (#2161) */
+		pgcolumnar_parallel_copy_target = hdr->relid;
+	}
 
 	PG_TRY();
 	{
@@ -2212,12 +2216,14 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		 * reported XX000 "coordinator exited without reporting a result"
 		 * instead of the 40P01. The PG_CATCH below records it for the caller.
 		 *
-		 * Single-table load: pre-create and COMMIT the storage catalog row before any
-		 * loader starts, in the coordinator's own top-level session (the SQL function
-		 * cannot commit). With the row committed, each loader -- which sets
-		 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
-		 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
-		 * coordinator itself leaves the flag off, so this uses the normal create path.
+		 * Single-table load: pre-create and COMMIT the storage catalog rows -- the
+		 * table's and each of its projections' (#2161) -- before any loader starts,
+		 * in the coordinator's own top-level session (the SQL function cannot
+		 * commit). With the rows committed, each loader -- which sets
+		 * pgcolumnar_bulk_parallel_writer -- sees them and skips the storage-row
+		 * creation lock, so N loaders write the one storage and its projections
+		 * concurrently and 2PC-safely. The coordinator itself leaves the flag off,
+		 * so this uses the normal create path.
 		 */
 		if (hdr->single_table)
 		{

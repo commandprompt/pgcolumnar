@@ -2725,4 +2725,34 @@ guard_tests 910
 # statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
 # collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6624
+# cluster_tests 6617 -> 6625 for #2256's arm 9 in test_parallel_flush_optin.py: eight tests (the ordered two-session
+# cycle through a parallel flush worker ends in 40P01 with the worker, the backend or the other session as the victim,
+# and with every deadlock_timeout at 1 s; with two workers the backend waits for the second worker's run lock too;
+# the waits ignore lock_timeout and log_lock_waits, the session's settings read back, and no backend died), by
+# collection of that file (37 -> 45) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6625 -> 6626, still #2256, for the #2270 review's B1: test_cycle_a_cycle_while_a_worker_connects_ends_in_40p01
+# in test_parallel_flush_optin.py (a cycle through a worker that is still connecting, held up on pg_database, ends in
+# 40P01), by collection of that file (45 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6626 -> 6637 for #2161's eleven tests in test_parallel_copy.py:
+# test_parallel_copy_into_an_empty_projection_loads_every_row (5 parametrized: 2 and 4 workers into a projection
+# that holds no rows yet load every row and fill the projection; 1 worker, a projection that already holds rows
+# and no projection are the controls), test_parallel_copy_records_the_empty_projections_storage_row_as_one_worker_does,
+# test_parallel_copy_into_three_empty_projections_fills_each_one,
+# test_parallel_copy_projection_committed_during_the_load_premise,
+# test_parallel_copy_projection_committed_during_the_load_fails_cleanly,
+# test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
+# test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6637 -> 6639, still #2161, after #2226 (#2215) made the add_projection race unreachable: the two
+# race tests, test_parallel_copy_projection_committed_during_the_load_premise and _fails_cleanly, are replaced by
+# test_parallel_copy_truncated_projections_premise, test_parallel_copy_after_truncate_fills_both_projections,
+# test_parallel_copy_storage_row_gone_during_the_load_premise and
+# test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6639 -> 6646 for #2260's seven tests in test_parallel_copy.py:
+# test_parallel_copy_eod_marker_after_key_premise, test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does
+# (4 parametrized), test_parallel_copy_eod_marker_after_null_key_is_a_null_key and
+# test_parallel_copy_eod_marker_after_key_out_of_order_is_refused, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6646

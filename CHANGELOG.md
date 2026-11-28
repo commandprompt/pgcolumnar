@@ -690,6 +690,26 @@ true until the next version shipped.
   already set is left to the writer, which clears its own rows' blocks after it
   writes them. `test/index_only.sh` and `test_index_only.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` in a lock cycle through a flush worker (#2256).
+  A worker opens a composite column's table with ACCESS SHARE when it reads
+  the type cache. When another session held a conflicting lock on that table
+  and then asked for a lock the inserting transaction holds, such as
+  `LOCK TABLE ... IN SHARE MODE` on the columnar table, the worker waited for
+  that session and that session waited for the backend. The backend waited
+  for the worker on a latch, which the deadlock detector does not see. Each
+  worker now holds an advisory lock of a new class (110) from just before it
+  connects, and the backend waits on those locks. Connecting reads
+  `pg_database`, so a cycle through a worker that is still connecting, for
+  example one through a superuser's `LOCK TABLE pg_database`, is found too. The deadlock detector then
+  ends the cycle with `deadlock detected` (40P01) after `deadlock_timeout`.
+  If it picks the worker, the backend logs the worker's error as a WARNING
+  with its SQLSTATE, detail and hint, encodes that worker's columns itself,
+  and the INSERT goes on. If it picks the backend or the other session, that
+  statement fails with 40P01. These waits on the workers do not count against
+  `lock_timeout` and are not reported by `log_lock_waits`.
+  docs/configuration.md and docs/limitations.md. `parallel_flush_optin.sh`
+  arm 9 and `test_parallel_flush_optin.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   until `statement_timeout` when a column's type is or contains a composite
   whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
   `TRUNCATE` or `LOCK TABLE` on that table (#2182). The column may be the
@@ -1336,6 +1356,31 @@ true until the next version shipped.
   no cluster and no race: a descriptor listed but gone by its readlink no
   longer hides the lock, and a pid that does not exist reads 0 of 0. The
   `flock -F` check's own descriptor count skips a vanished descriptor too.
+- `pgcolumnar.parallel_copy` with 2 or more workers into a table whose
+  projection holds no rows yet now loads, where it waited until
+  `statement_timeout` and rolled back (#2161). A projection's write records the
+  projection's own storage row, and a projection with no rows has none. The
+  coordinator pre-created only the table's row, so the first loader to write
+  the projection created its row under the storage-row lock, and its `PREPARE
+  TRANSACTION` kept that lock. The next loader waited for the prepared
+  transaction, and the coordinator waited for that loader before it would
+  commit any of them. A prepared transaction never waits, so PostgreSQL's
+  deadlock detector saw no cycle. The coordinator now pre-creates and commits
+  each projection's storage row with the table's, as a 1-worker load would
+  record it. Since #2215 and #2229 no DDL can add a projection during the
+  load, so a loader should always find those rows. A single-table loader that
+  reaches a storage row of its target that is not there fails with 55000
+  instead of creating it under the lock, and the coordinator rolls every range
+  back. Only the target's storages are refused: a trigger that writes another
+  columnar table still creates that table's row. A session that sets
+  `pgcolumnar.bulk_parallel_writer` by hand keeps the locked path. 2 and 4
+  workers into an empty projection, 2 workers into three, and 2 workers into
+  two projections that a `TRUNCATE` emptied load every row and fill every
+  projection; 1 worker, a projection that already holds rows, and a table with
+  no projection are the controls. `parallel_copy.sh` and
+  `test_parallel_copy.py`; the loader's refusal is reached by deleting a
+  projection's storage row from the catalog while a CHECK constraint holds the
+  loaders.
 - `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
   calling transaction has already written to the target, or to one of its
   partitions, for example with an `INSERT` earlier in the same transaction
@@ -1719,8 +1764,8 @@ true until the next version shipped.
   and their pytest twins, cover both functions. A new check in
   `test/parallel_copy.sh`, and its twin, shows that `parallel_copy` into a table
   with a projection fills the projection. With 2 or more workers into a
-  projection that holds no rows yet, `parallel_copy` hangs, for another reason
-  (#2161).
+  projection that holds no rows yet, `parallel_copy` hung, for another reason
+  (#2161, fixed since).
 - A `pgcolumnar.parallel_copy` loader that fails now closes its file once
   (#2083). It closed the file after aborting its transaction, but the abort
   had already closed it. Each failed loader logged `fd passed to
