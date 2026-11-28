@@ -2605,9 +2605,42 @@ guard_tests 910
 # (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
 # (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
-# cluster_tests 6317 -> 6325, #2258: four tests in test_objstore_http_read.py and four in test_objstore_tls_read.py
+# cluster_tests 6317 -> 6335 for #2167: test_rewrite_snapshot.py, the twin of the new rewrite_snapshot.sh
+# (18 tests), by collection over the cluster files.
+# cluster_tests 6335 -> 6337 for #2252's two tests in test_parallel_copy.py: a missing file into a table with an
+# INSERT row trigger with 2 workers gets the 0A000 trigger refusal before the file is opened, and the control
+# that the same call with 1 worker gets 58P01, by collection of that file (369 on main 0072cd88, 371 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6337 -> 6354 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
+# target (LOCK TABLE, CREATE INDEX) and waiting for the caller's lock gets 40P01 on one side (2), the caller's
+# lock_timeout ends a wait for another session's SHARE on the target and on a partition (2), the caller waits in
+# the lock manager before any worker starts (2) and then loads (2 controls), #2183's and #2211's refusals come
+# before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
+# CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
+# lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
+# cluster_tests 6354 -> 6358 for the review of #2244 in test_parallel_copy.py: the second-loader row lock (a
+# fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
+# step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
+# cluster files.
+# cluster_tests 6358 -> 6365 for #2245's seven tests in test_parallel_export_parquet.py: an ACCESS EXCLUSIVE
+# request queued behind the caller on the table and on a leaf does not hang the export (2), a cycle through the
+# dispatcher's own wait still ends in 40P01 (control), the caller's lock_timeout bounds its wait for the table,
+# the waits on the workers are neither limited by lock_timeout nor logged, and the caller's settings read back
+# unchanged, and a worker picked as the deadlock victim reaches the caller as 40P01 with its detail, by
+# collection of that file (64 on main 0072cd88, 71 here) and over the cluster files.
+# cluster_tests 6365 -> 6384 for #2222's nineteen tests in test_parallel_copy.py: two premises
+# (test_parallel_copy_malformed_row_premise and _controls_premise), test_parallel_copy_malformed_row_gets_copys_error
+# (9 parametrized rows COPY refuses before it reads a value, compared with heap COPY),
+# test_parallel_copy_row_copy_loads_is_not_left_for_core (6 parametrized controls), and
+# test_parallel_copy_eod_marker_after_last_field_follows_the_major and its CRLF twin, by collection of that file
+# (369 on main 0da8ea00, 388 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6384 -> 6386, still #2222, for jdatcmd's review of #2259 at 2fc9283d (mutant N4 there): the premise
+# test_parallel_copy_malformed_then_unsorted_premise and test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core,
+# by collection of test_parallel_copy.py (388 at 2fc9283d, 390 here) and over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it).
+# cluster_tests 6386 -> 6394, #2258: four tests in test_objstore_http_read.py and four in test_objstore_tls_read.py
 # (a close after a whole 103 interim head on a kept-alive connection is refused, after one GET; after reads answered
 # 103 first, a kept-alive connection closed unanswered is still retried, and the server closed one on each read), by
 # collection of those two files (112 and 41 on main b888a5ae, 116 and 45 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6325
+cluster_tests 6394
