@@ -2651,4 +2651,16 @@ guard_tests 910
 # cluster_tests 6432 -> 6439 for #2184's scenarios L and M in test_concurrency.py (jdatcmd's review of 7b8cb54a): the
 # group locks held from before the same-row check to commit, and taken in group order, by collection of that file
 # (46 -> 53) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6439
+# cluster_tests 6439 -> 6448 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
+# serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
+# same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
+# workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6448 -> 6451 for the #2250 review's three tests in test_parallel_flush_optin.py: a column under an
+# ICU collation, and one under a libc collation, created in the same transaction flushes serially with no worker
+# failure, and a column under a collation from an earlier transaction flushes in workers, by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6451 -> 6455 for the #2250 re-review's four tests in test_parallel_flush_optin.py: a column whose
+# enum type, or whose ICU collation, a savepoint created, released or still open, flushes serially with no worker
+# failure, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6455
