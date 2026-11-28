@@ -282,6 +282,14 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
+  refusal for 2 or more workers (#2187) comes before the file is opened, as
+  #2209 pinned for the unique-index refusal (#2252). A missing file on a table
+  with an INSERT row trigger gets the trigger refusal, `0A000` with its hint,
+  not `58P01`. With 1 worker the same call gets `58P01`. Before this, moving
+  the trigger refusal after the file is opened passed both suites.
+  docs/limitations.md and docs/sql-reference.md state that order for both
+  refusals. Test-only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin two edges of the
   unique-index refusal for 2 or more workers (#2209). A heap table with a primary
   key gets `42809` before that refusal: the heap fixture now has a primary key.
@@ -636,6 +644,57 @@ true until the next version shipped.
   table's storage row, the caller now gets the coordinator's 40P01 with its
   DETAIL. It used to get XX000 `coordinator exited without reporting a result`.
   docs/limitations.md. `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb inside the
+  transaction no longer changes what the transaction sees (#2167). `recluster`,
+  `recluster_hilbert`, `compact_rewrite`, `cluster`, `cluster_hilbert`, `vacuum`
+  and `vacuum_sorted` read the newest committed rows and write them as the
+  calling transaction's own, so the transaction then saw a row another session
+  inserted after its snapshot and lost a row another session deleted after it.
+  Heap's `CLUSTER` keeps both as the snapshot saw them. At those levels each verb
+  now compares what the transaction's snapshot and its own read see of the groups
+  it rewrites: each group visible to the snapshot with the same deleted-row count,
+  and for a whole-table verb the same list of groups. When they differ it raises
+  40001 with `could not rewrite table "t": rows changed after this transaction's
+  snapshot`, and a retry runs. When they agree it runs as before. The maintenance
+  daemon now forces `READ COMMITTED`, as PostgreSQL's autovacuum does, so a
+  `default_transaction_isolation` of `repeatable read` does not make it skip a
+  busy table. docs/limitations.md and docs/sql-reference.md.
+  `test/rewrite_snapshot.sh` and `test_rewrite_snapshot.py`.
+- An AFTER trigger of a DELETE or UPDATE that reads the table through an
+  index-only scan no longer counts rows its own statement deleted, when a
+  VACUUM ran during the statement (#2169). The writer keeps its delete marks in
+  memory until the statement ends. A VACUUM cannot see them, so it set the
+  blocks all-visible again, and AFTER triggers fire before the statement's end
+  writes the marks. #2059 fixed the result after commit, not inside the
+  statement. Measured on main: a DELETE of 39 rows saw 38 of them in its trigger
+  (heap 0), and an UPDATE of 39 rows saw 77 (heap 39). Each statement now
+  writes this backend's marks for every table it names before it starts, as a
+  sequential scan already did for its own table. A VACUUM then sees the marks,
+  and the write clears any bit it set. The tests also read inside an EXCEPTION
+  block that rolls back, and check that the marks still reach the catalog.
+  A DELETE that fails after such a nested read leaves every row live in the
+  next transaction. A second writer of the same rows now waits for the first
+  from the nested statement's start, then gets the documented
+  `serialization_failure` (docs/limitations.md). The #2059 test that commits a
+  DELETE during VACUUM's pause now holds VACUUM 15 s instead of 5 s, because its
+  400,000-row DELETE did not always finish within 5 s on a loaded machine.
+  `test/index_only.sh` and `test_index_only.py`.
+- A remote read over `https://` now retries a kept-alive connection that the
+  server closed without a TLS `close_notify`, as a plain `http://` read does
+  (#2246). Since #2225 the reader retries once, on a new connection, when a
+  kept-alive connection ends before any byte of an answer. OpenSSL 3 reports a
+  TLS connection that ends with no `close_notify` as an unexpected EOF
+  (`SSL_ERROR_SSL`), not as `SSL_ERROR_SYSCALL` with errno 0, so over TLS the
+  read failed with 08006 `TLS read from ... failed`. A load balancer or store
+  that drops idle connections this way hit that error. The reader now takes
+  that EOF, and only that reason, as the stale keep-alive case when no byte of
+  an answer has arrived. The same EOF on a fresh connection now fails with
+  08006 `failed before a response`, as it does over plain TCP. An EOF in the
+  middle of an answer, and any other TLS error, still fail with `TLS read from
+  ... failed` and are not retried. A build against an OpenSSL without
+  `SSL_R_UNEXPECTED_EOF_WHILE_READING` is unchanged. `test/objstore_tls_read.sh`
+  and `test_objstore_tls_read.py`.
+
 - `ORDER BY ... LIMIT` no longer returns rows in the wrong order on a table
   whose sort key column was dropped on a build older than #2135, once another
   column is renamed to the dropped name (#2175). The ordering mark from that

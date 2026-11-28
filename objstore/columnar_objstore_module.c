@@ -1139,6 +1139,20 @@ os_fill(PgColumnarObjHandle *h, bool staleOk)
 				h->fail_errno = errno;
 				return false;	/* reset before an answer: stale keep-alive */
 			}
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+
+			/*
+			 * OpenSSL 3 reports an EOF without close_notify as SSL_ERROR_SSL
+			 * with this reason, not as SSL_ERROR_SYSCALL with errno 0, so the
+			 * branch above never sees it there (#2246). Before any byte of an
+			 * answer it is the stale keep-alive race, as on a plain socket.
+			 * After one, it is a truncated answer and raises below. Only this
+			 * reason: any other TLS error is not one a new connection fixes.
+			 */
+			if (staleOk && serr == SSL_ERROR_SSL &&
+				ERR_GET_REASON(ERR_peek_error()) == SSL_R_UNEXPECTED_EOF_WHILE_READING)
+				return false;	/* EOF before an answer: stale keep-alive */
+#endif
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("columnar: TLS read from \"%s\" failed", h->url)));

@@ -771,6 +771,7 @@ extern void PgColumnarResetProjectionWritersForRelation(Oid relid);
  * delete vector / delete tracking (pgcolumnar_delete_vector.c, spec 7.5, 9)
  * ------------------------------------------------------------------------- */
 extern void PgColumnarFlushDeleteVectorForRelation(Relation rel);
+extern void PgColumnarFlushDeleteVectorForRelid(Oid relid);
 
 /* -------------------------------------------------------------------------
  * reader (pgcolumnar_reader.c)

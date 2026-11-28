@@ -1774,6 +1774,17 @@ check "parallel_copy refuses a single table with a BEFORE INSERT row trigger and
 check "parallel_copy refuses a single table with an AFTER INSERT statement trigger and 4 workers with 0A000, not a hang (#2187)" \
 	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgs'::regclass, '$F', 4)")" \
 	"$(want_trigger t_tgs t_tgs_k)"
+# The trigger refusal comes before the file is opened, like the unique-index one
+# (#2252, #2209): it depends only on the table and the worker count, so a missing
+# file on a table with an INSERT trigger gets 0A000, not 58P01. With 1 worker the
+# same call opens the file and gets 58P01, which shows that the path is really
+# missing.
+check "parallel_copy refuses a missing file for a single table with an INSERT row trigger and 2 workers with 0A000, before it opens the file (#2252)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '$DATADIR/nope.txt', 2)")" \
+	"$(want_trigger t_tga t_tga_k)"
+check "control: parallel_copy gives a missing file for a single table with an INSERT row trigger and 1 worker 58P01 (#2252)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '$DATADIR/nope.txt', 1)")" \
+	"58P01 could not open file \"$DATADIR/nope.txt\" for reading: No such file or directory | no hint"
 # A trigger that writes a columnar table with no index and no storage row yet
 # hung the load instead (issue #2187, comment of 2026-11-27): the first loader
 # took that table's storage-row lock and prepared, and the second waited on it.
