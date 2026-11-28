@@ -374,7 +374,22 @@
 # NO_CLUSTER: 899 tests collected.
 # guard_tests 899 -> 900 for #2201's test_the_subset_runs_export_sink in test_sanitizer_gate.py: the sanitizer
 # subset runs export_sink, by collection over NO_CLUSTER: 900 tests collected.
-guard_tests 900
+# guard_tests 899 -> 902 for #2165's three tests in test_runshape.py (four shell pickers with one seed get
+# four ports, two twin runs asking one slot get two, a shell suite and a twin never share one and reserve
+# in one directory), by collection over NO_CLUSTER (900 when written, on main 2e3fea7a plus #2195).
+# guard_tests 902 -> 908 for #2165's review (jdatcmd at b80617ac), six tests in test_runshape.py: three READY
+# waits on pgc_cluster.await_ready (a fixture that exits, one that says READY late, one that never says it) and
+# three on how long a port reservation holds (60 s and 121 s for a gone picker, any age for a live one), by
+# collection over NO_CLUSTER (906 when written, on main e000e095).
+# Both restated on main 3d2277c1 by the merge of it.
+# guard_tests 908 -> 909 for #2165's harness independence (jdatcmd on #2208: CI red in test_harness_deps.py),
+# by collection over NO_CLUSTER on main 3d2277c1: 909 tests collected. test_runshape.py no longer runs the
+# shell picker; it tests pick_port alone against the reservation protocol, and selftest 660 does the same for
+# the shell. Two tests out (four shell pickers from one seed; a shell suite and a twin), three in (a pick waits
+# for a picker that holds the lock; the reservation names the picker's pid and the time; the default
+# directory), and the twin collision arm now runs four pickers rather than two (renamed).
+# All of #2165's ten restated on main 0da8ea00 by the merge of it: 900 + 10 = 910, by collection.
+guard_tests 910
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2576,8 +2591,24 @@ guard_tests 900
 # primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
 # call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6277 -> 6285 for #2170's eight tests in test_index_only.py (test_2170_*): three premises, the
-# deleted blocks cleared, the clean blocks an earlier VACUUM set and the blocks this VACUUM set in a clean
-# group keeping their bits, and two index-only counts, by collection of that file (68 on main 728d4217, 76
-# here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6285
+# cluster_tests 6277 -> 6285, #2246: eight tests in test_objstore_tls_read.py (30 reads from a server that closes
+# each kept-alive TLS connection without close_notify; the server closed one on each read; and, for an EOF after
+# half a body, an EOF on a fresh connection and a TLS record error on a kept-alive connection, the refusal and the
+# GET count), by collection of that file (31 on main 0072cd88, 39 here) and over the cluster files (the complement
+# of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6285 -> 6287, #2248 review: two more tests in test_objstore_tls_read.py (a bad record MAC on a
+# kept-alive connection is refused, after one GET), by collection of that file (39 -> 41) and over the cluster files.
+# cluster_tests 6287 -> 6317 for #2169's thirty tests in test_index_only.py: an AFTER STATEMENT trigger
+# of a DELETE (test_trigger_of_delete_during_vacuum_*), of an UPDATE (test_trigger_of_update_during_vacuum_*)
+# and of a DELETE that reads inside an EXCEPTION block that rolls back (test_trigger_in_exception_block_*),
+# seven each; then, for jdatcmd's review of #2241, four for a DELETE that fails after a nested read
+# (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
+# (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
+# cluster_tests 6317 -> 6334 for #2170's seventeen tests in test_index_only.py (test_2170_*): eight for a
+# DELETE between VACUUM's two steps (three premises, the deleted blocks cleared, the clean blocks an earlier
+# VACUUM set and the blocks this VACUUM set in a clean group keeping their bits, two index-only counts); five
+# for a DELETE in the last block of a run during the hold and four for a DELETE in a block shared by two
+# row groups (the #2257 review's B1 and B2), by collection of that file (98 on main dd4e2f6e, 115 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6334
