@@ -2763,7 +2763,12 @@ guard_tests 910
 # table a trigger writes), the 40P01's DETAIL names the loader's lock and its relation (5), and a retry after
 # ROLLBACK TO SAVEPOINT gets 40P01 again while a load after ROLLBACK loads (5), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6657 -> 6658 for #2191 in test_parallel_export_parquet.py:
+# cluster_tests 6657 -> 6662 for #2271's arm 10 in test_parallel_flush_optin.py: five tests (a worker waiting on a
+# composite's table, and one held up connecting on pg_database, give up at the caller's lock_timeout and the INSERT
+# commits serially; a longer lock_timeout, and a caller's 0 over a role's 1 s setting, let the worker wait; no backend
+# died), by collection of that file (46 -> 51) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6662 -> 6663 for #2191 in test_parallel_export_parquet.py:
 # test_pexport_the_documented_worker_counts_fit_a_default_server, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6658
+cluster_tests 6663
