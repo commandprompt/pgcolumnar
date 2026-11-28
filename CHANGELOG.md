@@ -622,6 +622,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` into a partitioned target now refuses a row that
+  `COPY FROM` refuses before it reads a value with `COPY`'s SQLSTATE and
+  message (#2222). The splitter reads every row's key before any loader runs,
+  so such a row was refused on its key: a row with an extra field or `\.` in
+  the key got 22P02, a raw byte that is not valid in the encoding got 22P02,
+  a raw NUL got 22P04 or 22000, where `COPY` gives 22P04 or 22021. The
+  splitter now checks a row's encoding, its unescaped `\.` and its field
+  count as core does, and leaves a row that fails one in the current range,
+  where that range's loader raises core's error behind `worker N failed:`. A
+  row `COPY` loads is never left this way, so each worker still loads only
+  its own partitions. docs/limitations.md. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`.
 - `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when
   another session holds SHARE on the target and then waits for a lock the
   caller holds (#2229). `LOCK TABLE ... IN SHARE MODE` and `CREATE INDEX` take
