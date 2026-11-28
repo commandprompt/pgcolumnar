@@ -2734,7 +2734,23 @@ guard_tests 910
 # in test_parallel_flush_optin.py (a cycle through a worker that is still connecting, held up on pg_database, ends in
 # 40P01), by collection of that file (45 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-# cluster_tests 6626 -> 6657 for #2268's thirty-one tests in test_index_only.py (test_2268_*): ten for a DELETE
+# cluster_tests 6626 -> 6637 for #2161's eleven tests in test_parallel_copy.py:
+# test_parallel_copy_into_an_empty_projection_loads_every_row (5 parametrized: 2 and 4 workers into a projection
+# that holds no rows yet load every row and fill the projection; 1 worker, a projection that already holds rows
+# and no projection are the controls), test_parallel_copy_records_the_empty_projections_storage_row_as_one_worker_does,
+# test_parallel_copy_into_three_empty_projections_fills_each_one,
+# test_parallel_copy_projection_committed_during_the_load_premise,
+# test_parallel_copy_projection_committed_during_the_load_fails_cleanly,
+# test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
+# test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6637 -> 6639, still #2161, after #2226 (#2215) made the add_projection race unreachable: the two
+# race tests, test_parallel_copy_projection_committed_during_the_load_premise and _fails_cleanly, are replaced by
+# test_parallel_copy_truncated_projections_premise, test_parallel_copy_after_truncate_fills_both_projections,
+# test_parallel_copy_storage_row_gone_during_the_load_premise and
+# test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6639 -> 6670 for #2268's thirty-one tests in test_index_only.py (test_2268_*): ten for a DELETE
 # that commits during VACUUM's first pause, read while VACUUM holds the row group (four premises, the block
 # unset, no deleted row through an index-only scan, a second DELETE timing out on VACUUM's lock, VACUUM
 # finishing, the state after it); five for a writer that holds the group's lock with its transaction open (two
@@ -2744,4 +2760,4 @@ guard_tests 910
 # groups, the two locks, the bits after VACUUM, relallvisible after a second VACUUM); and one that the new pause
 # is superuser-only, by collection of that file (115 on main 503f05f9, 146 here) and over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6657
+cluster_tests 6670
