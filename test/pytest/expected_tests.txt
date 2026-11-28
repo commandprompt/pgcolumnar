@@ -2763,6 +2763,11 @@ guard_tests 910
 # table a trigger writes), the 40P01's DETAIL names the loader's lock and its relation (5), and a retry after
 # ROLLBACK TO SAVEPOINT gets 40P01 again while a load after ROLLBACK loads (5), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6657 -> 6662 for #2271's arm 10 in test_parallel_flush_optin.py: five tests (a worker waiting on a
+# composite's table, and one held up connecting on pg_database, give up at the caller's lock_timeout and the INSERT
+# commits serially; a longer lock_timeout, and a caller's 0 over a role's 1 s setting, let the worker wait; no backend
+# died), by collection of that file (46 -> 51) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
 # cluster_tests 6626 -> 6679 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
 # (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
 # guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
@@ -2780,4 +2785,5 @@ guard_tests 910
 # inside the INSERT sees the statement's earlier rows) and A (no crash after failed parallel queries), by collection
 # of that file (54 -> 60).
 # restated after the merge of origin/main 899f788f (#2277): 6657 + 59 = 6716.
-cluster_tests 6716
+# restated after the merge of origin/main dd3dca87 (#2275): 6662 + 59 = 6721.
+cluster_tests 6721
