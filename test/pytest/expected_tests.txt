@@ -2665,4 +2665,9 @@ guard_tests 910
 # the verb finishes, per verb; a verb stopped with 55P03 holds no turnstile lock and the next delete does not
 # wait, per verb), one test renamed (the turnstile is kept to commit), by collection of that file (133 here)
 # and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6484
+# cluster_tests 6484 -> 6490, the review of #2253 at 3de3537e (C1): six tests in test_native_rewrite_conc.py (a
+# delete at REPEATABLE READ, at SERIALIZABLE, and at REPEATABLE READ by default_transaction_isolation, the first
+# statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
+# collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+cluster_tests 6490

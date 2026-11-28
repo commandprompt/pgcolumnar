@@ -643,7 +643,11 @@ true until the next version shipped.
   40001. The poll is not a lock wait, so it adds no deadlock and does not cancel
   the maintenance daemon. With 8 clients each deleting one row and holding its
   lock for 200 ms, both verbs now finish within a 2 s limit. A writer that read
-  a row group before the rewrite retired it still fails with 40001, as before. docs/limitations.md,
+  a row group before the rewrite retired it still fails with 40001, as before.
+  Writers at REPEATABLE READ or SERIALIZABLE do not wait: their snapshot is
+  taken before the wait, so waiting could only make them fail. Steady deletes
+  at those levels can still keep a rewrite from its locks. The turnstile is held
+  until the rewrite's transaction commits. docs/limitations.md,
   docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
   and `test_native_rewrite_conc.py`.
 - Two writers to one table no longer deadlock on the chunk-group and
