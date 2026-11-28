@@ -415,6 +415,10 @@ q "CREATE TABLE ty_c (x int, y int);
    CREATE TABLE tym (a int, b int, r ty_r_multirange) USING pgcolumnar;
    CREATE TABLE tye (a int, b int) USING pgcolumnar;
    CREATE TABLE tyk (a int, b int) USING pgcolumnar;
+   CREATE TABLE tysr (a int, b int) USING pgcolumnar;
+   CREATE TABLE tyso (a int, b int) USING pgcolumnar;
+   CREATE TABLE tycr (a int, b int) USING pgcolumnar;
+   CREATE TABLE tycp (a int, b int) USING pgcolumnar;
    CREATE TABLE tyl (a int, b int) USING pgcolumnar;
    CREATE COLLATION ty_co (provider = icu, locale = 'und');
    CREATE TABLE tyo (a int, b int, s text COLLATE ty_co) USING pgcolumnar;" >/dev/null
@@ -447,6 +451,17 @@ check_text "a parallel flush of a column whose ICU collation the same transactio
 	"$(typeflush tyk "CREATE COLLATION ty_ck (provider = icu, locale = 'und'); ALTER TABLE tyk ADD COLUMN s text COLLATE ty_ck" "INSERT INTO tyk SELECT g, g, 'v' || g $TYG" "a")" "$TYSERIAL"
 check_text "a parallel flush of a column whose libc collation the same transaction created runs serially, with no worker failure (#2182)" \
 	"$(typeflush tyl "CREATE COLLATION ty_cl (provider = libc, locale = 'C'); ALTER TABLE tyl ADD COLUMN s text COLLATE ty_cl" "INSERT INTO tyl SELECT g, g, 'v' || g $TYG" "a")" "$TYSERIAL"
+# The same, created inside a savepoint, released or still open. The row's xmin is
+# then the subtransaction's, not the top-level transaction's, so a test against the
+# top-level transaction ID alone misses it (#2250 review).
+check_text "a parallel flush of a column whose type a released savepoint of the same transaction created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tysr "SAVEPOINT s; CREATE TYPE ty_esr AS ENUM ('x', 'y'); RELEASE SAVEPOINT s; ALTER TABLE tysr ADD COLUMN e ty_esr" "INSERT INTO tysr SELECT g, g, 'x' $TYG" "a")" "$TYSERIAL"
+check_text "a parallel flush of a column whose type a still-open savepoint created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tyso "SAVEPOINT s; CREATE TYPE ty_eso AS ENUM ('x', 'y'); ALTER TABLE tyso ADD COLUMN e ty_eso" "INSERT INTO tyso SELECT g, g, 'x' $TYG" "a")" "$TYSERIAL"
+check_text "a parallel flush of a column whose collation a released savepoint of the same transaction created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tycr "SAVEPOINT s; CREATE COLLATION ty_ccr (provider = icu, locale = 'und'); RELEASE SAVEPOINT s; ALTER TABLE tycr ADD COLUMN s text COLLATE ty_ccr" "INSERT INTO tycr SELECT g, g, 'v' || g $TYG" "a")" "$TYSERIAL"
+check_text "a parallel flush of a column whose collation a still-open savepoint created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tycp "SAVEPOINT s; CREATE COLLATION ty_ccp (provider = icu, locale = 'und'); ALTER TABLE tycp ADD COLUMN s text COLLATE ty_ccp" "INSERT INTO tycp SELECT g, g, 'v' || g $TYG" "a")" "$TYSERIAL"
 check_text "a parallel flush of a column whose non-default collation an earlier transaction created flushes every column in workers (#2182)" \
 	"$(typeflush tyo "TRUNCATE tyo" "INSERT INTO tyo SELECT g, g, 'v' || g $TYG" "a")" "$TYWORKERS"
 # The controls: a composite whose table this transaction does not lock, or holds

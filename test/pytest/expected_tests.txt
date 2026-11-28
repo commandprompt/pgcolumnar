@@ -2585,4 +2585,7 @@ guard_tests 900
 # ICU collation, and one under a libc collation, created in the same transaction flushes serially with no worker
 # failure, and a column under a collation from an earlier transaction flushes in workers, by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6289
+# cluster_tests 6289 -> 6293 for the #2250 re-review's four tests in test_parallel_flush_optin.py: a column whose
+# enum type, or whose ICU collation, a savepoint created, released or still open, flushes serially with no worker
+# failure, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6293

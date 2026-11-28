@@ -582,6 +582,10 @@ def ty(pgc_cluster):
                     "CREATE TABLE tym (a int, b int, r ty_r_multirange) USING pgcolumnar",
                     "CREATE TABLE tye (a int, b int) USING pgcolumnar",
                     "CREATE TABLE tyk (a int, b int) USING pgcolumnar",
+                    "CREATE TABLE tysr (a int, b int) USING pgcolumnar",
+                    "CREATE TABLE tyso (a int, b int) USING pgcolumnar",
+                    "CREATE TABLE tycr (a int, b int) USING pgcolumnar",
+                    "CREATE TABLE tycp (a int, b int) USING pgcolumnar",
                     "CREATE TABLE tyl (a int, b int) USING pgcolumnar",
                     "CREATE COLLATION ty_co (provider = icu, locale = 'und')",
                     "CREATE TABLE tyo (a int, b int, s text COLLATE ty_co) USING pgcolumnar"):
@@ -612,6 +616,22 @@ def ty(pgc_cluster):
             "new libc collation": _type_flush(d, ["CREATE COLLATION ty_cl (provider = libc, locale = 'C')",
                                                   "ALTER TABLE tyl ADD COLUMN s text COLLATE ty_cl"],
                                               f"INSERT INTO tyl SELECT g, g, 'v' || g {TY_G}", "tyl", "a"),
+            # The same inside a savepoint, released or still open: the row's xmin is the
+            # subtransaction's, not the top-level transaction's (#2250 review).
+            "savepoint type released": _type_flush(
+                d, ["SAVEPOINT s", "CREATE TYPE ty_esr AS ENUM ('x', 'y')", "RELEASE SAVEPOINT s",
+                    "ALTER TABLE tysr ADD COLUMN e ty_esr"], f"INSERT INTO tysr SELECT g, g, 'x' {TY_G}", "tysr", "a"),
+            "savepoint type open": _type_flush(
+                d, ["SAVEPOINT s", "CREATE TYPE ty_eso AS ENUM ('x', 'y')", "ALTER TABLE tyso ADD COLUMN e ty_eso"],
+                f"INSERT INTO tyso SELECT g, g, 'x' {TY_G}", "tyso", "a"),
+            "savepoint collation released": _type_flush(
+                d, ["SAVEPOINT s", "CREATE COLLATION ty_ccr (provider = icu, locale = 'und')", "RELEASE SAVEPOINT s",
+                    "ALTER TABLE tycr ADD COLUMN s text COLLATE ty_ccr"],
+                f"INSERT INTO tycr SELECT g, g, 'v' || g {TY_G}", "tycr", "a"),
+            "savepoint collation open": _type_flush(
+                d, ["SAVEPOINT s", "CREATE COLLATION ty_ccp (provider = icu, locale = 'und')",
+                    "ALTER TABLE tycp ADD COLUMN s text COLLATE ty_ccp"],
+                f"INSERT INTO tycp SELECT g, g, 'v' || g {TY_G}", "tycp", "a"),
             "old collation": _type_flush(d, ["TRUNCATE tyo"], f"INSERT INTO tyo SELECT g, g, 'v' || g {TY_G}",
                                          "tyo", "a"),
             "unlocked": _type_flush(d, ["TRUNCATE tyc"],
@@ -679,6 +699,30 @@ def test_type_a_libc_collation_created_in_the_transaction_is_serial(ty, expect):
     expect.text(ty["new libc collation"], TY_SERIAL,
                 "a parallel flush of a column whose libc collation the same transaction created runs serially, "
                 "with no worker failure (#2182)")
+
+
+def test_type_a_type_from_a_released_savepoint_is_serial(ty, expect):
+    expect.text(ty["savepoint type released"], TY_SERIAL,
+                "a parallel flush of a column whose type a released savepoint of the same transaction created "
+                "runs serially, with no worker failure (#2182)")
+
+
+def test_type_a_type_from_an_open_savepoint_is_serial(ty, expect):
+    expect.text(ty["savepoint type open"], TY_SERIAL,
+                "a parallel flush of a column whose type a still-open savepoint created runs serially, with no "
+                "worker failure (#2182)")
+
+
+def test_type_a_collation_from_a_released_savepoint_is_serial(ty, expect):
+    expect.text(ty["savepoint collation released"], TY_SERIAL,
+                "a parallel flush of a column whose collation a released savepoint of the same transaction "
+                "created runs serially, with no worker failure (#2182)")
+
+
+def test_type_a_collation_from_an_open_savepoint_is_serial(ty, expect):
+    expect.text(ty["savepoint collation open"], TY_SERIAL,
+                "a parallel flush of a column whose collation a still-open savepoint created runs serially, with "
+                "no worker failure (#2182)")
 
 
 def test_type_an_earlier_collation_flushes_in_workers(ty, expect):
