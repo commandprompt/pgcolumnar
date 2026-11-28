@@ -150,6 +150,9 @@ JOIN_EXPLAIN = "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE j(
 RESCAN_Q = ("PREPARE r(int) AS SELECT g.g || '|' || (SELECT count(*)::text || '|' || coalesce(sum({t}.k), 0) "
             "FROM {t} JOIN d2 ON {t}.k = d2.k AND d2.grp = g.g WHERE {t}.k >= same($1)) FROM generate_series(1, 2) g(g)")
 RESCAN_WANT = "1|51|416925 2|200|3020100 1|51|416925 2|200|3020100"
+# #2173: f.k <= $2 is frozen at Begin and f.k >= same($1) at the first run.
+BEGIN_KEY_Q = ("PREPARE jb(int, int) AS SELECT count(*)::text || '|' || sum(f.k) FROM f JOIN d ON f.k = d.k "
+               "WHERE f.k >= same($1) AND f.k <= $2")
 TEXT_RESCAN = ("PREPARE r(text) AS SELECT g || '|' || (SELECT count(*) FROM tx WHERE s >= same_t($1) "
                "AND s <= g::text || 'z') FROM generate_series(1, 3) g")
 
@@ -568,6 +571,27 @@ def pp(pgc_cluster):
             _field([line], label) for line in rs
             for label in ("Columnar Chunk Groups Read", "Chunk Groups Removed by Filter",
                           "Runtime Filter Groups Removed") if label in line)
+        # #2173: a key frozen at Begin (f.k <= $2) sits before the runtime range when the
+        # hash join attaches it, and the first run must carry the range over from there.
+        # "Usable Skip Predicates|Chunk Groups Read|Runtime Filter Groups Removed".
+        bk = _transcript(dsn, JOIN_SET + [BEGIN_KEY_Q, "EXECUTE jb(8150, 15000)",
+                                          "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE jb(8150, 15000)"])
+        r["begin key answer"] = bk if isinstance(bk, str) else next(
+            (line for line in bk if re.fullmatch(r"\d+\|\d+", line)), query_error("no answer row"))
+        r["begin key pruning"] = bk if isinstance(bk, str) else "|".join(
+            _field([line], label) for line in bk
+            for label in ("Columnar Usable Skip Predicates", "Columnar Chunk Groups Read",
+                          "Runtime Filter Groups Removed") if label in line)
+        # #2173: each rescan keeps the key frozen at the first run before the new range.
+        # f.k >= same(16001) removes the one group each loop's range leaves.
+        rk = _transcript(dsn, JOIN_SET + [RESCAN_Q.format(t="f"), "EXECUTE r(16001)",
+                                          "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE r(16001)"])
+        r["rescan key answer"] = rk if isinstance(rk, str) else " ".join(
+            line for line in rk if re.fullmatch(r"\d+\|\d+\|\d+", line))
+        r["rescan key pruning"] = rk if isinstance(rk, str) else "|".join(
+            _field([line], label) for line in rk
+            for label in ("Columnar Usable Skip Predicates", "Columnar Chunk Groups Read") if label in line)
+        r["key survived"] = _survived(dsn, pgc_cluster, before)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -1014,6 +1038,30 @@ def test_param_pushdown_a_projection_scan_with_a_first_run_key_removes_groups(pp
 def test_param_pushdown_a_hash_join_rescan_with_a_first_run_key_removes_groups_in_each_loop(pp, expect):
     expect.text(pp["rescan removed"], "0|40|1",
                 "a hash-join rescan with a key frozen at the first run removes groups in each loop (#2065)")
+
+
+def test_param_pushdown_a_begin_key_and_a_first_run_key_under_a_runtime_range_count_what_heap_counts(pp, expect):
+    expect.text(pp["begin key answer"], "51|416925",
+                "a key frozen at Begin and one frozen at the first run under a hash join's runtime range count what heap counts (#2173)")
+
+
+def test_param_pushdown_the_first_run_keeps_the_runtime_range_after_a_begin_key(pp, expect):
+    expect.text(pp["begin key pruning"], "4|1|11",
+                "the first run keeps the runtime range after a key frozen at Begin: four skip predicates, one group read, 11 groups removed by the range (#2173)")
+
+
+def test_param_pushdown_a_hash_join_rescan_whose_first_run_key_removes_each_loops_group_counts_zero(pp, expect):
+    expect.text(pp["rescan key answer"], "1|0|0 2|0|0",
+                "a hash-join rescan whose key frozen at the first run removes each loop's group counts 0 (#2173)")
+
+
+def test_param_pushdown_each_rescan_keeps_the_first_run_key_before_the_new_runtime_range(pp, expect):
+    expect.text(pp["rescan key pruning"], "3|0",
+                "each rescan keeps the key frozen at the first run before the new runtime range: three skip predicates, no group read (#2173)")
+
+
+def test_param_pushdown_the_backend_is_alive_after_the_2173_arms(pp, expect):
+    expect.text(pp["key survived"], "1", "the backend is alive after the #2173 arms")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

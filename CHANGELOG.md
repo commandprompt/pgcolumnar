@@ -282,6 +282,15 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/native_param_pushdown.sh` and `test_native_param_pushdown.py` check that
+  a hash join's runtime range survives the keys a columnar scan freezes (#2173).
+  One arm adds a key frozen at Begin, `f.k <= $2`, beside the key frozen at the
+  first run: the scan must keep four skip predicates and the range must still
+  remove its groups. The other rescans the join once per outer row with a frozen
+  key that removes each loop's last group: each rescan must keep three skip
+  predicates and read no group. Before, copying the range from the start of the
+  predicate array lost its upper bound, so the scan read 7 groups instead of 1
+  with every answer still right, and passed both suites. Test-only.
 - A lock of the `parallel_copy` caller's own on a table its loaders reach
   through a foreign key, a trigger or a sequence, or a write to a fresh
   columnar table a trigger writes, ends with `40P01` within `deadlock_timeout`
