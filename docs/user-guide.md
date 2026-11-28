@@ -96,12 +96,14 @@ file into a directory, and returns the row count. Read the directory back with
 `pgcolumnar.read_parquet`.
 
 ```sql
-SELECT pgcolumnar.parallel_export_parquet('events_load', '/data/events_out', 8);
+SELECT pgcolumnar.parallel_export_parquet('events_load', '/data/events_out', 4);
 SELECT count(*) FROM pgcolumnar.read_parquet('/data/events_out')
   AS t(id bigint, ts timestamptz, val double precision);
 ```
 
-The output directory must be empty, and is created if it does not exist. The caller needs the
+The output directory must be empty, and is created if it does not exist. Each
+worker takes one background worker slot, so at the default `max_worker_processes`
+of 8, six workers fit while no parallel query runs. The caller needs the
 `pg_write_server_files` role. See [Benchmarks](benchmarks.md#import-and-export)
 for measured numbers.
 
