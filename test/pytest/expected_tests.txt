@@ -2758,7 +2758,12 @@ guard_tests 910
 # (4 parametrized), test_parallel_copy_eod_marker_after_null_key_is_a_null_key and
 # test_parallel_copy_eod_marker_after_key_out_of_order_is_refused, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6647 -> 6648 for #2191 in test_parallel_export_parquet.py:
+# cluster_tests 6647 -> 6657 for #2216's ten tests in test_parallel_copy.py: for each of the issue's own-lock cases
+# (the referenced table with 2 workers and with 1, the trigger's table, the trigger's sequence, the fresh columnar
+# table a trigger writes), the 40P01's DETAIL names the loader's lock and its relation (5), and a retry after
+# ROLLBACK TO SAVEPOINT gets 40P01 again while a load after ROLLBACK loads (5), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6657 -> 6658 for #2191 in test_parallel_export_parquet.py:
 # test_pexport_the_documented_worker_counts_fit_a_default_server, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6648
+cluster_tests 6658
