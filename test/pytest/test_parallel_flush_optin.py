@@ -994,3 +994,140 @@ def test_cycle_the_sessions_settings_read_back(cy, expect):
 def test_cycle_no_backend_died(cy, expect):
     expect.text(cy["crashes"], "0 terminated by signal",
                 "no backend died during the lock-cycle cases (#2256)")
+
+
+# ---- a flush worker waits no longer than the caller's lock_timeout (#2271) --------
+#
+# A worker is a session of its own. For a composite column it opens the composite's
+# table with ACCESS SHARE, and connecting reads pg_database with ACCESS SHARE. It
+# waited as long as the server's or its role's lock_timeout allowed, never the
+# inserting session's. A serial flush needs neither lock (A's type cache already holds
+# the entry), so with parallel_flush on A waited for a lock it did not need, past its
+# own lock_timeout. Each worker now takes the caller's lock_timeout before it
+# connects. After connecting, its 55P03 reaches A as a WARNING and A encodes its
+# columns itself; while connecting the worker ends with no report, and A encodes its
+# columns serially.
+#
+# B holds ACCESS EXCLUSIVE on a table and sleeps, A has loaded the type cache entry
+# first, and A then runs a parallel INSERT with one worker (max_parallel_workers 2). A
+# gets a 15 s statement_timeout and B 20 s. The time is A's INSERT alone, which starts
+# as soon as B holds the lock.
+LT_DB = "pgc_parallel_flush_lock_timeout"
+
+
+def _lt_case(db, table, a_lt, locked, hold, select):
+    """-> "A: <what A did> | <rows> rows | <time>", as the shell's lt_case."""
+    out = {}
+    notes = []
+
+    def b():
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, application_name="pf_lt_b") as c:
+                c.execute("SET statement_timeout = '20s'")
+                c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'pf_lt_a' "
+                                    "AND query LIKE 'DO%')"))
+                with c.transaction():
+                    c.execute(f"LOCK TABLE {locked} IN ACCESS EXCLUSIVE MODE")
+                    c.execute(f"SELECT pg_sleep({hold})")
+        except psycopg.Error as exc:
+            out["b"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+
+    t = threading.Thread(target=b)
+    t.start()
+    ms = None
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, application_name="pf_lt_a") as c:
+            c.add_notice_handler(lambda n: notes.append(_cy_note(n)))
+            c.execute("SET max_parallel_workers = 2")
+            c.execute("SELECT (row(1, 1)::cy_c).x")
+            c.execute(_cy_until(f"EXISTS (SELECT 1 FROM pg_locks WHERE relation = '{locked}'::regclass "
+                                "AND mode = 'AccessExclusiveLock' AND granted)"))
+            c.execute(f"SET lock_timeout = '{a_lt}'")
+            c.execute("SET pgcolumnar.parallel_flush = on")
+            c.execute("SET client_min_messages = debug1")
+            c.execute("SET statement_timeout = '15s'")
+            t0 = time.monotonic()
+            c.execute(f"INSERT INTO {table} SELECT {select} FROM generate_series(1, 20000) g")
+            ms = int((time.monotonic() - t0) * 1000)
+    except psycopg.Error as exc:
+        out["a"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+    t.join(60)
+    print(f"-- lt_case {table}: A's INSERT took {ms} ms; B: {out.get('b', 'ok')}")
+    warnings = [n for n in notes if n[0] == "WARNING"]
+    if "a" in out:
+        a_got = out["a"]
+    elif warnings:
+        a_got = f"committed after WARNING {warnings[0][1]} {warnings[0][2]}"
+    else:
+        a_got = f"committed, {_all_split([n[2] for n in notes])}"
+    took = ("no time" if ms is None else "under 3 s" if ms < 3000 else "waited for B" if ms < 10000
+            else f"took {ms} ms")
+    return f"A: {a_got} | {db.q(f'SELECT count(*) FROM {table}')} rows | {took}"
+
+
+@pytest.fixture(scope="module")
+def lt(pgc_cluster):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {LT_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {LT_DB}")
+    try:
+        d = _Db(pgc_cluster.dsn(dbname=LT_DB))
+        d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        d.run("CREATE TABLE cy_c (x int, y int)")
+        for t in ("lt_w", "lt_w0", "lt_wl"):
+            d.run(f"CREATE TABLE {t} (a int, r cy_c) USING pgcolumnar")
+        d.run("CREATE TABLE lt_wc (a int, b int) USING pgcolumnar")
+        before = _cy_crashes(pgc_cluster)
+        r = {
+            "composite": _lt_case(d, "lt_w", "1s", "cy_c", 6, "g, row(g, g)::cy_c"),
+            # the connect phase: B holds pg_database, and A's columns are ints
+            "connect": _lt_case(d, "lt_wc", "1s", "pg_database", 6, "g, g"),
+            # the controls: a longer lock_timeout lets the worker wait, and a caller's 0
+            # is no limit for the worker too, over a role's 1 s setting in the database
+            "longer": _lt_case(d, "lt_wl", "20s", "cy_c", 5, "g, row(g, g)::cy_c"),
+        }
+        d.run(f"ALTER ROLE CURRENT_USER IN DATABASE {LT_DB} SET lock_timeout = '1s'")
+        try:
+            r["zero"] = _lt_case(d, "lt_w0", "0", "cy_c", 5, "g, row(g, g)::cy_c")
+        finally:
+            d.run(f"ALTER ROLE CURRENT_USER IN DATABASE {LT_DB} RESET lock_timeout")
+        now = _cy_crashes(pgc_cluster)
+        r["crashes"] = (f"{now - before} terminated by signal" if isinstance(before, int) and isinstance(now, int)
+                        else f"unreadable:[{before}][{now}]")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {LT_DB} WITH (FORCE)")
+
+
+def test_lock_timeout_a_worker_on_a_composites_table_gives_up(lt, expect):
+    expect.text(lt["composite"],
+                "A: committed after WARNING 55P03 pgcolumnar parallel_flush worker 0 failed, completing its columns "
+                "serially: canceling statement due to lock timeout | 20000 rows | under 3 s",
+                "a parallel flush worker waiting on a composite column's table gives up at the caller's lock_timeout, "
+                "and the INSERT commits its rows serially after a 55P03 WARNING within 3 s (#2271)")
+
+
+def test_lock_timeout_a_connecting_worker_gives_up(lt, expect):
+    expect.text(lt["connect"],
+                "A: committed, not every column in workers:[parallel_flush: 0 of 2 columns by 1 worker;] | "
+                "20000 rows | under 3 s",
+                "a parallel flush worker held up connecting (another session's ACCESS EXCLUSIVE on pg_database) gives "
+                "up at the caller's lock_timeout, and the INSERT commits its rows serially within 3 s (#2271)")
+
+
+def test_lock_timeout_a_longer_lock_timeout_lets_the_worker_wait(lt, expect):
+    expect.text(lt["longer"], "A: committed, every column in workers | 20000 rows | waited for B",
+                "a parallel flush worker waits for a composite column's table while the caller's lock_timeout (20 s) "
+                "has not run out, and encodes every column (#2271)")
+
+
+def test_lock_timeout_a_callers_zero_is_the_workers_too(lt, expect):
+    expect.text(lt["zero"], "A: committed, every column in workers | 20000 rows | waited for B",
+                "a caller's lock_timeout 0 is the parallel flush worker's too, over a role's 1 s setting in the "
+                "database: the worker waits for the composite column's table and encodes every column (#2271)")
+
+
+def test_lock_timeout_no_backend_died(lt, expect):
+    expect.text(lt["crashes"], "0 terminated by signal",
+                "no backend died during the lock_timeout cases (#2271)")
