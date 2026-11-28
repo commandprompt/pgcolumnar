@@ -25,9 +25,13 @@
 #include "columnar_metadata.h"
 #include "access/relation.h"
 #include "access/xact.h"
+#include "miscadmin.h"
+#include "pgstat.h"
+#include "storage/latch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/wait_event.h"
 
 /* one chunk group's accumulated delete bits */
 typedef struct DeleteVectorChunkBuffer
@@ -332,6 +336,33 @@ delete_vector_reset_buffer(DeleteVectorBuffer *buf)
 }
 
 /*
+ * delete_flush_hold
+ *		Dev/test pause (#2268): wait pgcolumnar.delete_flush_hold_ms,
+ *		interruptibly, after a flush has taken its chunk-group locks and before
+ *		it writes any delete_vector row, so a test can run a lazy VACUUM while
+ *		a writer holds a group's lock with no row of its own in the catalog
+ *		yet. Reports wait event Extension. Zero (the default) returns at once.
+ */
+static void
+delete_flush_hold(void)
+{
+	long		remaining = (long) pgcolumnar_delete_flush_hold_ms;
+
+	while (remaining > 0)
+	{
+		long		slice = Min(remaining, 1000L);
+		int			rc;
+
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   slice, PG_WAIT_EXTENSION);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		remaining -= slice;
+	}
+}
+
+/*
  * delete_vector_flush_buffer
  *		Apply one buffer's accumulated marks to the catalog and empty it. Each
  *		chunk group is upserted exactly once, so no catalog tuple is updated
@@ -376,6 +407,9 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 
 		PgColumnarLockChunkGroup(buf->storageId, chunk->stripeId);
 	}
+
+	/* the group locks are held and no delete_vector row is written yet */
+	delete_flush_hold();
 
 	/*
 	 * issue #5: before writing the delete marks, serialize the rows being flushed

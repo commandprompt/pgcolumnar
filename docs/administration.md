@@ -291,6 +291,10 @@ supplies this:
 - `VACUUM` marks a row group all-visible when its inserting transaction is old
   enough and the group has no deletes.
 - Any insert, update, or delete clears the bit for the affected group.
+- `VACUUM` checks a group again, under the lock a delete takes on it, right
+  before it marks the group. So a delete that commits while `VACUUM` runs is never
+  answered from the index. A delete in a group that `VACUUM` is marking waits
+  for it. The wait lasts about as long as marking one block (#2268).
 
 Index-only scans are on by default (`pgcolumnar.enable_index_only_scan`). To make a
 covering query use an index-only scan, run `VACUUM` on the table after the last

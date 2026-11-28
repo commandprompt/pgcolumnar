@@ -290,6 +290,17 @@ true until the next version shipped.
   failed in CI when the one call in the workers' window lost a deadlock and
   rolled back, and it also counted the loop's last call, which can finish after
   the workers. Test-only.
+- `test/unique_conc.sh` and `test_unique_conc.py` pin the scope of the insert
+  key lock from the side that must not wait (#2192). With the first inserter
+  still mid-statement, a second inserter does not wait in four cases: a NULL
+  range on a gist exclusion constraint, a different key on a DEFERRABLE unique
+  constraint, a row outside a partial exclusion constraint's WHERE, and the same
+  key on a table whose only index is not unique. A row inside that WHERE still
+  waits and gets `23P01`. Before this, locking every index, locking a deferrable
+  unique index as one bucket, locking NULL keys or ignoring the predicate on a
+  coarse index, or never locking a partial coarse index, each passed both
+  suites. The pytest twin's teardown now cancels a statement still running and
+  waits until the race's sessions are gone before the next test. Test-only.
 - A lock of the `parallel_copy` caller's own on a table its loaders reach
   through a foreign key, a trigger or a sequence, or a write to a fresh
   columnar table a trigger writes, ends with `40P01` within `deadlock_timeout`
@@ -640,6 +651,27 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+
+- An index-only scan no longer counts rows a DELETE or UPDATE already
+  committed, while a lazy VACUUM of the table runs (#2268). VACUUM judged the
+  row groups from the catalog and set their blocks' visibility-map bits after,
+  in a separate step. A delete that committed between the two had cleared its
+  bits already, so VACUUM set them again, and until VACUUM's second pass
+  cleared them an index-only scan returned the deleted rows. It was transient,
+  and it showed under concurrent writers about once in four 180 s stress runs.
+  VACUUM now takes each row group's chunk-group lock, the one every flush of
+  delete marks takes and holds to commit, judges the group again under it,
+  and sets a block only while it holds every group covering the block. That
+  makes the judgement and the set one step for writers, as heap's buffer lock
+  does, and the second pass of #2059 and #2170 is gone. VACUUM does not wait
+  for a busy lock: it leaves that group's blocks unset. A DELETE whose flush
+  needs a group VACUUM holds waits for it, for as long as VACUUM takes to set
+  that block's bits. Two new superuser-only test settings:
+  `pgcolumnar.vm_set_release_hold_ms` pauses VACUUM before it gives back each
+  group, and `pgcolumnar.delete_flush_hold_ms` pauses a delete flush after it
+  takes its groups' locks and before it writes their rows.
+  docs/administration.md and docs/configuration.md. `test/index_only.sh` and
+  `test_index_only.py`.
 
 - `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
   reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
