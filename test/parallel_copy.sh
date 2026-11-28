@@ -1774,6 +1774,17 @@ check "parallel_copy refuses a single table with a BEFORE INSERT row trigger and
 check "parallel_copy refuses a single table with an AFTER INSERT statement trigger and 4 workers with 0A000, not a hang (#2187)" \
 	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgs'::regclass, '$F', 4)")" \
 	"$(want_trigger t_tgs t_tgs_k)"
+# The trigger refusal comes before the file is opened, like the unique-index one
+# (#2252, #2209): it depends only on the table and the worker count, so a missing
+# file on a table with an INSERT trigger gets 0A000, not 58P01. With 1 worker the
+# same call opens the file and gets 58P01, which shows that the path is really
+# missing.
+check "parallel_copy refuses a missing file for a single table with an INSERT row trigger and 2 workers with 0A000, before it opens the file (#2252)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '$DATADIR/nope.txt', 2)")" \
+	"$(want_trigger t_tga t_tga_k)"
+check "control: parallel_copy gives a missing file for a single table with an INSERT row trigger and 1 worker 58P01 (#2252)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '$DATADIR/nope.txt', 1)")" \
+	"58P01 could not open file \"$DATADIR/nope.txt\" for reading: No such file or directory | no hint"
 # A trigger that writes a columnar table with no index and no storage row yet
 # hung the load instead (issue #2187, comment of 2026-11-27): the first loader
 # took that table's storage-row lock and prepared, and the second waited on it.
@@ -2291,6 +2302,320 @@ other_lock_record_probe() {	# -> "error | time | rows | fingerprints | retry"
 check "a dedup load cancelled while another session holds load_fingerprint for 16 s returns within 6 s, records the fingerprint when the lock frees, and its retry is skipped (#2187)" \
 	"$(other_lock_record_probe)" \
 	"57014 canceling statement due to statement timeout | under 6 s | 1 fingerprint | retry skipped | 5000 rows"
+
+# ---- #2229: the caller takes the workers' lock, and waits in the lock manager --
+# Another session that holds SHARE on the target (LOCK TABLE ... IN SHARE MODE,
+# CREATE INDEX) and then waits for a lock the caller holds made a cycle with one
+# latch edge: the coordinator waited for the session in the lock manager, the
+# caller waited for the coordinator on a latch. The deadlock detector follows
+# lock waits only, so both waited until statement_timeout. The caller now takes
+# ROW EXCLUSIVE on the target and each partition before it starts the
+# coordinator, and waits for its workers on their run locks, so one side gets
+# 40P01 within deadlock_timeout (1 s here) and the caller's lock_timeout bounds
+# the wait. Every wait below is bounded by a statement_timeout.
+dk_sess() {	# APPNAME PSQL-ARGS... -> psql's output, errors with their SQLSTATE
+	local app="$1"; shift
+	env PGAPPNAME="$app" PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=verbose "$@" 2>&1
+}
+dk_state() {	# FILE -> the SQLSTATE of the first ERROR in a dk_sess output, or nothing
+	sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\):.*$/\1/p;q;}' "$1"
+}
+dk_err() {	# FILE -> "SQLSTATE message" of the first ERROR in a dk_sess output, or nothing
+	sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$1"
+}
+dk_wait_lock() {	# APPNAME TABLE MODE -> returns once that session holds MODE on TABLE (up to 5 s)
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+		        WHERE a.application_name = '$1' AND l.relation = '$2'::regclass AND l.mode = '$3' AND l.granted")" = 1 ] && return
+		sleep 0.05
+	done
+}
+dk_ms() { echo $(( ($(date +%s%N) - $1) / 1000000 )); }
+dk_under() {	# MS LIMIT-S -> "under LIMIT s" or "took MS ms"
+	if [ "$1" -lt $(( $2 * 1000 )) ]; then echo "under $2 s"; else echo "took $1 ms"; fi
+}
+dk_cycle() {	# HOLD INDEX -> "outcome | time | consistency | prepared". A runs HOLD on t_dk,
+	# waits until a lock request on t_dk queues, then asks for SHARE on t_dk4, which
+	# B wrote before its parallel_copy into t_dk. INDEX names the index HOLD builds.
+	local t0 ms ea eb rows rows4 idx want
+	psql_run "DROP TABLE IF EXISTS t_dk, t_dk4; CREATE TABLE t_dk (id int, txt text) USING pgcolumnar;
+	          CREATE TABLE t_dk4 (id int, txt text) USING pgcolumnar; INSERT INTO t_dk4 VALUES (1, 'a');" >/dev/null
+	dk_sess pcopy_dk_a -c "SET statement_timeout = '20s'" -c "BEGIN" -c "$1" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = 't_dk'::regclass AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "LOCK TABLE t_dk4 IN SHARE MODE" -c "COMMIT" >"$DATADIR/dk_a.out" &
+	local ap=$!
+	dk_wait_lock pcopy_dk_a t_dk ShareLock
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_b -c "BEGIN" -c "INSERT INTO t_dk4 VALUES (2, 'b')" -c "SET statement_timeout = '10s'" \
+		-c "SELECT pgcolumnar.parallel_copy('t_dk'::regclass, '$F', 2)" -c "COMMIT" >"$DATADIR/dk_b.out"
+	wait "$ap"
+	ms=$(dk_ms "$t0")
+	ea="$(dk_state "$DATADIR/dk_a.out")"; eb="$(dk_state "$DATADIR/dk_b.out")"
+	rows="$(q "SELECT count(*) FROM t_dk")"; rows4="$(q "SELECT count(*) FROM t_dk4")"
+	idx="$(q "SELECT count(*) FROM pg_index WHERE indrelid = 't_dk'::regclass AND indisvalid")"
+	# B's rows, B's insert into t_dk4 and A's index are there exactly when their side committed
+	want="$([ -z "$eb" ] && echo "5000 2" || echo "0 1") $([ -z "$ea" ] && [ -n "$2" ] && echo 1 || echo 0)"
+	printf '%s | %s | %s | %s prepared\n' \
+		"$(if { [ "$ea" = 40P01 ] && [ -z "$eb" ]; } || { [ "$eb" = 40P01 ] && [ -z "$ea" ]; }; then
+			echo "one side 40P01, the other committed"; else echo "A ${ea:-committed}, B ${eb:-committed}"; fi)" \
+		"$(dk_under "$ms" 5)" \
+		"$([ "$rows $rows4 $idx" = "$want" ] && echo consistent || echo "rows $rows, t_dk4 $rows4, index $idx; want $want")" \
+		"$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "a session holding SHARE on the target (LOCK TABLE) that then waits for a lock the parallel_copy caller holds gets 40P01 on one side within 5 s, not a wait until statement_timeout, and both tables stay consistent (#2229)" \
+	"$(dk_cycle "LOCK TABLE t_dk IN SHARE MODE" "")" \
+	"one side 40P01, the other committed | under 5 s | consistent | 0 prepared"
+check "a session in CREATE INDEX on the target that then waits for a lock the parallel_copy caller holds gets 40P01 on one side within 5 s, not a wait until statement_timeout, and both tables stay consistent (#2229)" \
+	"$(dk_cycle "CREATE INDEX t_dk_id ON t_dk (id)" t_dk_id)" \
+	"one side 40P01, the other committed | under 5 s | consistent | 0 prepared"
+
+psql_run "DROP TABLE IF EXISTS t_dl, t_dlp; CREATE TABLE t_dl (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_dlp (id int, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_dlp_1 PARTITION OF t_dlp FOR VALUES FROM (MINVALUE) TO (2501) USING pgcolumnar;
+          CREATE TABLE t_dlp_2 PARTITION OF t_dlp FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+dk_hold() {	# TABLE SECONDS -> background: another session holds SHARE on TABLE for SECONDS; echoes nothing
+	dk_sess pcopy_dk_h -c "BEGIN" -c "LOCK TABLE $1 IN SHARE MODE" -c "SELECT pg_sleep($2)" -c "COMMIT" >/dev/null &
+	dk_wait_lock pcopy_dk_h "$1" ShareLock
+}
+dk_lock_timeout() {	# TARGET LOCKED -> "error | time | rows | prepared": another session holds
+	# SHARE on LOCKED for 6 s; the caller's lock_timeout is 1 s
+	local t0 ms out
+	dk_hold "$2" 6
+	t0=$(date +%s%N)
+	out="$(PGOPTIONS='-c statement_timeout=10s -c lock_timeout=1s' remote_refusal "SELECT pgcolumnar.parallel_copy('$1'::regclass, '$F', 2)")"
+	ms=$(dk_ms "$t0")
+	wait
+	printf '%s | %s | %s rows | %s prepared\n' "${out%% | *}" "$(dk_under "$ms" 4)" \
+		"$(q "SELECT count(*) FROM $1")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "the caller's lock_timeout of 1 s ends a parallel_copy that waits for another session's SHARE on the target with 55P03 within 4 s (#2229)" \
+	"$(dk_lock_timeout t_dl t_dl)" "55P03 canceling statement due to lock timeout | under 4 s | 0 rows | 0 prepared"
+check "the caller's lock_timeout of 1 s ends a parallel_copy that waits for another session's SHARE on a partition with 55P03 within 4 s (#2229)" \
+	"$(dk_lock_timeout t_dlp t_dlp_2)" "55P03 canceling statement due to lock timeout | under 4 s | 0 rows | 0 prepared"
+dk_early() {	# TARGET LOCKED -> "what the caller waited on || load | rows | prepared": another
+	# session holds SHARE on LOCKED for 6 s, with no cycle; the caller has no lock_timeout
+	local seen="" lp t1 now
+	psql_run "TRUNCATE $1" >/dev/null
+	dk_hold "$2" 6
+	( PGAPPNAME=pcopy_dk_e PGOPTIONS='-c statement_timeout=15s' remote_refusal \
+		"SELECT pgcolumnar.parallel_copy('$1'::regclass, '$F', 2)" >"$DATADIR/dk_e.out" ) &
+	lp=$!
+	dk_seen() {	# one query: the caller's wait and the number of parallel_copy workers
+		q "SELECT 'caller ' || coalesce((SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '')
+		     FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'), '') || ', workers ' ||
+		     (SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%')"
+	}
+	for _ in $(seq 40); do
+		seen="$(dk_seen)"
+		case "$seen" in "caller Lock:relation, workers 0") break ;; esac
+		sleep 0.05
+	done
+	# and it stays so for a second, well inside the 6 s hold: no worker starts while
+	# the caller waits (a caller that locked after starting the coordinator could
+	# read the first sample before the coordinator had started)
+	if [ "$seen" = "caller Lock:relation, workers 0" ]; then
+		t1=$(date +%s%N)
+		while [ $(( ($(date +%s%N) - t1) / 1000000 )) -lt 1000 ]; do
+			now="$(dk_seen)"
+			[ "$now" = "$seen" ] || { seen="then $now"; break; }
+			sleep 0.05
+		done
+	fi
+	wait "$lp"; wait
+	printf '%s || %s | %s rows | %s prepared\n' "$seen" "$(cat "$DATADIR/dk_e.out")" \
+		"$(q "SELECT count(*) FROM $1")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+de_got="$(dk_early t_dl t_dl)"
+check "a parallel_copy waiting for another session's SHARE on the target waits in the lock manager, with no worker started, for a second (#2229)" \
+	"${de_got%% || *}" "caller Lock:relation, workers 0"
+check "control: a parallel_copy that only waits for another session's SHARE on the target, with no cycle, loads once the lock is released (#2229)" \
+	"${de_got#* || }" "no error (5000) | 5000 rows | 0 prepared"
+de_got="$(dk_early t_dlp t_dlp_2)"
+check "a parallel_copy waiting for another session's SHARE on a partition waits in the lock manager, with no worker started, for a second (#2229)" \
+	"${de_got%% || *}" "caller Lock:relation, workers 0"
+check "control: a parallel_copy that only waits for another session's SHARE on a partition, with no cycle, loads once the lock is released (#2229)" \
+	"${de_got#* || }" "no error (5000) | 5000 rows | 0 prepared"
+# The refusals of #2183 and #2211 hold whatever another session does, so they
+# come before the caller waits for anyone: refused at once, not after the other
+# session's 5 s.
+dk_refusal() {	# SETUP TARGET LOCKED -> "error | time"
+	local t0 ms
+	dk_hold "$3" 5
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_r -c "BEGIN" -c "$1" -c "SET statement_timeout = '10s'" \
+		-c "SELECT pgcolumnar.parallel_copy('$2'::regclass, '$F', 2)" -c "ROLLBACK" >"$DATADIR/dk_r.out"
+	ms=$(dk_ms "$t0")
+	wait
+	printf '%s | %s\n' "$(dk_err "$DATADIR/dk_r.out")" "$(dk_under "$ms" 3)"
+}
+check "control: the caller's own SHARE on the target is refused (55000, #2183) at once while another session holds SHARE on it, not after waiting for that session (#2229)" \
+	"$(dk_refusal "LOCK TABLE t_dl IN SHARE MODE" t_dl t_dl)" \
+	'55000 pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_dl" | under 3 s'
+check "control: the caller's own write to a partition is refused (55000, #2211) at once while another session holds SHARE on another partition, not after waiting for that session (#2229)" \
+	"$(dk_refusal "INSERT INTO t_dlp VALUES (1, 'pre')" t_dlp t_dlp_2)" \
+	'55000 pgcolumnar.parallel_copy cannot run after this transaction has written to "t_dlp_1" | under 3 s'
+# A lock request that queues behind the caller's lock, while the caller waits for
+# its workers, must not hang the load: a worker queued behind it closes a cycle
+# through the caller's wait on the worker's run lock, and the deadlock detector
+# moves the worker ahead. 1. The caller already holds ROW EXCLUSIVE (LOCK TABLE)
+# and CREATE INDEX queues behind it before the call; on main the coordinator
+# queued behind CREATE INDEX and the load waited until statement_timeout.
+dk_queue() {	# -> "load | ddl | rows | index valid | prepared | time"
+	local t0 ms bp
+	psql_run "DROP TABLE IF EXISTS t_dq; CREATE TABLE t_dq (id int, txt text) USING pgcolumnar;" >/dev/null
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_q -c "BEGIN" -c "LOCK TABLE t_dq IN ROW EXCLUSIVE MODE" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = 't_dq'::regclass AND mode = 'ShareLock' AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "SET statement_timeout = '10s'" -c "SELECT pgcolumnar.parallel_copy('t_dq'::regclass, '$F', 2)" -c "COMMIT" >"$DATADIR/dk_q.out" &
+	bp=$!
+	dk_wait_lock pcopy_dk_q t_dq RowExclusiveLock
+	PGOPTIONS='-c statement_timeout=20s' remote_refusal "CREATE INDEX t_dq_id ON t_dq (id)" >"$DATADIR/dk_q.ddl"
+	wait "$bp"
+	ms=$(dk_ms "$t0")
+	printf '%s | %s | %s | valid %s | %s prepared | %s\n' \
+		"$(e="$(dk_err "$DATADIR/dk_q.out")"; [ -n "$e" ] && echo "$e" || echo "no error ($(grep -x '[0-9]*' "$DATADIR/dk_q.out" | tail -1))")" \
+		"$(cat "$DATADIR/dk_q.ddl")" "$(q "SELECT count(*) FROM t_dq")" \
+		"$(q "SELECT indisvalid FROM pg_index WHERE indexrelid = 't_dq_id'::regclass")" \
+		"$(q "SELECT count(*) FROM pg_prepared_xacts")" "$(dk_under "$ms" 8)"
+}
+check "a parallel_copy whose caller holds ROW EXCLUSIVE on the target, with CREATE INDEX queued behind it, loads within 8 s instead of hanging behind the index, and the index builds after it (#2229)" \
+	"$(dk_queue)" "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | 0 prepared | under 8 s"
+# 2. CREATE INDEX on a partition no loader has reached yet queues behind the
+#    caller's lock on it; the loader that reaches the partition queues behind
+#    the index. The second loader is held 3 s before it opens the table.
+psql_run "DROP TABLE IF EXISTS t_dpi; CREATE TABLE t_dpi (id int, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_dpi_1 PARTITION OF t_dpi FOR VALUES FROM (MINVALUE) TO (2501) USING pgcolumnar;
+          CREATE TABLE t_dpi_2 PARTITION OF t_dpi FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+dk_part_index() {	# -> "load | ddl | rows | index valid | prepared"
+	local lp
+	pcopy_hold 3000 >/dev/null
+	( PGOPTIONS='-c statement_timeout=15s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_dpi'::regclass, '$F', 2)" >"$DATADIR/dk_pi.load" ) &
+	lp=$!
+	for _ in $(seq 100); do
+		case "$(loaders_on t_dpi)" in "0 held"*|"") sleep 0.05 ;; *) break ;; esac
+	done
+	PGOPTIONS='-c statement_timeout=20s' remote_refusal "CREATE INDEX t_dpi_2_id ON t_dpi_2 (id)" >"$DATADIR/dk_pi.ddl"
+	wait "$lp"
+	pcopy_hold 0 >/dev/null
+	printf '%s | %s | %s | valid %s | %s prepared\n' "$(cat "$DATADIR/dk_pi.load")" "$(cat "$DATADIR/dk_pi.ddl")" \
+		"$(q "SELECT count(*) FROM t_dpi")" "$(q "SELECT indisvalid FROM pg_index WHERE indexrelid = 't_dpi_2_id'::regclass")" \
+		"$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "control: CREATE INDEX on a partition the loaders have not reached yet does not hang a parallel_copy that holds ROW EXCLUSIVE on it, and builds after the load (#2229)" \
+	"$(dk_part_index)" "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | 0 prepared"
+# The run locks are waits for the load, not lock contention: a 1 ms lock_timeout
+# does not end an uncontended load, and with deadlock_timeout 1 ms and
+# log_lock_waits on, the caller's waits on them are not logged.
+psql_run "DROP TABLE IF EXISTS t_dlt; CREATE TABLE t_dlt (id int, txt text) USING pgcolumnar;" >/dev/null
+lock_waits_logged() { pgc_pg "grep -c 'still waiting for ShareLock on advisory lock' '$PGC_LOGFILE'" 2>/dev/null; }
+lw_before="$(lock_waits_logged)"
+dlt_got="$(PGOPTIONS='-c statement_timeout=30s -c lock_timeout=1ms -c deadlock_timeout=1ms -c log_lock_waits=on' \
+	remote_refusal "SELECT pgcolumnar.parallel_copy('t_dlt'::regclass, '$F', 2)")"
+check "a parallel_copy under lock_timeout 1 ms, deadlock_timeout 1 ms and log_lock_waits on still loads, and logs no wait for its workers (#2229)" \
+	"$dlt_got | $(q "SELECT count(*) FROM t_dlt") rows | $(( $(lock_waits_logged) - lw_before )) lock waits logged" \
+	"no error (5000) | 5000 rows | 0 lock waits logged"
+# #2216: a lock of the caller's own on a table the loaders reach through a
+# foreign key, a trigger or a sequence. The loader waits for the caller in the
+# lock manager and the caller waits for the loader's run lock, a cycle of lock
+# waits, so one of them gets 40P01 within deadlock_timeout instead of a wait
+# until statement_timeout. Which one varies, so the check reads the SQLSTATE.
+psql_run "DROP TABLE IF EXISTS t_dfk, t_dfk_ref, t_dtg, t_dtg_log, t_dsq, t_dcw, t_dcw_log CASCADE; DROP SEQUENCE IF EXISTS t_dsq_seq;
+          CREATE TABLE t_dfk_ref (id int PRIMARY KEY); INSERT INTO t_dfk_ref SELECT generate_series(0, 5000);
+          CREATE TABLE t_dfk (id int REFERENCES t_dfk_ref, txt text) USING pgcolumnar;
+          CREATE TABLE t_dtg_log (id int); CREATE TABLE t_dtg (id int, txt text) USING pgcolumnar;
+          CREATE FUNCTION t_dtg_row() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN INSERT INTO t_dtg_log VALUES (NEW.id); RETURN NEW; END \$\$;
+          CREATE TRIGGER t_dtg_k AFTER INSERT ON t_dtg FOR EACH ROW EXECUTE FUNCTION t_dtg_row();
+          CREATE SEQUENCE t_dsq_seq; CREATE TABLE t_dsq (id int, txt text) USING pgcolumnar;
+          CREATE FUNCTION t_dsq_row() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN NEW.txt := NEW.txt || ':' || nextval('t_dsq_seq'); RETURN NEW; END \$\$;
+          CREATE TRIGGER t_dsq_k BEFORE INSERT ON t_dsq FOR EACH ROW EXECUTE FUNCTION t_dsq_row();
+          CREATE TABLE t_dcw_log (id int) USING pgcolumnar; CREATE TABLE t_dcw (id int, txt text) USING pgcolumnar;
+          CREATE FUNCTION t_dcw_row() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN INSERT INTO t_dcw_log VALUES (NEW.id); RETURN NEW; END \$\$;
+          CREATE TRIGGER t_dcw_k AFTER INSERT ON t_dcw FOR EACH ROW EXECUTE FUNCTION t_dcw_row();" >/dev/null
+dk_own() {	# SETUP TABLE WORKERS -> "SQLSTATE | time | rows | prepared"
+	local t0 ms
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_o -c "BEGIN" -c "$1" -c "SET statement_timeout = '10s'" \
+		-c "SELECT pgcolumnar.parallel_copy('$2'::regclass, '$F', $3)" -c "ROLLBACK" >"$DATADIR/dk_o.out"
+	ms=$(dk_ms "$t0")
+	printf '%s | %s | %s rows | %s prepared\n' "$(dk_state "$DATADIR/dk_o.out")" "$(dk_under "$ms" 5)" \
+		"$(q "SELECT count(*) FROM $2")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "parallel_copy whose caller holds EXCLUSIVE on a table the target references gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
+	"$(dk_own "LOCK TABLE t_dfk_ref IN EXCLUSIVE MODE" t_dfk 2)" "40P01 | under 5 s | 0 rows | 0 prepared"
+check "parallel_copy whose caller holds ACCESS EXCLUSIVE on a table its INSERT trigger writes gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
+	"$(dk_own "LOCK TABLE t_dtg_log IN ACCESS EXCLUSIVE MODE" t_dtg 1)" "40P01 | under 5 s | 0 rows | 0 prepared"
+check "parallel_copy whose caller restarted the sequence its INSERT trigger calls gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
+	"$(dk_own "ALTER SEQUENCE t_dsq_seq RESTART" t_dsq 1)" "40P01 | under 5 s | 0 rows | 0 prepared"
+# The write #2211 does not see: the caller's first write to a columnar table that
+# never had a committed row holds its storage-row lock, which the trigger's
+# insert in the loader then waits for.
+check "parallel_copy whose caller wrote a fresh columnar table its INSERT trigger writes gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
+	"$(dk_own "INSERT INTO t_dcw_log VALUES (0)" t_dcw 1)" "40P01 | under 5 s | 0 rows | 0 prepared"
+# Only the second loader's rows reach row 4000 of the referenced table, which the
+# caller holds FOR UPDATE: the caller must wait on every loader's run lock, not
+# only the first one's (the review of #2244: a mutant that waited for loader 0
+# only hung here until statement_timeout).
+check "parallel_copy whose caller holds FOR UPDATE a referenced row only the second loader's rows reach gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
+	"$(dk_own "SELECT 1 FROM t_dfk_ref WHERE id = 4000 FOR UPDATE" t_dfk 2)" "40P01 | under 5 s | 0 rows | 0 prepared"
+
+# The coordinator can be the victim too (the review of #2244). On a fresh
+# target its storage-row step waits for another writer's storage-row lock;
+# that writer then waits for a lock the caller holds. Whichever of the caller
+# and the coordinator checks first is chosen. The coordinator's error used to
+# end it before anything was recorded, and the caller reported XX000 "coordinator
+# exited without reporting a result" in 4 of 6 runs. A inserts into t_df3 (no
+# storage row yet), waits until a storage-row lock request queues (class 102),
+# then asks for SHARE on t_df4, which B wrote before its load into t_df3.
+dk_fresh() {	# SESSIONS-DEADLOCK-TIMEOUT (A's and B's) -> "B's error | A's error | time | consistency | prepared"
+	local t0 ms ea eb rows rows4
+	psql_run "DROP TABLE IF EXISTS t_df3, t_df4; CREATE TABLE t_df3 (id int, txt text) USING pgcolumnar;
+	          CREATE TABLE t_df4 (id int, txt text) USING pgcolumnar; INSERT INTO t_df4 VALUES (1, 'a');" >/dev/null
+	dk_sess pcopy_dk_f -c "SET statement_timeout = '20s'" -c "SET deadlock_timeout = '$1'" -c "BEGIN" -c "INSERT INTO t_df3 VALUES (0, 'a')" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 102 AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "LOCK TABLE t_df4 IN SHARE MODE" -c "COMMIT" >"$DATADIR/dk_fa.out" &
+	local ap=$!
+	for _ in $(seq 100); do	# A holds t_df3's storage-row lock (class 102)
+		[ "$(q "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+		        WHERE a.application_name = 'pcopy_dk_f' AND l.locktype = 'advisory' AND l.objsubid = 102 AND l.granted")" -ge 1 ] && break
+		sleep 0.05
+	done
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_g -c "BEGIN" -c "INSERT INTO t_df4 VALUES (2, 'b')" -c "SET deadlock_timeout = '$1'" \
+		-c "SET statement_timeout = '10s'" -c "SELECT pgcolumnar.parallel_copy('t_df3'::regclass, '$F', 2)" -c "COMMIT" >"$DATADIR/dk_fb.out"
+	wait "$ap"
+	ms=$(dk_ms "$t0")
+	ea="$(dk_err "$DATADIR/dk_fa.out")"; eb="$(dk_err "$DATADIR/dk_fb.out")"
+	rows="$(q "SELECT count(*) FROM t_df3")"; rows4="$(q "SELECT count(*) FROM t_df4")"
+	printf 'B %s | A %s | %s | %s | %s prepared\n' "${eb:-committed}" "${ea:-committed}" "$(dk_under "$ms" 5)" \
+		"$(if [ -z "$eb" ] && [ "$rows $rows4" = "5000 2" ]; then echo consistent
+		   elif [ -n "$eb" ] && [ "$rows $rows4" = "1 1" ]; then echo consistent
+		   else echo "t_df3 $rows, t_df4 $rows4"; fi)" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+dk_fresh_runs() {	# -> one word per run: ok, or what the run read
+	local r got res=""
+	for r in 1 2 3; do
+		got="$(dk_fresh 1s)"
+		case "$got" in
+			"B committed | A 40P01 deadlock detected | under 5 s | consistent | 0 prepared"|\
+			"B 40P01 "*" | A committed | under 5 s | consistent | 0 prepared") res="$res ok" ;;
+			*) res="$res [$got]" ;;
+		esac
+	done
+	echo "${res# }"
+}
+check "a cycle through the coordinator's storage-row step on a fresh target gives 40P01 on one side in each of 3 runs, never XX000, and both tables stay consistent (#2229)" \
+	"$(dk_fresh_runs)" "ok ok ok"
+# With deadlock_timeout at 5 s in both sessions the coordinator's 1 s check runs
+# first, so the coordinator is the victim every time.
+check "when the coordinator is the victim of that cycle (deadlock_timeout 5 s in both sessions), the caller reports its 40P01, not XX000 (#2229)" \
+	"$(dk_fresh 5s)" "B 40P01 pgcolumnar.parallel_copy failed: deadlock detected | A committed | under 5 s | consistent | 0 prepared"
+psql_run "DROP TABLE IF EXISTS t_dsto; CREATE TABLE t_dsto (id int, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy into a fresh target whose caller holds ACCESS EXCLUSIVE on pgcolumnar.storage gets 40P01 within 5 s, not XX000 (#2229)" \
+	"$(dk_own "LOCK pgcolumnar.storage IN ACCESS EXCLUSIVE MODE" t_dsto 2)" "40P01 | under 5 s | 0 rows | 0 prepared"
 
 # ---- #2189: every range keeps the file's newline style -----------------------
 # COPY FROM takes the newline style (LF or CRLF) from the file's first line and

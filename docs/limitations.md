@@ -323,7 +323,8 @@ these constraints.
   triggers of a foreign key. A trigger on UPDATE or DELETE only does not count
   either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
   default `session_replication_role`. One worker still runs the trigger for every
-  row.
+  row. Like the unique-index refusal, this one comes before the function opens
+  the file, so a missing file gets `0A000`, not `58P01` (#2252).
 - The function does not look inside CHECK constraints or column defaults. Some
   of them call a VOLATILE function that writes to another table. Then the workers
   can wait on each other the same way, until `statement_timeout` or a deadlock
@@ -364,12 +365,30 @@ these constraints.
   would wait for the caller until the statement timed out.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
-- The check covers only the target and its partitions. The load still waits
-  until `statement_timeout` when the calling transaction locks another table
-  the loaders need. One example is a table the target references through a
-  foreign key. Others are a table a trigger on the target writes to, and a
-  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
-  `parallel_copy` before taking such locks, or after `COMMIT`.
+- The check covers only the target and its partitions. When the calling
+  transaction locks another table the loaders need, the load fails with
+  `deadlock_detected` (40P01) after `deadlock_timeout` (#2216). One example is a
+  table the target references through a foreign key. Others are a table a
+  trigger on the target writes to, and a sequence a trigger calls `nextval` on
+  after `ALTER SEQUENCE ... RESTART`. A retry in the same transaction fails the
+  same way. Run `parallel_copy` before taking such locks, or after `COMMIT`.
+- The caller takes ROW EXCLUSIVE on the target and on each of its partitions
+  before any worker starts (#2229). It holds that lock to the end of its
+  transaction, as an `INSERT` would. It waits there for another session's conflicting
+  lock, such as one `CREATE INDEX` or `LOCK TABLE ... IN SHARE MODE` holds, and
+  `lock_timeout` applies to that wait. If that session then waits for a lock the
+  caller holds, one of the two gets `deadlock_detected` (40P01). The caller
+  waits for its workers in the lock manager too, on advisory locks of class 107
+  that show in `pg_locks`. Those waits are not limited by `lock_timeout` and
+  `log_lock_waits` does not report them.
+- The caller keeps one lock per partition until its transaction ends. A target
+  with very many partitions can need a higher `max_locks_per_transaction`
+  (#2229).
+- One wait is still outside the lock manager. After the last loader exits, the
+  caller waits for the coordinator's commit step on a latch. A lock the caller
+  holds that the commit step needs is not reported as a deadlock. One example
+  is a lock on `pgcolumnar.load_fingerprint` with `dedup => true`. The call then
+  ends at `statement_timeout`.
 - The calling transaction must not have written to the target or to one of its
   partitions, for example with an earlier `INSERT`. The function refuses such a
   call with `55000` (#2211). The write holds a lock on the table's storage until
@@ -377,8 +396,8 @@ these constraints.
   so they would wait for the caller until the statement timed out. Commit the
   write first, or load the file with `COPY`.
   The check does not see a write to a columnar table that a trigger on the
-  target writes. If no row was ever committed to that table, the load still waits
-  until `statement_timeout` (#2216).
+  target writes. If no row was ever committed to that table, the load fails with
+  40P01 after `deadlock_timeout` (#2216).
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
@@ -735,6 +754,20 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   not fail here, because `VACUUM` moves no row. Retry the transaction: the retry
   takes a new snapshot, sees the moved row, and skips the insert.
   `test/am_contracts.sh` checks this behavior (#2060).
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb can fail inside the
+  transaction with `serialization_failure` (40001). The verbs are `vacuum`,
+  `vacuum_sorted`, `cluster`, `cluster_hilbert`, `recluster`,
+  `recluster_hilbert` and `compact_rewrite`. This happens when another session
+  changed the row groups the verb would rewrite after the snapshot was taken. The verb reads the newest
+  committed rows, and the transaction sees the rows it writes as its own. A row
+  group carries one xmin for all its rows, so the copies cannot keep each row's
+  own xmin and xmax, as heap's `CLUSTER` does. Before #2167 the transaction then
+  saw rows inserted after its snapshot and lost rows deleted after it. When
+  nothing changed, the verb runs and the transaction sees the rows it saw. Retry
+  the transaction, or run the verb at `READ COMMITTED`, where each statement takes
+  a new snapshot anyway. The maintenance daemon runs at `READ COMMITTED` whatever
+  `default_transaction_isolation` says, as PostgreSQL's autovacuum does.
+  `test/rewrite_snapshot.sh` checks this behavior (#2167).
 - Concurrent inserts of the same unique key go in sequence. The server therefore
   always finds the conflict. Before a new row reaches the uniqueness check, the
   access method takes an advisory lock with the scope of the transaction. The key
