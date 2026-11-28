@@ -282,6 +282,16 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/index_only.sh` and `test_index_only.py` read each race arm's count three
+  ways (#2171). #2059 asks that an index-only scan, a plain index scan and a seq
+  scan give the same count after the race, and the arms read only the
+  index-only one. Each of the ten arms of the two VACUUM races (#2059, #2170)
+  now also reads the count through a plain index scan and a seq scan, each
+  forced by planner settings, checks the scan node of each plan, and checks that
+  the three counts are 0. The #2170 arm that deletes two ranges now counts them
+  as a sum of two range counts, since a plain index scan cannot serve an OR of
+  two ranges. Before, a seq scan that returned deleted rows passed every race arm.
+  Test-only.
 - A lock of the `parallel_copy` caller's own on a table its loaders reach
   through a foreign key, a trigger or a sequence, or a write to a fresh
   columnar table a trigger writes, ends with `40P01` within `deadlock_timeout`

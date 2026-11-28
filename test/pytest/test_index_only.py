@@ -12,7 +12,9 @@ A VACUUM that runs while a DELETE or UPDATE is still inside its statement does n
 leave the changed block all-visible after the writer commits (#2059), nor does one
 whose set comes after a DELETE that committed during its pause
 (pgcolumnar.vm_set_hold_ms). That VACUUM's second pass clears only the bits it
-flipped itself, so clean blocks an earlier VACUUM set keep theirs (#2170).
+flipped itself, so clean blocks an earlier VACUUM set keep theirs (#2170). In each of
+those arms the count read through an index-only scan, a plain index scan and a seq scan
+agree, and each plan holds the scan it is meant to (#2171).
 And an AFTER trigger of a DELETE or UPDATE, reading
 through an index-only scan after such a VACUUM, counts what heap counts (#2169). A DELETE that fails after such a nested read leaves
 every row live in the next transaction, and a second deleter of the same rows waits for
@@ -89,6 +91,26 @@ def _ios(dsn, sql):
     plan = _plan(dsn, "EXPLAIN (COSTS OFF) " + sql)
     return (_value(dsn, sql) if not _failed(plan) and "Index Only Scan" in plan
             else f"no index-only scan was planned: {plan}")
+
+
+# #2171: each count is read through an index-only scan, a plain index scan and a
+# sequential scan, each forced by planner settings in its own session, and each
+# plan's scan node is read so a count read through the wrong scan cannot pass.
+TC_IDX = ("SET enable_indexonlyscan = off", "SET enable_bitmapscan = off", "SET enable_seqscan = off")
+TC_SEQ = ("SET enable_indexonlyscan = off", "SET enable_indexscan = off", "SET enable_bitmapscan = off",
+          "SET enable_seqscan = on")
+SCAN_NODE = re.compile(r"Index Only Scan|Index Scan|Bitmap Heap Scan|Seq Scan|Custom Scan \([A-Za-z]+\)")
+
+
+def _three(dsn, sql):
+    """-> ("node|node|node", "count/count/count") for sql read through the three scans."""
+    plans, counts = [], []
+    for sets in ((), TC_IDX, TC_SEQ):
+        plan = _plan(dsn, "EXPLAIN (COSTS OFF) " + sql, sets)
+        m = None if _failed(plan) else SCAN_NODE.search(plan)
+        plans.append(m.group(0) if m else plan)
+        counts.append(_value(dsn, sql, sets))
+    return "|".join(plans), "/".join(counts)
 
 
 # Synthetic block b holds row numbers b*291 .. b*291+290, and a single INSERT numbers
@@ -168,6 +190,7 @@ def _vm_race(dsn, r, tag, tbl, rows, dml, before, after, ios):
     r[f"race {tag} written"] = out.get("writer", out.get("written", "writer did not finish"))
     r[f"race {tag} after"] = _value(dsn, after)
     r[f"race {tag} ios"] = _ios(dsn, ios)
+    r[f"race {tag} plans"], r[f"race {tag} counts"] = _three(dsn, ios)
 
 
 def _vm_mid(dsn, r, tag, tbl, rows, dml, before, after, ios, clean=None, setup=None):
@@ -215,6 +238,7 @@ def _vm_mid(dsn, r, tag, tbl, rows, dml, before, after, ios, clean=None, setup=N
     if clean is not None:
         r[f"{tag} clean"] = _value(dsn, clean)
     r[f"{tag} ios"] = _ios(dsn, ios)
+    r[f"{tag} plans"], r[f"{tag} counts"] = _three(dsn, ios)
 
 
 # #2169: the trigger function of phase 8. It counts the target ids through an
@@ -542,7 +566,8 @@ def io(pgc_cluster):
         _vm_mid(dsn, r, "keep", "vr_keep", 20000, f"DELETE FROM vr_keep WHERE {dele}",
                 f"SELECT ({keep.format(g1)}) || '|' || ({keep.format(g2)})",
                 keep.format("SELECT b FROM (VALUES (1), (5)) v(b)"),
-                f"SELECT count(*) FROM vr_keep WHERE {dele}",
+                "SELECT (SELECT count(*) FROM vr_keep WHERE id BETWEEN 300 AND 400) "
+                "+ (SELECT count(*) FROM vr_keep WHERE id BETWEEN 1500 AND 1600)",
                 keep.format("SELECT b FROM generate_series(1, 67) b WHERE b NOT IN (1, 5)"),
                 "INSERT INTO vr_keep SELECT g, g FROM generate_series(20001, 40000) g")
         r["keep fresh"] = _value(dsn, keep.format(g2))
@@ -734,6 +759,16 @@ def test_concurrent_vacuum_during_delete_index_only_scan_returns_no_deleted_row(
     expect.text(io["race del ios"], "0", "concurrent vacuum during delete: index-only scan returns no deleted row")
 
 
+def test_concurrent_vacuum_during_delete_three_counts_use_their_scans(io, expect):
+    expect.text(io["race del plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "concurrent vacuum during delete: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_concurrent_vacuum_during_delete_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["race del counts"], "0/0/0",
+                "concurrent vacuum during delete: index-only, plain index and seq scan counts agree")
+
+
 def test_concurrent_vacuum_during_update_block_1_all_visible_before(io, expect):
     expect.text(io["race upd before"], "t",
                 "concurrent vacuum during update: block 1 all-visible before the writer starts")
@@ -753,6 +788,16 @@ def test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit(io
 
 def test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["race upd ios"], "0", "concurrent vacuum during update: index-only scan returns no deleted row")
+
+
+def test_concurrent_vacuum_during_update_three_counts_use_their_scans(io, expect):
+    expect.text(io["race upd plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "concurrent vacuum during update: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_concurrent_vacuum_during_update_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["race upd counts"], "0/0/0",
+                "concurrent vacuum during update: index-only, plain index and seq scan counts agree")
 
 
 def test_delete_between_vacuum_steps_block_1_all_visible_before(io, expect):
@@ -775,6 +820,16 @@ def test_delete_between_vacuum_steps_block_1_not_all_visible_after(io, expect):
 
 def test_delete_between_vacuum_steps_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["mid ios"], "0", "delete between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_delete_between_vacuum_steps_three_counts_use_their_scans(io, expect):
+    expect.text(io["mid plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "delete between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_delete_between_vacuum_steps_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["mid counts"], "0/0/0",
+                "delete between vacuum's two steps: index-only, plain index and seq scan counts agree")
 
 
 def test_concurrent_vacuum_during_two_block_delete_block_2_all_visible_before(io, expect):
@@ -802,6 +857,16 @@ def test_concurrent_vacuum_during_two_block_delete_index_only_scan_returns_no_de
                 "concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2")
 
 
+def test_concurrent_vacuum_during_two_block_delete_three_counts_use_their_scans(io, expect):
+    expect.text(io["race del2 plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "concurrent vacuum during a two-block delete: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_concurrent_vacuum_during_two_block_delete_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["race del2 counts"], "0/0/0",
+                "concurrent vacuum during a two-block delete: index-only, plain index and seq scan counts agree")
+
+
 def test_concurrent_vacuum_during_two_block_update_block_2_all_visible_before(io, expect):
     expect.text(io["race upd2 before"], "t",
                 "concurrent vacuum during a two-block update: block 2 all-visible before the writer starts")
@@ -827,6 +892,16 @@ def test_concurrent_vacuum_during_two_block_update_index_only_scan_returns_no_de
                 "concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2")
 
 
+def test_concurrent_vacuum_during_two_block_update_three_counts_use_their_scans(io, expect):
+    expect.text(io["race upd2 plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "concurrent vacuum during a two-block update: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_concurrent_vacuum_during_two_block_update_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["race upd2 counts"], "0/0/0",
+                "concurrent vacuum during a two-block update: index-only, plain index and seq scan counts agree")
+
+
 def test_concurrent_vacuum_during_delete_over_three_row_groups_every_target_block_all_visible_before(io, expect):
     expect.text(io["race delm before"], "t",
                 "concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts")
@@ -850,6 +925,16 @@ def test_concurrent_vacuum_during_delete_over_three_row_groups_no_target_block_a
 def test_concurrent_vacuum_during_delete_over_three_row_groups_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["race delm ios"], "0",
                 "concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row")
+
+
+def test_concurrent_vacuum_during_delete_over_three_row_groups_three_counts_use_their_scans(io, expect):
+    expect.text(io["race delm plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "concurrent vacuum during a delete over three row groups: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_concurrent_vacuum_during_delete_over_three_row_groups_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["race delm counts"], "0/0/0",
+                "concurrent vacuum during a delete over three row groups: index-only, plain index and seq scan counts agree")
 
 
 def test_delete_in_second_row_group_between_vacuum_steps_block_515_all_visible_before(io, expect):
@@ -882,6 +967,16 @@ def test_delete_in_second_row_group_between_vacuum_steps_index_only_scan_returns
                 "delete in the second row group between vacuum's two steps: index-only scan returns no deleted row")
 
 
+def test_delete_in_second_row_group_between_vacuum_steps_three_counts_use_their_scans(io, expect):
+    expect.text(io["mid2 plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "delete in the second row group between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_delete_in_second_row_group_between_vacuum_steps_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["mid2 counts"], "0/0/0",
+                "delete in the second row group between vacuum's two steps: index-only, plain index and seq scan counts agree")
+
+
 def test_delete_over_three_row_groups_between_vacuum_steps_every_target_block_all_visible_before(io, expect):
     expect.text(io["midm before"], "t",
                 "delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts")
@@ -905,6 +1000,16 @@ def test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_v
 def test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["midm ios"], "0",
                 "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_delete_over_three_row_groups_between_vacuum_steps_three_counts_use_their_scans(io, expect):
+    expect.text(io["midm plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "delete over three row groups between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_delete_over_three_row_groups_between_vacuum_steps_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["midm counts"], "0/0/0",
+                "delete over three row groups between vacuum's two steps: index-only, plain index and seq scan counts agree")
 
 
 def test_2170_premise_group_1_set_group_2_not_yet_set_before_hold(io, expect):
@@ -942,6 +1047,16 @@ def test_2170_index_only_scan_returns_no_deleted_row(io, expect):
                 "#2170 delete between vacuum's two steps: index-only scan returns no deleted row")
 
 
+def test_2170_three_counts_use_their_scans(io, expect):
+    expect.text(io["keep plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "#2170 delete between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_2170_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["keep counts"], "0/0/0",
+                "#2170 delete between vacuum's two steps: index-only, plain index and seq scan counts agree")
+
+
 def test_2170_index_only_count_of_every_id_matches_live_rows(io, expect):
     expect.text(io["keep all"], "39798",
                 "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows")
@@ -970,6 +1085,16 @@ def test_2170_last_block_67_not_all_visible_after(io, expect):
 def test_2170_last_block_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["last ios"], "0",
                 "#2170 delete in the last block of a run between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_2170_last_block_three_counts_use_their_scans(io, expect):
+    expect.text(io["last plans"], "Index Only Scan|Index Scan|Seq Scan",
+                "#2170 delete in the last block of a run between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan")
+
+
+def test_2170_last_block_index_only_plain_index_and_seq_scan_counts_agree(io, expect):
+    expect.text(io["last counts"], "0/0/0",
+                "#2170 delete in the last block of a run between vacuum's two steps: index-only, plain index and seq scan counts agree")
 
 
 def test_2170_premise_shared_block_ids_lie_in_block_3(io, expect):

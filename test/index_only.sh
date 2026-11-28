@@ -248,12 +248,32 @@ h_wait() {
 	return 1
 }
 
+# three_counts SQL: run the count SQL through an index-only scan, a plain index
+# scan and a sequential scan, each forced by planner settings in its own session
+# (#2171). Sets tc_plans to the scan node each plan holds, "|"-separated, so a
+# count read through the wrong scan cannot pass, and tc_counts to the three
+# counts, "/"-separated. q prints a tag for each SET, so a count is q's last line.
+TC_IDX="SET enable_indexonlyscan = off; SET enable_bitmapscan = off; SET enable_seqscan = off;"
+TC_SEQ="SET enable_indexonlyscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_seqscan = on;"
+three_counts() {
+	local set plan count
+	tc_plans=""; tc_counts=""
+	for set in "" "$TC_IDX" "$TC_SEQ"; do
+		plan="$(q "$set EXPLAIN (COSTS OFF) $1")"
+		tc_plans="$tc_plans|$(grep -oE 'Index Only Scan|Index Scan|Bitmap Heap Scan|Seq Scan|Custom Scan \([A-Za-z]+\)' <<<"$plan" | head -1)"
+		count="$(q "$set $1")"
+		tc_counts="$tc_counts/${count##*$'\n'}"
+	done
+	tc_plans="${tc_plans#|}"; tc_counts="${tc_counts#/}"
+}
+
 # vm_race TABLE ROWS DML BEFORE AFTER IOS: load ROWS rows into TABLE, run DML
 # paused inside its statement, vacuum TABLE meanwhile, then let DML finish and
 # commit. BEFORE and AFTER are the VM queries run before the writer starts and
 # after it commits; IOS is the count read through an index-only scan. Sets
 # vr_before, vr_paused, vr_written, vr_after and vr_ios for the checks below,
-# which are unrolled so each name is a literal the grader can read.
+# which are unrolled so each name is a literal the grader can read, and
+# vr_plans and vr_counts, IOS read through each of three scans (#2171).
 vm_race() {
 	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" i wpid plan
 	psql_run "CREATE TABLE $tbl (id int, pad int) USING pgcolumnar;"
@@ -294,6 +314,8 @@ vm_race() {
 	*)
 		vr_ios="no index-only scan was planned: $plan" ;;
 	esac
+	three_counts "$ios"
+	vr_plans="$tc_plans"; vr_counts="$tc_counts"
 }
 
 # Synthetic block b holds row numbers b*291 .. b*291+290, and a single INSERT
@@ -317,6 +339,8 @@ check "concurrent vacuum during delete: vacuum ran while the writer was paused" 
 check "concurrent vacuum during delete: the writer deleted 101 rows" "$vr_written" "101"
 check "concurrent vacuum during delete: block 1 not all-visible after commit" "$vr_after" "f"
 check "concurrent vacuum during delete: index-only scan returns no deleted row" "$vr_ios" "0"
+check "concurrent vacuum during delete: the three counts use an index-only scan, a plain index scan and a seq scan" "$vr_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "concurrent vacuum during delete: index-only, plain index and seq scan counts agree" "$vr_counts" "0/0/0"
 
 vm_race vr_upd 20000 "UPDATE vr_upd SET id = id + 1000000 WHERE id BETWEEN 300 AND 400" \
 	"$(vis1 vr_upd)" "$(vis1 vr_upd)" "SELECT count(*) FROM vr_upd WHERE id BETWEEN 300 AND 400;"
@@ -325,6 +349,8 @@ check "concurrent vacuum during update: vacuum ran while the writer was paused" 
 check "concurrent vacuum during update: the writer updated 101 rows" "$vr_written" "101"
 check "concurrent vacuum during update: block 1 not all-visible after commit" "$vr_after" "f"
 check "concurrent vacuum during update: index-only scan returns no deleted row" "$vr_ios" "0"
+check "concurrent vacuum during update: the three counts use an index-only scan, a plain index scan and a seq scan" "$vr_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "concurrent vacuum during update: index-only, plain index and seq scan counts agree" "$vr_counts" "0/0/0"
 
 vm_race vr_del2 20000 "DELETE FROM vr_del2 WHERE id BETWEEN 300 AND 600" \
 	"$(vis2 vr_del2)" "$(vis2 vr_del2)" "SELECT count(*) FROM vr_del2 WHERE id BETWEEN 582 AND 600;"
@@ -333,6 +359,8 @@ check "concurrent vacuum during a two-block delete: vacuum ran while the writer 
 check "concurrent vacuum during a two-block delete: the writer deleted 301 rows" "$vr_written" "301"
 check "concurrent vacuum during a two-block delete: block 2 not all-visible after commit" "$vr_after" "f"
 check "concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2" "$vr_ios" "0"
+check "concurrent vacuum during a two-block delete: the three counts use an index-only scan, a plain index scan and a seq scan" "$vr_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "concurrent vacuum during a two-block delete: index-only, plain index and seq scan counts agree" "$vr_counts" "0/0/0"
 
 vm_race vr_upd2 20000 "UPDATE vr_upd2 SET id = id + 1000000 WHERE id BETWEEN 300 AND 600" \
 	"$(vis2 vr_upd2)" "$(vis2 vr_upd2)" "SELECT count(*) FROM vr_upd2 WHERE id BETWEEN 582 AND 600;"
@@ -341,6 +369,8 @@ check "concurrent vacuum during a two-block update: vacuum ran while the writer 
 check "concurrent vacuum during a two-block update: the writer updated 301 rows" "$vr_written" "301"
 check "concurrent vacuum during a two-block update: block 2 not all-visible after commit" "$vr_after" "f"
 check "concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2" "$vr_ios" "0"
+check "concurrent vacuum during a two-block update: the three counts use an index-only scan, a plain index scan and a seq scan" "$vr_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "concurrent vacuum during a two-block update: index-only, plain index and seq scan counts agree" "$vr_counts" "0/0/0"
 
 vm_race vr_delm 400000 "DELETE FROM vr_delm WHERE id % 5000 = 0 AND id < 400000" \
 	"$(tgt_all vr_delm)" "$(tgt_stale vr_delm)" "$(tgt_ios vr_delm)"
@@ -349,6 +379,8 @@ check "concurrent vacuum during a delete over three row groups: vacuum ran while
 check "concurrent vacuum during a delete over three row groups: the writer deleted 79 rows" "$vr_written" "79"
 check "concurrent vacuum during a delete over three row groups: no target block all-visible after commit" "$vr_after" "0"
 check "concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row" "$vr_ios" "0"
+check "concurrent vacuum during a delete over three row groups: the three counts use an index-only scan, a plain index scan and a seq scan" "$vr_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "concurrent vacuum during a delete over three row groups: index-only, plain index and seq scan counts agree" "$vr_counts" "0/0/0"
 
 exec 9>&-
 wait "$H_PID" 2>/dev/null || true
@@ -366,7 +398,8 @@ echo "-- phase 7: a delete commits between vacuum's computation and its set (#20
 # vm_set_hold_ms, run and commit DML during the hold, and let the VACUUM
 # finish. BEFORE, AFTER, IOS and the optional CLEAN are queries run before the
 # hold, and after the VACUUM. Sets vm_before, vm_held, vm_still, vm_after,
-# vm_ios and vm_clean.
+# vm_ios and vm_clean, and vm_plans and vm_counts, IOS read through each of
+# three scans (#2171).
 vm_mid() {
 	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" clean="${7:-}" setup="${8:-}" i vpid plan held
 	psql_run "CREATE TABLE $tbl (id int, pad int) USING pgcolumnar;"
@@ -400,6 +433,8 @@ vm_mid() {
 	*)
 		vm_ios="no index-only scan was planned: $plan" ;;
 	esac
+	three_counts "$ios"
+	vm_plans="$tc_plans"; vm_counts="$tc_counts"
 }
 
 vm_mid vr_mid 20000 "DELETE FROM vr_mid WHERE id BETWEEN 300 AND 400;" \
@@ -409,6 +444,8 @@ check "delete between vacuum's two steps: vacuum paused before its set" "$vm_hel
 check "delete between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
 check "delete between vacuum's two steps: block 1 not all-visible after vacuum" "$vm_after" "f"
 check "delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "delete between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan" "$vm_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "delete between vacuum's two steps: index-only, plain index and seq scan counts agree" "$vm_counts" "0/0/0"
 
 # 300,000 rows in one INSERT: row group 2 starts at row 150001, inside block
 # 515 (rows 149865..150155). The delete of 150001..150100 makes block 515 stale
@@ -426,6 +463,8 @@ check "delete in the second row group between vacuum's two steps: the delete com
 check "delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum" "$vm_after" "f"
 check "delete in the second row group between vacuum's two steps: clean block 514 still all-visible" "$vm_clean" "t"
 check "delete in the second row group between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "delete in the second row group between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan" "$vm_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "delete in the second row group between vacuum's two steps: index-only, plain index and seq scan counts agree" "$vm_counts" "0/0/0"
 
 vm_mid vr_midm 400000 "DELETE FROM vr_midm WHERE id % 5000 = 0 AND id < 400000;" \
 	"$(tgt_all vr_midm)" "$(tgt_stale vr_midm)" "$(tgt_ios vr_midm)"
@@ -434,6 +473,8 @@ check "delete over three row groups between vacuum's two steps: vacuum paused be
 check "delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
 check "delete over three row groups between vacuum's two steps: no target block all-visible after vacuum" "$vm_after" "0"
 check "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "delete over three row groups between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan" "$vm_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "delete over three row groups between vacuum's two steps: index-only, plain index and seq scan counts agree" "$vm_counts" "0/0/0"
 
 # #2170: the second pass clears only the bits this VACUUM flipped from 0 to 1.
 # vr_keep's first 20,000 rows are row group 1, blocks 1..67, all set by the
@@ -453,7 +494,7 @@ keep_vis() { echo "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_ke
 vm_mid vr_keep 20000 "DELETE FROM vr_keep WHERE id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600;" \
 	"SELECT ($(keep_vis "$KEEP_G1")) || '|' || ($(keep_vis "$KEEP_G2"));" \
 	"$(keep_vis "$KEEP_DEL");" \
-	"SELECT count(*) FROM vr_keep WHERE id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600;" \
+	"SELECT (SELECT count(*) FROM vr_keep WHERE id BETWEEN 300 AND 400) + (SELECT count(*) FROM vr_keep WHERE id BETWEEN 1500 AND 1600);" \
 	"$(keep_vis "$KEEP_CLEAN");" \
 	"INSERT INTO vr_keep SELECT g, g FROM generate_series(20001, 40000) g;"
 vm_fresh="$(q "$(keep_vis "$KEEP_G2");")"
@@ -471,6 +512,8 @@ check "#2170 delete between vacuum's two steps: blocks 1 and 5 not all-visible a
 check "#2170 delete between vacuum's two steps: the 65 clean blocks set before the hold keep their bits" "$vm_clean" "65"
 check "#2170 delete between vacuum's two steps: the 68 blocks this vacuum set in the clean group keep their bits" "$vm_fresh" "68"
 check "#2170 delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "#2170 delete between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan" "$vm_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "#2170 delete between vacuum's two steps: index-only, plain index and seq scan counts agree" "$vm_counts" "0/0/0"
 check "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows" "$vm_all" "39798"
 
 # #2257 review, B1: the second pass must reach the LAST block of a run. In
@@ -486,6 +529,8 @@ check "#2170 premise: delete in the last block of a run between vacuum's two ste
 check "#2170 premise: delete in the last block of a run between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
 check "#2170 delete in the last block of a run between vacuum's two steps: block 67 not all-visible after vacuum" "$vm_after" "f"
 check "#2170 delete in the last block of a run between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "#2170 delete in the last block of a run between vacuum's two steps: the three counts use an index-only scan, a plain index scan and a seq scan" "$vm_plans" "Index Only Scan|Index Scan|Seq Scan"
+check "#2170 delete in the last block of a run between vacuum's two steps: index-only, plain index and seq scan counts agree" "$vm_counts" "0/0/0"
 
 # #2257 review, B2: the set must stop at the end of a run. vr_edge holds three
 # contiguous 1000-row groups (stripe_row_limit 1000): rows 1..1000, 1001..2000
