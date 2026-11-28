@@ -141,14 +141,86 @@ pgc_port_free() {
 	! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
-# A free port from a band, verified rather than assumed. Callers pass the band so
+# ---- a picked port stays picked until something binds it (#2165) ----------
+#
+# The probe proves a port free at one instant, and nothing holds it after that:
+# the picker returns a number, and the caller binds it later, after starting a
+# python fixture or a postmaster. Two suites running at once (run_all_versions
+# runs suites in parallel, and the pytest twins share the AUX band) could both
+# probe the same port free inside that gap. Both were then told the same port.
+# The second bind failed, and the second suite talked to the first suite's
+# server: in CI, iceberg_rest_scan got HTTP 401 from iceberg_rest_vended's REST
+# fixture (each takes its own --token), and the vended suite got "connection
+# refused" (#2165). Seeds from different pids make the walks differ, not
+# disjoint: two walks reach the same free port whenever the ports between their
+# bases are busy.
+#
+# So each pick is RESERVED. Under one lock per user, the picker skips a port
+# that another pick reserved, and reserves the port it returns. A reservation
+# holds while the process that made it runs, and for PGC_PORT_RESERVE_TTL
+# seconds after the pick when that process has gone. It has to outlive the
+# gap between the pick and the bind, and a restart's gap after it; while the
+# port is bound, the probe sees it busy anyway. A reservation is a file named
+# for the port, holding the picker's pid, and its mtime is its age, so a
+# picker that died leaves nothing that needs cleaning up.
+#
+# test/pytest/pgc_cluster.py's pick_port takes the same lock and reads and
+# writes the same files, so a shell suite and a pytest twin don't collide
+# either. The directory is per user, as the pytest build lock is (#1016): a
+# directory another user owns would deny every pick. PGC_PORT_RESERVE_DIR
+# moves it, for a test that wants its own, and PGC_PORT_PICK_DELAY (seconds)
+# sleeps between the probe and the reservation, to test the lock.
+#
+# THE PROTOCOL, which both pickers keep and each harness tests against on its own
+# (selftest 660 here, test_runshape.py for pick_port; neither runs the other's
+# picker, CONTEXT.md "Tests"):
+#   the directory is PGC_PORT_RESERVE_DIR, else ${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>;
+#   a pick holds an exclusive flock on <dir>/lock from its first probe to its
+#   reservation;
+#   a reservation is the file <dir>/<port>, holding "<picker pid> <epoch seconds>";
+#   it holds while that pid runs, and for 120 s after its mtime once the pid has gone.
+PGC_PORT_RESERVE_TTL=120
+
+pgc_port_reserve_dir() {
+	printf '%s\n' "${PGC_PORT_RESERVE_DIR:-${TMPDIR:-/tmp}/pgcolumnar-ports-$(id -u)}"
+}
+
+# True when this port is reserved: the process that picked it (the pid the
+# reservation file names) is still running, or the pick was less than
+# PGC_PORT_RESERVE_TTL seconds before NOW. Called with the reservation lock held.
+#
+# A LIVE OWNER KEEPS ITS RESERVATION AT ANY AGE (review of #2208). A suite that
+# stops and restarts its own server on the port it picked (vended's restart, the
+# pg_upgrade cycles, crash recovery, replication) leaves it unbound for a moment,
+# possibly minutes after the pick, and the age rule alone handed it to the next
+# picker in that gap. The age rule now covers only an owner that has gone, so a
+# picker that died still leaves nothing that needs cleaning up.
+pgc_port_reserved() {	# pgc_port_reserved DIR PORT NOW
+	local m owner rest
+	m="$(stat -c %Y "$1/$2" 2>/dev/null)" || return 1
+	read -r owner rest < "$1/$2" 2>/dev/null
+	case "$owner" in
+		''|*[!0-9]*) ;;
+		*) kill -0 "$owner" 2>/dev/null && return 0 ;;
+	esac
+	[ $(( $3 - m )) -lt "$PGC_PORT_RESERVE_TTL" ]
+}
+
+# A free port from a band, verified rather than assumed, and reserved for the
+# caller (see above). Callers pass the band so
 # a suite standing up extra clusters can draw from AUX while the matrix walks MAIN.
 pgc_pick_free_port() {
-	local lo="$1" hi="$2" seed="${3:-$$}" width base span i p
+	local lo="$1" hi="$2" seed="${3:-$$}" width base span i p dir now
 
 	width=$(( hi - lo ))
 	[ "$width" -le 0 ] && return 1
 	base=$(( lo + (seed % width) ))
+
+	dir="$(pgc_port_reserve_dir)"
+	if ! mkdir -p "$dir" 2>/dev/null || ! [ -w "$dir" ]; then
+		echo "pgcolumnar: cannot write the port reservation directory $dir" >&2
+		return 1
+	fi
 
 	# The walk WRAPS to lo, and is bounded by the band width (#548).
 	#
@@ -172,15 +244,31 @@ pgc_pick_free_port() {
 	# a full sweep happens only when the band really is full, which is the failure
 	# path. Measured on the bench container: 2000 probes take 856 ms, against
 	# 191 ms for 300, and neither is paid on the success path.
+	#
+	# The walk runs in a subshell holding the reservation lock on fd 9, so the
+	# lock ends with the subshell and no process the suite starts later
+	# inherits it.
 	span=$width
-	for i in $(seq 0 $(( span - 1 ))); do
-		p=$(( lo + ((base - lo + i) % width) ))
-		if pgc_port_free "$p"; then
-			printf '%s\n' "$p"
-			return 0
+	(
+		if ! flock -w 60 9; then
+			echo "pgcolumnar: no port reservation lock ($dir/lock) within 60 s" >&2
+			exit 1
 		fi
-	done
-	return 1
+		now="$(date +%s)"
+		for i in $(seq 0 $(( span - 1 ))); do
+			p=$(( lo + ((base - lo + i) % width) ))
+			pgc_port_reserved "$dir" "$p" "$now" && continue
+			if pgc_port_free "$p"; then
+				# Holds the gap between the probe and the reservation open, so a
+				# test can show that the lock is what keeps two picks apart.
+				[ -n "${PGC_PORT_PICK_DELAY:-}" ] && sleep "$PGC_PORT_PICK_DELAY"
+				printf '%s %s\n' "$$" "$now" > "$dir/$p" || exit 1
+				printf '%s\n' "$p"
+				exit 0
+			fi
+		done
+		exit 1
+	) 9>>"$dir/lock"
 }
 
 # ---- a lock taken by the caller does not reach this run's servers (#1915) ----
