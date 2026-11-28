@@ -2615,4 +2615,9 @@ guard_tests 910
 # lazy VACUUM's retirement, the reader's guard against a row group with data and no column chunks, and a VACUUM
 # held in its visibility-map step), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it).
-cluster_tests 6361
+# cluster_tests 6361 -> 6386 for #2264's twenty-five tests in test_vacuum_retire_snapshot.py, the twin of the
+# new vacuum_retire_snapshot.sh (a row group lazy VACUUM retires stays retired when another session reads its
+# catalog rows meanwhile, with no 23505 on free_space_pkey and the free-space accounting intact: two variants
+# of premises, retirement, free_space overlap and sum, the next VACUUM and the table's rows, and a crash
+# count), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6386

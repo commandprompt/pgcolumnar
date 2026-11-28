@@ -397,6 +397,7 @@ COMPLETE = ["advisory_lock_class",
             "unique_conc",
             "update_conc",
             "vacuum_lock_privilege",
+            "vacuum_retire_snapshot",
             "validity_elision",
             "vm_privilege",
             "zonemap_boundaries"]

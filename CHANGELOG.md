@@ -653,6 +653,16 @@ true until the next version shipped.
   returning its rows as NULLs. A table damaged by an earlier version reports
   that error until the leftover group is removed (docs/limitations.md).
   `test/vacuum_retire_visibility.sh` and `test_vacuum_retire_visibility.py`.
+- The same change fixes a plain VACUUM that failed with `duplicate key value
+  violates unique constraint "free_space_pkey"` under concurrent deletes
+  (#2264). The lost delete left a retired group live while its range was also
+  in free_space, so the next VACUUM that retired it inserted the same
+  `(storage_id, file_offset)` again. Measured on PG 18, three workers of
+  single-row DELETE and UPDATE against a VACUUM loop for 60 s: 1426 of 1619
+  VACUUMs failed on main, 0 of 2835 with the fix. `test/vacuum_retire_snapshot.sh`
+  and `test_vacuum_retire_snapshot.py` pin the duplicate key and the free-space
+  accounting: no free range over a live group, and exactly the retired groups'
+  pages free. Reported by @jdatcmd.
 - An AFTER trigger of a DELETE or UPDATE that reads the table through an
   index-only scan no longer counts rows its own statement deleted, when a
   VACUUM ran during the statement (#2169). The writer keeps its delete marks in

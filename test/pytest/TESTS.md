@@ -412,6 +412,7 @@ behaviour, the source of that number is named.
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
 - [365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees](#365-test_rewrite_snapshotpy-a-rewrite-inside-a-repeatable-read-transaction-does-not-change-what-it-sees)
 - [366. test_vacuum_retire_visibility.py: a reader during lazy VACUUM's retirement does not bring back a deleted row as NULLs](#366-test_vacuum_retire_visibilitypy-a-reader-during-lazy-vacuums-retirement-does-not-bring-back-a-deleted-row-as-nulls)
+- [367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile](#367-test_vacuum_retire_snapshotpy-a-group-lazy-vacuum-retires-stays-retired-when-another-session-reads-it-meanwhile)
 
 ## 1. How to read a test in here
 
@@ -15347,3 +15348,41 @@ Two mutants pass: the flag cleared in the `ProcGlobal` mirror but not in `MyProc
 | `test_vb_retired_while_va_held` | a VACUUM of vb retires a group deleted after va's VACUUM started, while va's is held |
 | `test_premise_va_still_held` | premise: va's VACUUM was still held at that moment |
 | `test_no_crash` | no backend terminated by signal over the run |
+
+## 367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile
+
+The twin of `test/vacuum_retire_snapshot.sh`, with the same 25 check names (#2264). Core sets PROC_IN_VACUUM for a lazy VACUUM, and GetSnapshotData leaves that backend's XID out of every other snapshot. pgColumnar's lazy VACUUM deletes a retired group's catalog rows and inserts its free_space row. A reader that saw those rows while the VACUUM ran took its XID for aborted and set a permanent hint bit. The group came back after the commit, while its range was also free, and the next VACUUM that retired it failed with 23505 on `free_space_pkey`.
+
+The race is ordered by locks. Three single-row inserts make three groups, and the first two are deleted. One connection locks the second group's row_group row FOR UPDATE and waits on advisory lock 2264. VACUUM retires the first group and waits on that row lock. `txid_current()` commits, and the reader reads the first group's rows. Variant `dv` reads its row_group and delete_vector rows; variant `rg` reads only row_group. Every wait is bounded.
+
+The fix is #2263's `pgcolumnar_leave_lazy_vacuum`. Removal proof: on main, and with each mutant of that fix (the call dropped, only `MyProc->statusFlags` cleared, the call after the retirement), the same six checks are red in both harnesses on PG 17 and PG 18.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_dv_premise_three_groups` | premise: three single-row inserts made three row groups |
+| `test_dv_premise_locker_waits` | premise: the connection holding the second group's row lock waits on advisory lock 2264 |
+| `test_dv_premise_vacuum_paused` | premise: VACUUM waits on that row lock, inside its retirement |
+| `test_dv_premise_xid_below_committed` | premise: the paused VACUUM's XID is below one that committed after it, so a new snapshot's xmax is above it |
+| `test_dv_premise_reader_saw_group` | premise: the reader saw the first group's row_group and delete_vector rows (`1|1`) |
+| `test_dv_premise_still_paused` | premise: VACUUM was still waiting after the read |
+| `test_dv_premise_vacuum_finished` | premise: the paused VACUUM finished with `VACUUM` |
+| `test_dv_group_stays_retired` | the first group's row_group row is gone after the VACUUM commits. On main it is live again (1) |
+| `test_dv_no_free_live_overlap` | no free_space range overlaps a live row group. On main 1 does |
+| `test_dv_free_space_sum` | control: free_space holds exactly the page footprints of the two retired groups |
+| `test_dv_next_vacuum_no_23505` | the next VACUUM returns `VACUUM`. On main it fails with 23505 on `free_space_pkey` |
+| `test_dv_table_rows` | the table returns only row `3:p3`. With #2263's reader check and no fix, the scan fails with XX001 (a live group with no column chunks) |
+| `test_rg_premise_three_groups` | as the dv premise, for the variant whose reader reads only row_group |
+| `test_rg_premise_locker_waits` | as the dv premise |
+| `test_rg_premise_vacuum_paused` | as the dv premise |
+| `test_rg_premise_xid_below_committed` | as the dv premise |
+| `test_rg_premise_reader_saw_group` | premise: the reader saw the first group's row_group row (`1`) |
+| `test_rg_premise_still_paused` | as the dv premise |
+| `test_rg_premise_vacuum_finished` | as the dv premise |
+| `test_rg_group_stays_retired` | the first group's row_group row is gone. On main it is live again (1) |
+| `test_rg_no_free_live_overlap` | no free_space range overlaps a live row group. On main 1 does |
+| `test_rg_free_space_sum` | control: free_space holds exactly the two retired groups' page footprints |
+| `test_rg_table_rows` | the table returns only row `3:p3`. On main before #2263 it also returns `NULL:NULL`, the retired group's deleted row with every column NULL; with #2263's reader check and no fix, the scan fails with XX001 |
+| `test_rg_next_vacuum_succeeds` | control: the next VACUUM returns `VACUUM` |
+| `test_no_backend_crashed` | no `terminated by signal` in the server log during the two races |
