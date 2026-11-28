@@ -282,6 +282,14 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` make sure the
+  compactor rewrites while the workers write (#2172). Each worker now waits, at
+  most 60 s, after its deletes until a `compact_rewrite` has rewritten a group,
+  and only then runs its UPDATEs. The check that the race happened reads the
+  groups each worker saw at that point. Before, it read the loop's total, so it
+  failed in CI when the one call in the workers' window lost a deadlock and
+  rolled back, and it also counted the loop's last call, which can finish after
+  the workers. Test-only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
   refusal for 2 or more workers (#2187) comes before the file is opened, as
   #2209 pinned for the unique-index refusal (#2252). A missing file on a table

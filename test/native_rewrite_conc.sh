@@ -39,7 +39,12 @@ runsql() {
 
 # Compactor loop: hammer the online rewrite + fully-dead retirement concurrently.
 STOP="$PGC_WORKDIR/stop"
-rm -f "$STOP" "$PGC_WORKDIR/compactor.out"
+rm -f "$STOP" "$PGC_WORKDIR/compactor.out" "$PGC_WORKDIR"/w.*.gate
+# groups the compactor's finished compact_rewrite calls have rewritten so far
+moved_so_far() {
+	[ -f "$PGC_WORKDIR/compactor.out" ] || { echo 0; return; }
+	awk '/^[0-9]+$/ {s += $1} END {print s + 0}' "$PGC_WORKDIR/compactor.out"
+}
 (
 	while [ ! -f "$STOP" ]; do
 		env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
@@ -64,6 +69,16 @@ for w in $(seq 0 $((WORKERS - 1))); do
 		runsql "INSERT INTO t_col  SELECT g, g%5, g*3, md5(g::text) FROM generate_series($lo,$hi) g;" "$errf" || exit 1
 		runsql "DELETE FROM t_heap WHERE id BETWEEN $lo AND $hi AND id % 7 = 0;" "$errf" || exit 1
 		runsql "DELETE FROM t_col  WHERE id BETWEEN $lo AND $hi AND id % 7 = 0;" "$errf" || exit 1
+		# The gate (#2172): wait, at most 60 s, until a compact_rewrite has rewritten a
+		# group, then write the rest. So a rewrite has finished while this worker still
+		# has statements to run, however slow the runner, and however many of the
+		# compactor's calls lost a lock race (#2074) and rolled back. The groups seen
+		# here are what the check below reads.
+		for _ in $(seq 1 300); do
+			[ "$(moved_so_far)" -gt 0 ] && break
+			sleep 0.2
+		done
+		moved_so_far > "$PGC_WORKDIR/w.$w.gate"
 		runsql "UPDATE t_heap SET v = v + 1 WHERE id BETWEEN $lo AND $hi AND id % 5 = 0;" "$errf" || exit 1
 		runsql "UPDATE t_col  SET v = v + 1 WHERE id BETWEEN $lo AND $hi AND id % 5 = 0;" "$errf" || exit 1
 	) &
@@ -79,13 +94,21 @@ wait "$comp_pid" 2>/dev/null || true
 check "all workers succeeded (retried past serialization failures)" "$fail" "0"
 
 # THE RACE MUST HAVE HAPPENED, or the oracle comparison below proves nothing about
-# it. While the workers ran, the compactor must have moved rows (compact_rewrite
-# returns the live rows it moved) -- a rewrite that never ran alongside the writers
-# leaves the conflict protocol untested.
-moved="$(awk '/^[0-9]+$/ {s += $1} END {print s + 0}' "$PGC_WORKDIR/compactor.out" 2>/dev/null)"
-echo "-- compactor moved $moved rows during the workers' window; serialization retries: $(cat "$PGC_WORKDIR"/w.*.err 2>/dev/null | grep -c 'row group was compacted concurrently')"
+# it. Each worker must have seen a finished compact_rewrite that rewrote a group
+# (it returns the groups it rewrote) at its gate, before its UPDATEs -- a rewrite
+# that never ran alongside the writers leaves the conflict protocol untested. Read
+# at the gates, not as the loop's total: the loop's last call can finish after the
+# workers, and a call that lost a lock race (#2074) rolled back what it moved.
+moved="$(moved_so_far)"
+gates=""
+for w in $(seq 0 $((WORKERS - 1))); do
+	gates="$gates $(cat "$PGC_WORKDIR/w.$w.gate" 2>/dev/null || echo none)"
+done
+gates="${gates# }"
+echo "-- compactor rewrote $moved groups in all; at each worker's gate: $gates; serialization retries: $(cat "$PGC_WORKDIR"/w.*.err 2>/dev/null | grep -c 'row group was compacted concurrently'); compactor calls that failed: $(grep -c '^ERROR' "$PGC_WORKDIR/compactor.err" 2>/dev/null)"
 check "the compactor rewrote groups while the workers were writing" \
-	"$([ -n "$moved" ] && [ "$moved" -gt 0 ] 2>/dev/null && echo yes || echo "no (moved [$moved])")" "yes"
+	"$(n=0; for g in $gates; do [ "$g" -gt 0 ] 2>/dev/null && n=$((n + 1)); done
+	   [ "$n" = "$WORKERS" ] && echo yes || echo "no (groups at the gates [$gates])")" "yes"
 
 # A final settling pass, then the columnar table must equal the heap oracle.
 q "SELECT pgcolumnar.compact_rewrite('t_col', 0.0);" >/dev/null
