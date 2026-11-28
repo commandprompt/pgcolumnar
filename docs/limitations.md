@@ -1731,6 +1731,21 @@ table at its current snapshot. It has these limits:
 - A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
   reads as its current type. Files from before the promotion are widened.
   Declaring it with a narrower type than a live file stores is refused.
+- A `pgcolumnar_iceberg` foreign table checks each column's type against its
+  Iceberg field's current type when a scan starts, before it prunes any file
+  (#2190). The reader refuses some column types for every file of a field's
+  type: `int` or `smallint` over a `long`, say. The scan refuses those with
+  SQLSTATE 42804. Without this check, a filter that pruned every refused file
+  returned rows where the full scan was refused. So an `int` column over a
+  `long` promoted from `int` is refused even while every file still holds the
+  pre-promotion INT32: declare it `bigint`. The check covers the column types
+  the FDW prunes on: `smallint`, `integer`, `bigint`, `boolean`, `text`,
+  `varchar`, `date`, `timestamp` and `timestamptz`. It checks them over the
+  Iceberg types `boolean`, `int`, `long`, `date`, `time`, `timestamp`,
+  `timestamptz` and `string`. Other combinations are refused per file, as
+  `iceberg_scan` refuses them. `iceberg_scan` reads every file and keeps the
+  per-file check, so it still reads an `int` column over a promoted `long` whose
+  files are all INT32.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
 - The foreign-data wrapper does not prune `bucket[N]` files for an equality
