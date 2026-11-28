@@ -726,6 +726,22 @@ true until the next version shipped.
   alone. A table whose retention column was dropped on an older build keeps the
   stale name. docs/sql-reference.md. `test/ttl_expire.sh`,
   `test/sorted_mark_rename.sh` and their pytest twins.
+- `pgcolumnar.parallel_export_parquet` no longer waits until
+  `statement_timeout` when another session's ACCESS EXCLUSIVE request queues
+  behind the caller's lock on the table, or on a leaf partition, before the
+  workers open it (#2245). `LOCK TABLE`, `TRUNCATE`, `ALTER TABLE`,
+  `VACUUM FULL` and `DROP` take that lock. The workers queued behind the
+  request, and the caller waited for them on a latch, which the deadlock
+  detector does not see. Each worker now holds an advisory lock of a new class
+  (108) from the moment it connects, and the caller waits on those locks. The
+  deadlock detector then moves the workers ahead of the queued request after
+  `deadlock_timeout`, and the export finishes. These waits on the workers do
+  not count against `lock_timeout` and are not reported by `log_lock_waits`.
+  A worker's error now carries its detail and hint to the caller, and every
+  step after the worker connects reports its error, so a worker picked as a
+  deadlock victim reaches the caller as 40P01.
+  docs/sql-reference.md. `test/parallel_export_parquet.sh` and
+  `test_parallel_export_parquet.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error

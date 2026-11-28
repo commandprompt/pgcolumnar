@@ -2622,4 +2622,10 @@ guard_tests 910
 # fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
 # step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
 # cluster files.
-cluster_tests 6358
+# cluster_tests 6358 -> 6365 for #2245's seven tests in test_parallel_export_parquet.py: an ACCESS EXCLUSIVE
+# request queued behind the caller on the table and on a leaf does not hang the export (2), a cycle through the
+# dispatcher's own wait still ends in 40P01 (control), the caller's lock_timeout bounds its wait for the table,
+# the waits on the workers are neither limited by lock_timeout nor logged, and the caller's settings read back
+# unchanged, and a worker picked as the deadlock victim reaches the caller as 40P01 with its detail, by
+# collection of that file (64 on main 0072cd88, 71 here) and over the cluster files.
+cluster_tests 6365
