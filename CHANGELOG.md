@@ -282,6 +282,14 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
+  refusal for 2 or more workers (#2187) comes before the file is opened, as
+  #2209 pinned for the unique-index refusal (#2252). A missing file on a table
+  with an INSERT row trigger gets the trigger refusal, `0A000` with its hint,
+  not `58P01`. With 1 worker the same call gets `58P01`. Before this, moving
+  the trigger refusal after the file is opened passed both suites.
+  docs/limitations.md and docs/sql-reference.md state that order for both
+  refusals. Test-only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin two edges of the
   unique-index refusal for 2 or more workers (#2209). A heap table with a primary
   key gets `42809` before that refusal: the heap fixture now has a primary key.

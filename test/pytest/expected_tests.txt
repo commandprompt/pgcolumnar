@@ -2607,4 +2607,8 @@ guard_tests 910
 # NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
 # cluster_tests 6317 -> 6335 for #2167: test_rewrite_snapshot.py, the twin of the new rewrite_snapshot.sh
 # (18 tests), by collection over the cluster files.
-cluster_tests 6335
+# cluster_tests 6335 -> 6337 for #2252's two tests in test_parallel_copy.py: a missing file into a table with an
+# INSERT row trigger with 2 workers gets the 0A000 trigger refusal before the file is opened, and the control
+# that the same call with 1 worker gets 58P01, by collection of that file (369 on main 0072cd88, 371 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6337
