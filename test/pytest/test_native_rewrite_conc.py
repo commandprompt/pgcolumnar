@@ -871,6 +871,11 @@ def _dl_turnstile(d, verb):
                     n.execute("DELETE FROM dl WHERE id = 50")
                     n.execute("SELECT count(*) FROM dl WHERE id = 50").fetchone()
                 out["n"] = int((time.monotonic() - t0) * 1000)
+                t0 = time.monotonic()
+                with n.transaction():
+                    n.execute("INSERT INTO dl VALUES (-7, 0)")
+                    n.execute("SELECT count(*) FROM dl WHERE id = -7").fetchone()
+                out["ni"] = int((time.monotonic() - t0) * 1000)
         except psycopg.Error as exc:
             out["n"] = _err(exc)
     finally:
@@ -880,11 +885,11 @@ def _dl_turnstile(d, verb):
             rt.join()
     out.setdefault("rewrite", "not started")
     out["after"] = d.q("SELECT count(*) FILTER (WHERE id IN (47, 49, 50, 1501, 2996, 2997)) "
-                       "|| ' ' || count(*) FILTER (WHERE id = 0) FROM dl")
+                       "|| ' ' || count(*) FILTER (WHERE id IN (0, -7)) FROM dl")
     return out
 
 
-def _dl_given_back(d):
+def _dl_kept(d):
     """compact_rewrite pauses on its first row with its lock on group 0 taken; then a delete
     of id 1502, in group 1, which it does not rewrite, runs with a 3 s deadlock_timeout.
     -> {"groups": "yes" | "no", "p": ms, "rewrite": "ok" | error}."""
@@ -912,6 +917,138 @@ def _dl_given_back(d):
                 out["p"] = _err(exc)
     finally:
         rt.join()
+    return out
+
+
+def _dl_held_writer(d, verb):
+    """Every group has deletes. W deletes id 1501 and flushes it, so it holds group 1; the
+    verb starts with a 20 s limit and waits for group 1, holding the turnstile. N, with a 5 s
+    deadlock_timeout, deletes id 50 and flushes it; 0.5 s after N's DELETE is active, W rolls
+    back. -> {"n": "ok" | SQLSTATE, "id50": rows left, "rewrite": "ok" | error}."""
+    e = _dl_make(d, extra="all")
+    if e:
+        return {"n": e, "id50": e, "rewrite": e}
+    out = {}
+    nq = ("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE state = 'active' "
+          "AND query LIKE 'DELETE FROM dl WHERE id = 50%')")
+
+    def holder():
+        try:
+            with psycopg.connect(d.dsn) as c:
+                c.execute("DELETE FROM dl WHERE id = 1501")
+                c.execute("SELECT count(*) FROM dl").fetchone()
+                _dl_wait(d, _waiting(101))
+                with psycopg.connect(d.dsn, autocommit=True) as probe:
+                    for _ in range(300):
+                        probe.execute("SELECT pg_stat_clear_snapshot()")
+                        if probe.execute(nq).fetchone()[0]:
+                            break
+                        time.sleep(0.1)
+                time.sleep(0.5)
+                c.rollback()
+        except psycopg.Error as exc:
+            out["w"] = _err(exc)
+
+    def rewrite():
+        e = d.run(f"SELECT {verb}", settings=("SET pgcolumnar.rewrite_lock_timeout = '20s'",))
+        out["rewrite"] = e or "ok"
+
+    wt = threading.Thread(target=holder)
+    wt.start()
+    rt = None
+    try:
+        _dl_wait(d, "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND objsubid = 101 AND granted)")
+        rt = threading.Thread(target=rewrite)
+        rt.start()
+        _dl_wait(d, _waiting(101))
+        try:
+            with psycopg.connect(d.dsn, autocommit=True) as n:
+                n.execute("SET deadlock_timeout = '5s'")
+                n.execute("SET statement_timeout = '30s'")
+                with n.transaction():
+                    n.execute("DELETE FROM dl WHERE id = 50")
+                    n.execute("SELECT count(*) FROM dl WHERE id = 50").fetchone()
+            out["n"] = "ok"
+        except psycopg.Error as exc:
+            out["n"] = exc.sqlstate or _err(exc)
+    finally:
+        wt.join()
+        if rt is not None:
+            rt.join()
+    out.setdefault("rewrite", "not started")
+    out["id50"] = d.q("SELECT count(*) FROM dl WHERE id = 50")
+    return out
+
+
+def _dl_release(d, verb):
+    """A deleter holds group 0 for 4 s; one session runs the verb with a 1 s limit, which stops
+    with 55P03, then counts its own class 109 locks and stays open. Meanwhile a second session
+    counts every class 109 lock and deletes id 1502, in group 1, with a 3 s deadlock_timeout.
+    -> {"verb": "ok" | SQLSTATE, "r109", "all109", "n2": ms}."""
+    e = _dl_make(d)
+    if e:
+        return {"verb": e, "r109": e, "all109": e, "n2": e}
+    out = {}
+
+    def holder():
+        try:
+            with psycopg.connect(d.dsn) as c:
+                for sql in DL_DELETER:
+                    c.execute(sql)
+                c.execute("SELECT pg_sleep(4)")
+                c.commit()
+        except psycopg.Error as exc:
+            out["d"] = _err(exc)
+
+    stopped = threading.Event()
+    release = threading.Event()
+
+    def rewriter():
+        try:
+            with psycopg.connect(d.dsn, autocommit=True) as r:
+                r.execute("SET pgcolumnar.rewrite_lock_timeout = '1s'")
+                try:
+                    r.execute(f"SELECT {verb}")
+                    out["verb"] = "ok"
+                except psycopg.Error as exc:
+                    out["verb"] = exc.sqlstate or _err(exc)
+                out["r109"] = r.execute(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND objsubid = 109 AND pid = pg_backend_pid()").fetchone()[0]
+                stopped.set()
+                release.wait(30)
+        except psycopg.Error as exc:
+            out.setdefault("verb", _err(exc))
+            stopped.set()
+
+    dt = threading.Thread(target=holder)
+    dt.start()
+    rt = None
+    try:
+        _dl_wait(d, "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND objsubid = 101 AND granted)")
+        rt = threading.Thread(target=rewriter)
+        rt.start()
+        stopped.wait(30)
+        try:
+            with psycopg.connect(d.dsn, autocommit=True) as n2:
+                out["all109"] = n2.execute(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND objsubid = 109").fetchone()[0]
+                n2.execute("SET deadlock_timeout = '3s'")
+                t0 = time.monotonic()
+                with n2.transaction():
+                    n2.execute("DELETE FROM dl WHERE id = 1502")
+                    n2.execute("SELECT count(*) FROM dl WHERE id = 1502").fetchone()
+                out["n2"] = int((time.monotonic() - t0) * 1000)
+        except psycopg.Error as exc:
+            out["n2"] = _err(exc)
+    finally:
+        release.set()
+        dt.join()
+        if rt is not None:
+            rt.join()
     return out
 
 
@@ -972,7 +1109,10 @@ def dl(pgc_cluster):
         # the rewrite turnstile (#2185), in the shell's order
         for name, verb in DL_VERBS.items():
             out[name, "turnstile"] = _dl_turnstile(d, verb)
-        out["given_back"] = _dl_given_back(d)
+        out["given_back"] = _dl_kept(d)
+        for name, verb in DL_VERBS.items():
+            out[name, "held_writer"] = _dl_held_writer(d, verb)
+            out[name, "release"] = _dl_release(d, verb)
         yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1377,6 +1517,13 @@ def test_the_turnstile_wait_stops_after_deadlock_timeout(dl, name, expect):
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
+def test_an_insert_does_not_wait_at_the_turnstile(dl, name, expect):
+    expect.text(_ms_in(dl[name, "turnstile"].get("ni"), 0, 600, "ni"), "yes",
+                f"an INSERT in a fresh transaction does not wait at the {name}'s turnstile: under "
+                "0.6 s against its 1 s deadlock_timeout")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
 def test_a_group_lock_holder_skips_the_turnstile(dl, name, expect):
     expect.text(_ms_in(dl[name, "turnstile"].get("h"), 0, 1000, "h"), "yes",
                 f"a transaction that already holds a group lock does not wait at the {name}'s "
@@ -1398,7 +1545,7 @@ def test_the_rewrite_behind_the_turnstile_writers_finishes(dl, name, expect):
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_every_write_beside_the_turnstile_took_effect(dl, name, expect):
-    expect.text(dl[name, "turnstile"]["after"], "0 1",
+    expect.text(dl[name, "turnstile"]["after"], "0 2",
                 f"and every write beside the {name}'s turnstile took effect")
 
 
@@ -1407,12 +1554,58 @@ def test_the_paused_compact_rewrite_holds_its_group_lock(dl, expect):
                 "a compact_rewrite paused after it took its group lock holds it")
 
 
-def test_the_turnstile_was_given_back(dl, expect):
-    expect.text(_ms_in(dl["given_back"].get("p"), 0, 1500, "p"), "yes",
-                "and a delete in a group it does not rewrite, with a 3 s deadlock_timeout, goes on "
-                "within 1.5 s: the turnstile was given back")
+def test_the_turnstile_is_kept_to_commit(dl, expect):
+    expect.text(_ms_in(dl["given_back"].get("p"), 2500, 4500, "p"), "yes",
+                "and a delete in a group it does not rewrite, with a 3 s deadlock_timeout, waits for "
+                "the turnstile the paused compact_rewrite keeps, then goes on after 2.5 to 4.5 s")
 
 
 def test_the_paused_compact_rewrite_commits(dl, expect):
     expect.text(f"rewrite={dl['given_back'].get('rewrite')}", "rewrite=ok",
                 "and that paused compact_rewrite commits")
+
+
+# Review of #2253 at 815dce06. No lost delete (B1): a writer that waits at the turnstile
+# while the verb takes its locks commits, and its row is gone; it used to wait after it had
+# marked its row and then fail with 40001. Given back on an error (B2): a verb stopped with
+# 55P03 leaves its still-open session holding no class 109 lock, and a delete right after,
+# with a 3 s deadlock_timeout, takes under 1 s.
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_a_delete_held_at_the_turnstile_commits(dl, name, expect):
+    expect.text(f"n={dl[name, 'held_writer']['n']}", "n=ok",
+                f"a delete that waited at the {name}'s turnstile while the {name} took its locks "
+                "commits, with no 40001")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_held_deletes_row_is_gone(dl, name, expect):
+    expect.text(f"id50={dl[name, 'held_writer']['id50']}", "id50=0",
+                f"and the row that delete removed beside the {name} is gone")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_beside_the_held_delete_finishes(dl, name, expect):
+    expect.text(f"rewrite={dl[name, 'held_writer']['rewrite']}", "rewrite=ok",
+                f"and the {name} beside that delete finishes")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_stopped_rewrite_ends_with_55p03(dl, name, expect):
+    expect.text(f"verb={dl[name, 'release'].get('verb')}", "verb=55P03",
+                f"a {name} with a 1 s rewrite_lock_timeout behind a deleter held for 4 s stops "
+                "with 55P03")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_stopped_rewrite_holds_no_turnstile(dl, name, expect):
+    r = dl[name, "release"]
+    expect.text(f"r109={r.get('r109')} all109={r.get('all109')}", "r109=0 all109=0",
+                f"and the {name}'s session, still open after the 55P03, holds no turnstile lock")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_a_delete_after_the_stopped_rewrite_does_not_wait(dl, name, expect):
+    expect.text(_ms_in(dl[name, "release"].get("n2"), 0, 1000, "n2"), "yes",
+                f"and a delete right after that {name}'s 55P03, with a 3 s deadlock_timeout, "
+                "does not wait: under 1 s")

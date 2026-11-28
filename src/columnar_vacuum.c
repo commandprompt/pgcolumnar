@@ -468,12 +468,12 @@ wait_rewrite_lock(Relation rel, uint64 storageId, bool storageRow, uint64 group,
  *
  * Writers do not queue behind the rewrite in the lock manager, since it never
  * waits there while it holds a lock they need. So that a steady stream of them
- * cannot keep some group busy at every try, the rewrite holds its storage's
- * turnstile through the whole loop, and a writer that holds no lock yet waits
- * a bounded time for it before it takes its first (#2185; see
- * rewrite_turnstile_pass in columnar_metadata.c). The writers already in
- * flight finish, and the rewrite gets every lock. It gives the turnstile back
- * as soon as it has them, so writers to other groups go on.
+ * cannot keep some group busy at every try, the rewrite takes its storage's
+ * turnstile first and keeps it to commit; a DELETE or UPDATE planned in a
+ * transaction that holds no lock yet waits a bounded time for it (#2185; see
+ * PgColumnarRewriteTurnstileBeforeWrite in columnar_metadata.c). The writers
+ * already in flight finish, and the rewrite gets every lock. The writers that
+ * waited then read the rewritten groups, so their deletes are not lost to it.
  *
  * The waiting has a bound, pgcolumnar.rewrite_lock_timeout. When the time runs
  * out, behind a writer that stays open, the rewrite stops with SQLSTATE 55P03
@@ -491,7 +491,7 @@ lock_rewrite_groups(Relation rel, uint64 storageId, const uint64 *groups, int nG
 	if (pgcolumnar_rewrite_lock_timeout > 0)
 		deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
 											   pgcolumnar_rewrite_lock_timeout);
-	/* writers hold it only for an instant, and another rewrite is excluded by SUEL */
+	/* held to commit; writers hold it only for an instant, and another rewrite is excluded by SUEL */
 	PgColumnarLockRewriteTurnstile(storageId);
 	for (;;)
 	{
@@ -504,10 +504,7 @@ lock_rewrite_groups(Relation rel, uint64 storageId, const uint64 *groups, int nG
 			if (!PgColumnarConditionalLockChunkGroup(storageId, groups[i]))
 				break;
 		if (i == nGroups)
-		{
-			PgColumnarUnlockRewriteTurnstile(storageId);
 			return;
-		}
 
 		busy = groups[i];
 		while (--i >= 0)

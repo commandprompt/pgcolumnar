@@ -627,12 +627,15 @@ true until the next version shipped.
   steady stream of short deletes (#2185). Since #2139 they take their locks
   without waiting while they hold one, so writers never queued behind them, and
   they stopped with 55P03 at `pgcolumnar.rewrite_lock_timeout`. A rewrite now
-  holds the table's rewrite turnstile (advisory lock class 109) while it takes
-  its locks. A transaction that has not yet written to a columnar table polls
-  the turnstile before its first row-group lock, for at most `deadlock_timeout`.
-  The poll is not a lock wait, so it adds no deadlock and does not cancel the
-  maintenance daemon. With 8 clients each deleting one row and holding its lock
-  for 200 ms, both verbs now finish within a 2 s limit. docs/limitations.md,
+  takes the table's rewrite turnstile (advisory lock class 109) before its
+  locks and keeps it to commit. A DELETE, UPDATE or MERGE planned in a
+  transaction that has not yet written to a columnar table polls the turnstile,
+  for at most `deadlock_timeout`. It waits before it takes its snapshot, so a
+  writer that waited reads the rewritten row groups and does not fail with
+  40001. The poll is not a lock wait, so it adds no deadlock and does not cancel
+  the maintenance daemon. With 8 clients each deleting one row and holding its
+  lock for 200 ms, both verbs now finish within a 2 s limit. A writer that read
+  a row group before the rewrite retired it still fails with 40001, as before. docs/limitations.md,
   docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
   and `test_native_rewrite_conc.py`.
 - `ORDER BY ... LIMIT` no longer returns rows in the wrong order on a table
