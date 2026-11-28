@@ -32,6 +32,7 @@
 #include "catalog/storage.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "commands/trigger.h"
 #include "catalog/dependency.h"
@@ -73,6 +74,7 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "columnar_objstore.h"
 
 PG_MODULE_MAGIC;
@@ -1078,13 +1080,24 @@ static void
 pgcolumnar_turnstile_before_write(PlannedStmt *stmt)
 {
 	TimestampTz deadline = 0;
+#if PG_VERSION_NUM >= 190000
+	int			rti = -1;
+#else
 	ListCell   *lc;
+#endif
 
-	if (stmt->commandType == CMD_INSERT || stmt->resultRelations == NIL)
+	if (stmt->commandType == CMD_INSERT)
 		return;
+	/* PostgreSQL 19 keeps the result relations as a Bitmapset of RT indexes */
+#if PG_VERSION_NUM >= 190000
+	while ((rti = bms_next_member(stmt->resultRelationRelids, rti)) >= 0)
+	{
+		RangeTblEntry *rte = rt_fetch(rti, stmt->rtable);
+#else
 	foreach(lc, stmt->resultRelations)
 	{
 		RangeTblEntry *rte = rt_fetch(lfirst_int(lc), stmt->rtable);
+#endif
 		Relation	rel;
 		uint64		storageId;
 
