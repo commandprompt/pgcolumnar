@@ -2605,4 +2605,7 @@ guard_tests 910
 # (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
 # (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
-cluster_tests 6317
+# cluster_tests 6317 -> 6324 for the seven arms of the new test_maintenance_runs_as_owner.py (a superuser
+# running compact_rewrite, recluster, recluster_hilbert, vacuum, vacuum_sorted, cluster or cluster_hilbert
+# runs the owner's index expressions and predicates as the owner, security-restricted, #2053), by collection.
+cluster_tests 6324
