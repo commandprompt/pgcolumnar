@@ -2638,4 +2638,9 @@ guard_tests 910
 # test_parallel_copy_malformed_then_unsorted_premise and test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core,
 # by collection of test_parallel_copy.py (388 at 2fc9283d, 390 here) and over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it).
-cluster_tests 6386
+# cluster_tests 6386 -> 6394, #2258: four tests in test_objstore_http_read.py and four in test_objstore_tls_read.py
+# (a close after a whole 103 interim head on a kept-alive connection is refused, after one GET; after reads answered
+# 103 first, a kept-alive connection closed unanswered is still retried, and the server closed one on each read), by
+# collection of those two files (112 and 41 on main b888a5ae, 116 and 45 here) and over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6394

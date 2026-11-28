@@ -622,6 +622,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read no longer sends a request again when the connection closes
+  after a whole interim answer such as `103 Early Hints` (#2258). The reader
+  retries once, on a new connection, when a kept-alive connection ends before
+  any byte of an answer: that is a server dropping an idle connection. But it
+  read each response head on its own, so a close after a complete `1xx` head
+  counted as before any byte too, though the server had begun to answer. Over
+  plain TCP, and over TLS since #2248, the request went again. Now a close is
+  taken for a stale connection only before the first head. A close after an
+  interim head fails
+  with 08006: `connection to ... closed mid-response` over plain TCP, and `TLS
+  read from ... failed` over TLS. A close before any answer is still retried.
+  `test/objstore_http_read.sh`, `test/objstore_tls_read.sh` and their twins.
+
 - `pgcolumnar.parallel_copy` into a partitioned target now refuses a row that
   `COPY FROM` refuses before it reads a value with `COPY`'s SQLSTATE and
   message (#2222). The splitter reads every row's key before any loader runs,
