@@ -1111,6 +1111,75 @@ def _own_write_copy(dsn, setup, table, path):
     return f"none|{row[0] if row else None}"
 
 
+def _apx_table(db, t, preload=0):
+    """#2215: a table with stripe_row_limit 1000, so a projection on id plans for a
+    narrow id range, holding `preload` committed rows."""
+    db.run(f"DROP TABLE IF EXISTS {t}; CREATE TABLE {t} (id int, txt text) USING pgcolumnar; "
+           f"SELECT pgcolumnar.set_options('{t}', stripe_row_limit => 1000, chunk_group_row_limit => 500)")
+    if preload:
+        db.run(f"INSERT INTO {t} SELECT g, 'pre'||g FROM generate_series(1, {preload}) g")
+
+
+def _apx_add(t):
+    return f"SELECT pgcolumnar.add_projection('{t}', 'p', columns => ARRAY['id'], sort_key => ARRAY['id'])"
+
+
+def _apx_answers(db, t):
+    """-> "plan P|table N|projection N|on N|off N": whether the id-range count plans as
+    a scan of projection p, the table's and the projection's row counts, and that
+    count with projection scans on and off."""
+    qy = f"SELECT count(*) FROM {t} WHERE id BETWEEN 1000 AND 1499"
+    try:
+        with psycopg.connect(db.dsn, autocommit=True) as conn:
+            conn.execute(f"ANALYZE {t}")
+            conn.execute("SET pgcolumnar.enable_projection_scan = on")
+            plan = [r[0] for r in conn.execute(f"EXPLAIN (COSTS OFF) {qy}").fetchall()]
+            on = conn.execute(qy).fetchone()[0]
+            conn.execute("SET pgcolumnar.enable_projection_scan = off")
+            off = conn.execute(qy).fetchone()[0]
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    proj = db.value(f"SELECT count(*) FROM pgcolumnar.read_projection('{t}', 'p')")
+    return (f"plan {sum(1 for ln in plan if re.search(r'Columnar Projection: p$', ln))}"
+            f"|table {db.value(f'SELECT count(*) FROM {t}')}|projection {proj}|on {on}|off {off}")
+
+
+def _apx_hint(dsn, setup, table, path):
+    """-> the HINT of the error BEGIN; setup; a 2-worker parallel_copy raised, under a
+    5 s statement_timeout (#2215), or "no error"."""
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute("SET statement_timeout = '5s'")
+            conn.execute(setup)
+            conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2)").fetchone()
+            conn.commit()
+    except psycopg.Error as exc:
+        if exc.sqlstate is None:
+            return query_error(_message(exc))
+        return exc.diag.message_hint or "no hint"
+    return "no error"
+
+
+def _apx_sequence(dsn, table, path):
+    """-> the SQLSTATE parallel_copy raised, or "loaded N", for #2215's own sequence:
+    BEGIN; add_projection; SAVEPOINT; a 2-worker parallel_copy; ROLLBACK TO the
+    savepoint; COPY of the same file; COMMIT."""
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute("SET statement_timeout = '5s'")
+            conn.execute(_apx_add(table))
+            conn.execute("SAVEPOINT s")
+            try:
+                row = conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2)").fetchone()
+                head = f"loaded {row[0]}"
+            except psycopg.Error as exc:
+                head = exc.sqlstate or query_error(_message(exc))
+            conn.execute("ROLLBACK TO s")
+            conn.execute(f"COPY {table} FROM '{path}'")
+            conn.commit()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    return head
 def _esc_reading(db, sql, table, msg=False):
     """-> "outcome | rows per partition bound | hash of the rows with their bound" once
     `sql` has loaded the RANGE-partitioned `table` (#2202). The outcome is db.outcome()'s:
@@ -2525,6 +2594,29 @@ def pcopy(pgc_cluster, server_dir):
                                    ("p5", "single", "t text"),
                                    ("p5b", "single", "txt text, id int"), ("p5b", "part", "txt text, id int")):
             r[f"2189 probe {kind} {target}"] = _nl_same(db, pr[kind], target, cols)
+        # ---- #2215: projection DDL in the caller's transaction ----------------------
+        for t in ("t_apx2", "t_apx1", "t_apxh", "t_rbx", "t_apc", "t_apk"):
+            _apx_table(db, t)
+        _apx_table(db, "t_dpx", 1000)
+        db.run(_apx_add("t_dpx"))
+        db.run("INSERT INTO pgcolumnar.projection_declaration VALUES ('t_rbx'::regclass, 'p', ARRAY['id'], ARRAY['id'])")
+        rp_dpx = "SELECT count(*) FROM pgcolumnar.read_projection('t_dpx', 'p')"
+        rbx_decl = "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE rel = 't_rbx'::regclass"
+        rbx_proj = ("SELECT count(*) FROM pgcolumnar.projection "
+                    "WHERE storage_id = pgcolumnar.get_storage_id('t_rbx') AND projection_id > 0")
+        r["2215 premise"] = f"{db.value(rp_dpx)} {db.value(rbx_decl)}/{db.value(rbx_proj)}"
+        r["2215 hint"] = _apx_hint(db.dsn, _apx_add("t_apxh"), "t_apxh", f)
+        r["2215 add"] = _self_lock_copy(db.dsn, _apx_add("t_apx2"), "t_apx2", f)
+        r["2215 add one"] = _self_lock_copy(db.dsn, _apx_add("t_apx1"), "t_apx1", f, 1)
+        r["2215 drop"] = _self_lock_copy(db.dsn, "SELECT pgcolumnar.drop_projection('t_dpx', 'p')", "t_dpx", f)
+        r["2215 rebuild"] = _self_lock_copy(db.dsn, "SELECT pgcolumnar.rebuild_projections('t_rbx')", "t_rbx", f)
+        r["2215 after"] = (
+            f"{db.value('SELECT (SELECT count(*) FROM t_apx2) + (SELECT count(*) FROM t_apx1) + (SELECT count(*) FROM t_apxh) + (SELECT count(*) FROM t_rbx)')} rows, "
+            f"t_dpx {db.value('SELECT count(*) FROM t_dpx')}/{db.value(rp_dpx)}, "
+            f"{db.value(LEAK)} prepared")
+        r["2215 sequence"] = f"{_apx_sequence(db.dsn, 't_apc', f)}|{_apx_answers(db, 't_apc')}"
+        db.run(_apx_add("t_apk"))
+        r["2215 control"] = f"{_self_lock_copy(db.dsn, 'SELECT 1', 't_apk', f, 1)}|{_apx_answers(db, 't_apk')}"
 
         # ---- #2188: the caller's client_encoding, and characters that hold 0x5C ------
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -4258,6 +4350,65 @@ def test_parallel_copy_newline_probe_matches_heap_copy(pcopy, expect, key, name)
     expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
 
 
+# ---- #2215: projection DDL in the caller's transaction ---------------------------
+
+def test_parallel_copy_projection_ddl_premise(pcopy, expect):
+    expect.text(pcopy["2215 premise"], "1000 1/0",
+                "#2215 premise: t_dpx has a committed projection holding its 1000 rows, and t_rbx a declared"
+                " projection with no storage, which rebuild_projections materializes")
+
+
+@pytest.mark.parametrize("key,want,name", [
+    ("2215 add", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_apx2"',
+     "parallel_copy after add_projection in the same transaction is refused with 55000, not loaded past the"
+     " uncommitted projection (#2215)"),
+    ("2215 add one", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_apx1"',
+     "parallel_copy with workers => 1 after add_projection in the same transaction is refused with 55000 (#2215)"),
+    ("2215 drop",
+     '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareRowExclusiveLock on "t_dpx"',
+     "parallel_copy after drop_projection in the same transaction is refused with 55000, not loaded into the"
+     " storage being dropped (#2215)"),
+    ("2215 rebuild", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_rbx"',
+     "parallel_copy after rebuild_projections materialized a projection in the same transaction is refused with"
+     " 55000 (#2215)")], ids=["add", "add-one-worker", "drop", "rebuild"])
+def test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused(pcopy, expect, key, want, name):
+    """#2215: add_projection and drop_projection now hold SHARE and SHARE ROW EXCLUSIVE
+    to transaction end, so #2183's own-lock refusal stops a parallel_copy after either,
+    at any worker count. Before, the load went through, and its loaders, in their own
+    transactions, wrote past the uncommitted projection or into the storage being
+    dropped. rebuild_projections calls add_projection, so it is refused the same way."""
+    expect.text(pcopy[key], want, name)
+
+
+def test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint(pcopy, expect):
+    expect.text(pcopy["2215 hint"],
+                "Run it in a transaction that does not hold that lock, for example before the LOCK TABLE, TRUNCATE,"
+                " pgcolumnar.add_projection or pgcolumnar.drop_projection, or after COMMIT.",
+                "parallel_copy refused after add_projection gives a HINT that names add_projection and"
+                " drop_projection (#2215)")
+
+
+def test_parallel_copy_refused_after_projection_ddl_loads_nothing(pcopy, expect):
+    expect.text(pcopy["2215 after"], "0 rows, t_dpx 1000/1000, 0 prepared",
+                "parallel_copy refused after projection DDL loads nothing, leaves t_dpx's projection whole and no"
+                " prepared transaction (#2215)")
+
+
+def test_parallel_copy_issue_sequence_answers_the_same_with_projection_scans_on_and_off(pcopy, expect):
+    """#2215's own sequence with the refusal's way out. Before the fix the load went
+    through in the loaders' own transactions, ROLLBACK TO did not undo it, the COPY
+    added a second copy of the file, and the projection held only the COPY's rows, so
+    the projection scan answered 500 where the table holds 1000."""
+    expect.text(pcopy["2215 sequence"], "55000|plan 1|table 5000|projection 5000|on 500|off 500",
+                "add_projection then parallel_copy then COPY in one transaction: the load is refused, and the"
+                " projection holds every row and answers as the table does with projection scans on and off"
+                " (#2215)")
+
+
+def test_parallel_copy_into_a_committed_projection_answers_the_same_with_projection_scans_on_and_off(pcopy, expect):
+    expect.text(pcopy["2215 control"], "none|5000|plan 1|table 5000|projection 5000|on 500|off 500",
+                "parallel_copy into a table whose projection was committed before the load fills the projection,"
+                " and answers as the table does with projection scans on and off (#2215)")
 # ---- #2188: the caller's client_encoding, and characters that hold 0x5C ------------
 
 def test_parallel_copy_encoding_premise_sjis_and_big5(pcopy, expect):

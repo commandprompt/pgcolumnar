@@ -2875,6 +2875,88 @@ check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a C
 check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
 	"$(nl_same "$NL/p5b.txt" part 'txt text, id int')" "2:ok 3:ok 4:ok"
 
+# ---- #2215: projection DDL in the caller's transaction -------------------------
+# add_projection released its SHARE lock before its transaction committed, and
+# drop_projection took only SHARE UPDATE EXCLUSIVE, which no writer waits for. So
+# parallel_copy after either in the same transaction loaded: its loaders run in
+# their own transactions, cannot see the uncommitted projection (or its
+# uncommitted drop), and wrote past it. After add_projection the projection stayed
+# empty and a projection scan answered 0 where the table holds 500; after
+# drop_projection the loaders wrote into storage the caller was deleting. Both now
+# hold their lock to transaction end (SHARE, SHARE ROW EXCLUSIVE), so #2183's
+# own-lock refusal stops the load with 55000 at any worker count, and its HINT
+# names the projection functions. rebuild_projections calls add_projection, so it
+# is refused the same way. Controls: a projection committed before the load, and
+# the refusal's own way out (COPY in the same transaction, after a savepoint),
+# both give the projection every row and the same answer with projection scans
+# on and off. Every load runs under self_lock_copy's 5s statement_timeout.
+#
+# apx_table NAME [PRELOAD] -> a table with stripe_row_limit 1000, so a projection
+# on id plans for a narrow id range; PRELOAD committed rows
+apx_table() {
+	psql_run "DROP TABLE IF EXISTS $1; CREATE TABLE $1 (id int, txt text) USING pgcolumnar;
+		SELECT pgcolumnar.set_options('$1', stripe_row_limit => 1000, chunk_group_row_limit => 500);" >/dev/null
+	[ "${2:-0}" -gt 0 ] && psql_run "INSERT INTO $1 SELECT g, 'pre'||g FROM generate_series(1, $2) g;" >/dev/null
+	return 0
+}
+APX_ADD="SELECT pgcolumnar.add_projection('%s', 'p', columns => ARRAY['id'], sort_key => ARRAY['id'])"
+# apx_answers TABLE -> "plan P|table N|projection N|on N|off N": whether the
+# id-range count plans as a scan of projection p, the table's and projection's row
+# counts, and that count with projection scans on and off
+apx_answers() {
+	psql_run "ANALYZE $1;" >/dev/null
+	local qy="SELECT count(*) FROM $1 WHERE id BETWEEN 1000 AND 1499"
+	printf 'plan %s|table %s|projection %s|on %s|off %s\n' \
+		"$(q "SET pgcolumnar.enable_projection_scan = on; EXPLAIN (COSTS OFF) $qy" | grep -c 'Columnar Projection: p$')" \
+		"$(q "SELECT count(*) FROM $1")" \
+		"$(q "SELECT count(*) FROM pgcolumnar.read_projection('$1', 'p')" 2>&1 | tail -1)" \
+		"$(q "SET pgcolumnar.enable_projection_scan = on; $qy" | tail -1)" \
+		"$(q "SET pgcolumnar.enable_projection_scan = off; $qy" | tail -1)"
+}
+apx_table t_apx2; apx_table t_apx1; apx_table t_apxh; apx_table t_dpx 1000; apx_table t_rbx; apx_table t_apc; apx_table t_apk
+psql_run "$(printf "$APX_ADD" t_dpx);" >/dev/null
+psql_run "INSERT INTO pgcolumnar.projection_declaration VALUES ('t_rbx'::regclass, 'p', ARRAY['id'], ARRAY['id']);" >/dev/null
+check "#2215 premise: t_dpx has a committed projection holding its 1000 rows, and t_rbx a declared projection with no storage, which rebuild_projections materializes" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('t_dpx', 'p')") $(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE rel = 't_rbx'::regclass")/$(q "SELECT count(*) FROM pgcolumnar.projection WHERE storage_id = pgcolumnar.get_storage_id('t_rbx') AND projection_id > 0")" \
+	"1000 1/0"
+apx_hint="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -qtA -v ON_ERROR_STOP=1 -c "SET statement_timeout = '5s'" \
+	-c "BEGIN; $(printf "$APX_ADD" t_apxh); SELECT pgcolumnar.parallel_copy('t_apxh'::regclass, '$F', 2); COMMIT;" 2>&1)"
+check "parallel_copy after add_projection in the same transaction is refused with 55000, not loaded past the uncommitted projection (#2215)" \
+	"$(self_lock_copy "$(printf "$APX_ADD" t_apx2)" t_apx2)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_apx2"'
+check "parallel_copy with workers => 1 after add_projection in the same transaction is refused with 55000 (#2215)" \
+	"$(self_lock_copy "$(printf "$APX_ADD" t_apx1)" t_apx1 1)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_apx1"'
+check "parallel_copy refused after add_projection gives a HINT that names add_projection and drop_projection (#2215)" \
+	"$(sed -n 's/^HINT:  //p' <<<"$apx_hint" | head -1)" \
+	'Run it in a transaction that does not hold that lock, for example before the LOCK TABLE, TRUNCATE, pgcolumnar.add_projection or pgcolumnar.drop_projection, or after COMMIT.'
+check "parallel_copy after drop_projection in the same transaction is refused with 55000, not loaded into the storage being dropped (#2215)" \
+	"$(self_lock_copy "SELECT pgcolumnar.drop_projection('t_dpx', 'p')" t_dpx)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareRowExclusiveLock on "t_dpx"'
+check "parallel_copy after rebuild_projections materialized a projection in the same transaction is refused with 55000 (#2215)" \
+	"$(self_lock_copy "SELECT pgcolumnar.rebuild_projections('t_rbx')" t_rbx)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_rbx"'
+check "parallel_copy refused after projection DDL loads nothing, leaves t_dpx's projection whole and no prepared transaction (#2215)" \
+	"$(q "SELECT (SELECT count(*) FROM t_apx2) + (SELECT count(*) FROM t_apx1) + (SELECT count(*) FROM t_apxh) + (SELECT count(*) FROM t_rbx)") rows, t_dpx $(q "SELECT count(*) FROM t_dpx")/$(q "SELECT count(*) FROM pgcolumnar.read_projection('t_dpx', 'p')"), $(q "SELECT count(*) FROM pg_prepared_xacts") prepared" \
+	"0 rows, t_dpx 1000/1000, 0 prepared"
+# The issue's own sequence, with the refusal's way out: a savepoint around the
+# parallel_copy, then COPY in the same transaction. Before the fix the load went
+# through in the loaders' own transactions, so ROLLBACK TO did not undo it, the
+# COPY added a second copy of the file, and the projection held only the COPY's.
+apx_seq="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -qtA -c "SET statement_timeout = '5s'" -c '\set VERBOSITY verbose' \
+	-c "BEGIN" -c "$(printf "$APX_ADD" t_apc)" -c "SAVEPOINT s" \
+	-c "SELECT pgcolumnar.parallel_copy('t_apc'::regclass, '$F', 2)" \
+	-c "ROLLBACK TO s" -c "COPY t_apc FROM '$F'" -c "COMMIT" 2>&1)"
+check "add_projection then parallel_copy then COPY in one transaction: the load is refused, and the projection holds every row and answers as the table does with projection scans on and off (#2215)" \
+	"$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*$/\1/p' <<<"$apx_seq" | head -1 | grep . || echo "loaded $(grep -m1 -E '^[0-9]+$' <<<"$apx_seq")")|$(apx_answers t_apc)" \
+	"55000|plan 1|table 5000|projection 5000|on 500|off 500"
+psql_run "$(printf "$APX_ADD" t_apk);" >/dev/null
+check "parallel_copy into a table whose projection was committed before the load fills the projection, and answers as the table does with projection scans on and off (#2215)" \
+	"$(self_lock_copy "SELECT 1" t_apk 1)|$(apx_answers t_apk)" \
+	"none|5000|plan 1|table 5000|projection 5000|on 500|off 500"
+
 # ---- #2188: the caller's client_encoding, and characters that hold 0x5C -------
 # COPY FROM reads a server file in the caller's client_encoding. When that is SJIS,
 # BIG5, GBK, GB18030, UHC or JOHAB (the client-only encodings) and the database is
