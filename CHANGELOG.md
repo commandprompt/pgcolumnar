@@ -282,6 +282,15 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/parallel_copy.sh` and `test_parallel_copy.py` pin two edges of the
+  unique-index refusal for 2 or more workers (#2209). A heap table with a primary
+  key gets `42809` before that refusal: the heap fixture now has a primary key.
+  A missing file on a table with a primary key gets the refusal, `0A000`, not
+  `58P01`, because the refusal comes before the file is opened. With 1 worker the
+  same call gets `58P01`. Before this, moving the refusal above the check of the
+  target's kind, or after the file is opened, passed both suites.
+  docs/limitations.md states that order. The third edge in #2209, the loader's
+  hint, already reaches the caller since #2187. Test-only.
 - The user documentation is brought up to date with the changes since 1.0-alpha4,
   after an audit of every `[Unreleased]` entry against the docs and the code.
   Stale statements corrected: the release and PGXN versions and the native format
@@ -630,6 +639,37 @@ true until the next version shipped.
   session's SHARE lock on the target. `test/parallel_copy.sh`,
   `test/projections.sh`, `test/parallel_export_parquet.sh` and their twins.
 
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order on a table
+  whose sort key column was dropped on a build older than #2135, once another
+  column is renamed to the dropped name (#2175). The ordering mark from that
+  build still named the dropped column, and the rename handed its order to the
+  new column, so the planner left out the Sort. A rename now clears the mark
+  when the new name is already in it: the rename succeeded, so that entry named
+  a dropped column. The rename of a column that is itself in the key, and a
+  stale name in any position of the key, are both covered. Giving the dropped
+  name to a new column with `ADD COLUMN` does not clear such a mark; run
+  `vacuum_sorted` on the table first.
+- `DROP COLUMN` of a sort key column now clears the ordering run as well as
+  the key (#2174). `sort_status` reported every group of such a table as
+  sorted, with no column it was sorted on. It now reports no sorted group.
+- `ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE` on the type of a columnar
+  typed table now renames the column in the ordering mark, `sort_by`,
+  `sketch_columns` and `ttl_column`, as `ALTER TABLE ... RENAME COLUMN` does
+  (#2177). PostgreSQL refuses `RENAME COLUMN` on a typed table, so this is the
+  only rename there, and it was ignored. `expire` then failed with 42703, and
+  once another column took the old name it cut on that column and retired rows
+  inside the retention. A stale mark made `ORDER BY` on the column that took the
+  name skip the Sort. Every columnar table of the type is covered, and their
+  partitions too.
+- `DROP COLUMN` of the retention column now clears `ttl_column` and
+  `ttl_interval` (#2070). The declaration used to keep the dropped name:
+  `expire` failed with 42703, and once another time column took the name it
+  cut on that column and retired rows inside the retention. `expire` now
+  refuses the table with 55000 ("has no declared retention") until a new
+  retention is declared. A drop of any other column leaves the declaration
+  alone. A table whose retention column was dropped on an older build keeps the
+  stale name. docs/sql-reference.md. `test/ttl_expire.sh`,
+  `test/sorted_mark_rename.sh` and their pytest twins.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error
@@ -838,6 +878,36 @@ true until the next version shipped.
   load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
   newline), which must be refused with 22P04 as heap `COPY` refuses it, and
   a `\.` line in the first range, which must end the load there.
+- `pgcolumnar.parallel_copy` into a partitioned target now reads the fields up
+  to the partition key with COPY's text escapes (#2202). It refused, with 22P02
+  and 0 rows loaded, two kinds of file that `COPY FROM` loads: a backslash
+  before a raw TAB in a field before the key, which COPY reads as a TAB inside
+  the value but the key parser read as the end of the field, and a key written
+  with an escape such as `\061`, which the key parser gave to the integer input
+  function undecoded. The key parser now splits at an unescaped TAB only and
+  decodes the key as COPY does: octal, hex and `\b \f \n \r \t \v` escapes, two
+  backslashes as one, any other escaped byte as itself, and a field that is
+  exactly `\N` as NULL. No RANGE partition takes a NULL key, so that load is now
+  refused with 23514, as `COPY FROM` refuses it. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`: 58 checks. Each of 27 files is loaded by heap
+  `COPY` into a heap table partitioned the same way and by `parallel_copy` with
+  2 and 4 workers, and the outcome, the rows per partition and the rows must be
+  heap `COPY`'s: the issue's two cases, keys in octal, in hex, and with named
+  and other escaped bytes around them, a field before the key with every kind
+  of escape, an escaped backslash right before the delimiter, a `\N` key, and
+  two controls with no escapes. Seven more files catch a rule applied too
+  widely: a key `\N5` and a key whose value is `\N`, neither of them NULL;
+  escaped 8s and 9s, which are not escapes; `\x` with no hex digit, which is a
+  literal `x`; and, in a UTF8 database, keys that decode to a NUL byte or to a
+  byte that is not UTF-8, which COPY refuses with 22021. Eight more cover a
+  CR as the end of the key field, a lone backslash at the end of the file, `\x`
+  reading at most two hex digits, an uppercase hex digit, an octal escape that
+  decodes to NUL, and a row with too few fields for the key. Three more cover
+  a `\N` key in the last column, a lowercase hex digit, and a date key written
+  with escapes.
+  The key parser reads the file as characters of the caller's client_encoding,
+  as #2188's scans do, so in SJIS, BIG5, GBK or GB18030 a character whose
+  second byte is 0x5C is never read as a backslash in front of the key.
 - `pgcolumnar.parallel_copy` now reads the file in the calling session's
   `client_encoding`, as `COPY FROM` does, and its splitters step over whole
   characters in the encodings where a character's second byte can be `0x5C`
@@ -959,6 +1029,36 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- Two test suites running at once no longer get the same fixture port (#2165).
+  `iceberg_rest_scan` and `iceberg_rest_vended` failed together in a PG 18 CI
+  job: both started a fixture on port 31732, the scan got HTTP 401 from the
+  other suite's REST catalog, and the vended suite got `Connection refused`.
+  `pgc_pick_free_port` in `test/portlib.sh` checked that a port was free and
+  returned it, and nothing held the port until the caller bound it, so two
+  suites whose walks met at one free port were both given it. The picker now
+  takes a lock per user and reserves the port it returns, as a file named for
+  the port that holds the picker's pid. A pick skips a reserved port: one whose
+  picker still runs, at any age, so a suite that restarts its own server on its
+  port keeps it, or one reserved less than 120 s ago by a picker that has gone.
+  The pytest harness's `pick_port` uses the same lock and the same files, so a
+  shell suite and a pytest twin don't collide either. `PGC_PORT_RESERVE_DIR`
+  moves the directory, and `PGC_PORT_PICK_DELAY` holds a pick open, for tests.
+  `iceberg_rest_vended` and `iceberg_rest_scan` used to wait 5 s for a REST
+  fixture and carry on without it; they now wait up to 30 s and stop with a
+  FATAL naming the fixture (the new `pgc_await_ready` in `test/lib.sh`), and
+  their twins raise (the new `await_ready` in `pgc_cluster.py`). Selftest 650
+  and three tests in `test_runshape.py` drive each against a fixture that
+  exits, one that says READY late and one that never says it. Measured with both suites forced onto one port at once:
+  before, both picked 29768, the vended S3 fixture failed with `Address
+  already in use` and the scan failed 6 checks; after, they picked 29769 and
+  29768 and both passed (128 and 18 checks). Each harness tests its own
+  picker against the reservation protocol, which both files state, and
+  neither runs the other's: selftest 660 for the shell picker and seven tests
+  in `test_runshape.py` for `pick_port`, with the same arms (four pickers at
+  once from one start get four ports; a pick waits for a picker that holds the
+  lock; the reservation names the picker's pid and the time; the default
+  directory; a reservation holds 60 s but not 121 s after a picker that has
+  gone, and at any age while it runs).
 - `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
   wait until `statement_timeout` when the calling transaction already holds,
   on the target or one of its partitions, a lock their workers' lock conflicts

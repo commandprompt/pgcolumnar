@@ -308,7 +308,10 @@ these constraints.
   constraint of any index type, such as gist. So do invalid unique indexes, such
   as the one a failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves behind: such an
   index still checks every insert. A caller without INSERT on the table gets
-  `42501` first, and a URL gets the refusal for remote files first. A
+  `42501` first, and a URL gets the refusal for remote files first. A heap
+  table with a primary key gets `42809` first, because the function loads no
+  heap table with any worker count (#2209). The refusal comes before the
+  function opens the file, so a missing file gets `0A000`, not `58P01`. A
   partitioned target with such an index is not limited: each worker loads its
   own partitions.
 - A single columnar table with a trigger on INSERT loads with one worker only.
