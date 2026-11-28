@@ -2598,4 +2598,11 @@ guard_tests 910
 # of NO_CLUSTER, as ci.yml derives it).
 # cluster_tests 6285 -> 6287, #2248 review: two more tests in test_objstore_tls_read.py (a bad record MAC on a
 # kept-alive connection is refused, after one GET), by collection of that file (39 -> 41) and over the cluster files.
-cluster_tests 6287
+# cluster_tests 6287 -> 6317 for #2169's thirty tests in test_index_only.py: an AFTER STATEMENT trigger
+# of a DELETE (test_trigger_of_delete_during_vacuum_*), of an UPDATE (test_trigger_of_update_during_vacuum_*)
+# and of a DELETE that reads inside an EXCEPTION block that rolls back (test_trigger_in_exception_block_*),
+# seven each; then, for jdatcmd's review of #2241, four for a DELETE that fails after a nested read
+# (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
+# (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
+cluster_tests 6317
