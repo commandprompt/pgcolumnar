@@ -1243,6 +1243,7 @@ def _nl_same(db, path, target, cols):
 # ---- #2188: the caller's client_encoding, and characters that hold 0x5C ----------
 ENC_DB = "pgc_pcopy_enc"
 ENC_ASCII = "pgc_pcopy_ascii"
+MAL_SORTED = "22000|input file is not sorted ascending by the partition key|0 rows|0 prepared"
 
 
 def _enc_rows(kind, n):
@@ -2591,6 +2592,107 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2188 control latin1 {target}"] = _enc_same(edb, "LATIN1", ef["latin1"], target)
             r[f"2188 control utf8 {target}"] = _enc_same(edb, "UTF8", ef["utf8"], target)
             r[f"2188 control ascii {target}"] = _enc_same(adb, "SJIS", ef["ascii"], target)
+
+        # ---- #2222: a row core COPY refuses before it reads a value -------------
+        # Core COPY checks the raw bytes' encoding, the end-of-data marker \. and the
+        # field count before it reads any value. A row that breaks one of them must
+        # get core's SQLSTATE and message, so the splitter leaves it in the current
+        # range for that range's loader. Each file is 2000 rows, kt or tk, with row
+        # 1200 replaced, compared with heap COPY in the UTF8 database with 1, 2 and 4
+        # workers. Then controls: files COPY loads whole, sorted but for one row, key
+        # 0, in place of row 1200; the splitter must read that row's key and refuse the
+        # order (22000), 1 worker. The shell lists what each file holds.
+        srv = db.value("SHOW server_version_num")
+        pg18 = str(srv).isdigit() and int(srv) >= 180000
+
+        def mal_file(name, shape, row):
+            fmt = {"kt": b"%d\tx%d\n", "ktcrlf": b"%d\tx%d\r\n", "tk": b"a%d\t%d\n"}[shape]
+            path = d / f"mal_{name}.txt"
+            path.write_bytes(b"".join(row if i == 1200 else fmt % (i, i) for i in range(1, 2001)))
+            os.chmod(path, 0o644)
+            return path
+
+        mal = {
+            "bseol": ("tk", b"a\t1200\\\n"),
+            "extragk": ("kt", b"1200x\tx\textra\n"),
+            "eodkey": ("kt", b"1200\\.\tx\n"),
+            "mbraw": ("kt", b"12\xc300\tx\n"),
+            "mbsplit": ("kt", b"1200\\xc3\xa9\tx\n"),
+            "nulpre": ("tk", b"a\x00b\t1200\n"),
+            "nulkey": ("kt", b"12\x0000\tx\n"),
+            "toofew": ("tk", b"a\n"),
+            "eodgk": ("kt", b"12x\tfoo\\.\n"),
+        }
+        mf = {k: mal_file(k, shape, row) for k, (shape, row) in mal.items()}
+        mcols = {"kt": "id int, txt text", "tk": "txt text, id int"}
+        r["2222 premise"] = " ".join(
+            [str(_enc_heap(edb, "UTF8", mf[k], mcols[mal[k][0]])).split("|")[0] for k in mal]
+            + [_enc_str(edb.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                                  "WHERE datname = current_database()")),
+               _read(mf["nulkey"]).split(b"\n")[1199][:5].hex()])
+        r["2222 eodgk want"] = "22P04" if pg18 else "22P02"
+        for k in mal:
+            r[f"2222 {k}"] = _enc_same(edb, "UTF8", mf[k], "part", (1, 2, 4), mcols[mal[k][0]])
+
+        ctl = {
+            "cesctab": b"0\ta\\\tb\n",
+            "cbsdot": b"0\ta\\\\.b\n",
+            "ccont": b"0\ta\\\nb\n",
+            "clatin1": b"0\tcaf\xe9\n",
+            "cplain": b"0\tx\n",
+            "ceodlf": b"0\tx\\.\n",
+        }
+        cf = {k: mal_file(k, "kt", row) for k, row in ctl.items()}
+        cf["ceodcrlf"] = mal_file("ceodcrlf", "ktcrlf", b"0\tx\\.\r\n")
+        prem = []
+        for k, ce in (("cesctab", "UTF8"), ("cbsdot", "UTF8"), ("ccont", "UTF8"), ("clatin1", "LATIN1"),
+                      ("cplain", "UTF8")):
+            prem.append("|".join(str(_enc_heap(edb, ce, cf[k])).split("|")[:2]))
+            prem.append(_enc_rowhex(edb, 0))
+        prem.append(str(_enc_heap(edb, "UTF8", cf["ceodlf"])).split("|")[0])
+        prem.append(str(_enc_heap(edb, "UTF8", cf["ceodcrlf"])).split("|")[0])
+        r["2222 premise controls"] = " ".join(prem)
+        r["2222 premise controls want"] = ("loaded|2000 rows 610962 loaded|2000 rows 615c2e62 loaded|2000 rows 610a62"
+                                           " loaded|2000 rows 636166c3a9 loaded|2000 rows 78 "
+                                           + ("22P04 22P04" if pg18 else "loaded loaded"))
+
+        def mal_order(ce, path, cols="id int, txt text", sql=None):
+            _enc_target(edb, "part", cols)
+            if sql:
+                edb.run(sql)
+            return _enc_outcome(edb, ce, f"SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '{path}', 1)", "t_enc")
+
+        r["2222 cesctab"] = mal_order("UTF8", cf["cesctab"])
+        r["2222 cbsdot"] = mal_order("UTF8", cf["cbsdot"])
+        r["2222 ccont"] = mal_order("UTF8", cf["ccont"])
+        r["2222 clatin1"] = mal_order("LATIN1", cf["clatin1"])
+        r["2222 cgen"] = mal_order("UTF8", cf["cplain"], "id int, txt text, g int GENERATED ALWAYS AS (id * 2) STORED")
+        r["2222 cdrop"] = mal_order("UTF8", cf["cplain"], "id int, gone int, txt text",
+                                    "ALTER TABLE t_enc DROP COLUMN gone")
+        r["2222 ceodlf"] = mal_order("UTF8", cf["ceodlf"])
+        r["2222 ceodcrlf"] = mal_order("UTF8", cf["ceodcrlf"])
+        # A row COPY refuses, then a row out of order (review of #2259, N4 there): the
+        # splitter must still refuse the order. 4 partitions at 500, 1000 and 1500, 1, 2
+        # and 4 workers; _enc_outcome's 60 s statement_timeout bounds a hang.
+        bu = d / "mal_badunsorted.txt"
+        bu.write_bytes(b"".join(b"1200\n" if i == 1200 else b"0\tx\n" if i == 1600 else b"%d\tx%d\n" % (i, i)
+                                for i in range(1, 2001)))
+        os.chmod(bu, 0o644)
+        r["2222 badunsorted premise"] = " ".join([
+            "|".join(str(_enc_heap(edb, "UTF8", bu)).split("|")[:2]),
+            bu.read_bytes().split(b"\n")[1599][:3].hex()])
+        res = []
+        for w in (1, 2, 4):
+            edb.run("DROP TABLE IF EXISTS t_bu CASCADE; CREATE TABLE t_bu (id int, txt text) PARTITION BY RANGE (id); "
+                    "CREATE TABLE t_bu_a PARTITION OF t_bu FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_b PARTITION OF t_bu FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_c PARTITION OF t_bu FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_d PARTITION OF t_bu FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+            res.append(f"{w}:" + str(_enc_outcome(
+                edb, "UTF8", f"SELECT pgcolumnar.parallel_copy('t_bu'::regclass, '{bu}', {w})", "t_bu")))
+        r["2222 badunsorted"] = " ".join(res)
+        r["2222 ceodlf want"] = ("22P04|end-of-copy marker is not alone on its line|0 rows|0 prepared" if pg18
+                                 else MAL_SORTED)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -4301,3 +4403,112 @@ def test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_cop
     and SJIS in a SQL_ASCII database, which core does not convert -- the load still
     gives heap COPY's outcome, rows and row hash."""
     expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+# ---- #2222: a row core COPY refuses before it reads a value ----------------------
+# The fixture and the shell list the files. Each refusal is compared with heap COPY in
+# the UTF8 database with 1, 2 and 4 workers: outcome, message (without "worker N
+# failed: "), rows, prepared transactions and row hash.
+
+def test_parallel_copy_malformed_row_premise(pcopy, expect):
+    """#2222 premise: heap COPY refuses each file, with the SQLSTATE the check names."""
+    expect.text(pcopy["2222 premise"],
+                f"22P04 22P04 22P04 22021 22021 22021 22021 22P04 {pcopy['2222 eodgk want']} UTF8 3132003030",
+                "#2222 premise: heap COPY in a UTF8 database refuses bseol, extragk and eodkey with 22P04, mbraw,"
+                " mbsplit, nulpre and nulkey with 22021, toofew with 22P04, and eodgk with 22P02 on PG 17 and older"
+                " and 22P04 on PG 18 and newer; the database is UTF8 and nulkey's row 1200 is 31 32 00 30 30")
+
+
+MALFORMED = (
+    ("2222 bseol", "#2222 a record that runs on into the next line and so has an extra field, its key unreadable"
+     " / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+    ("2222 extragk", "#2222 an extra field and a key that is not a number / partitioned, 1, 2 and 4 workers:"
+     " heap COPY's outcome, message, rows and content"),
+    ("2222 eodkey", "#2222 an end-of-data marker inside the key / partitioned, 1, 2 and 4 workers: heap COPY's"
+     " outcome, message, rows and content"),
+    ("2222 mbraw", "#2222 a raw byte that is not UTF-8 inside the key / partitioned, 1, 2 and 4 workers: heap"
+     " COPY's outcome, message, rows and content"),
+    ("2222 mbsplit", "#2222 a hex escape then a raw byte that is not UTF-8 in the key / partitioned, 1, 2 and 4"
+     " workers: heap COPY's outcome, message, rows and content"),
+    ("2222 nulpre", "#2222 a raw NUL in the field before the key / partitioned, 1, 2 and 4 workers: heap COPY's"
+     " outcome, message, rows and content"),
+    ("2222 nulkey", "#2222 a raw NUL inside the key, before which the key is out of order / partitioned, 1, 2 and"
+     " 4 workers: heap COPY's outcome, message, rows and content"),
+    ("2222 toofew", "#2222 a row with too few fields to reach the key / partitioned, 1, 2 and 4 workers: heap"
+     " COPY's outcome, message, rows and content"),
+    ("2222 eodgk", "#2222 an end-of-data marker then LF after the last field, the key not a number / partitioned,"
+     " 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", MALFORMED, ids=[k[5:] for k, _ in MALFORMED])
+def test_parallel_copy_malformed_row_gets_copys_error(pcopy, expect, key, name):
+    """#2222: a row core COPY refuses before it reads a value is refused with core's
+    SQLSTATE and message, as heap COPY refuses the file."""
+    expect.text(pcopy[key], "1:ok 2:ok 4:ok", name)
+
+
+def test_parallel_copy_malformed_row_controls_premise(pcopy, expect):
+    """#2222 premise: heap COPY loads each control file, storing row 0 as the shape says."""
+    expect.text(pcopy["2222 premise controls"], pcopy["2222 premise controls want"],
+                "#2222 premise: heap COPY loads cesctab, cbsdot, ccont, clatin1 (under LATIN1) and cplain 2000 rows"
+                " each, storing row 0's txt as 61 09 62, 61 5c 2e 62, 61 0a 62, 63 61 66 c3 a9 and 78; on ceodlf and"
+                " ceodcrlf it loads on PG 17 and older and refuses with 22P04 on PG 18 and newer")
+
+
+MALFORMED_CONTROLS = (
+    ("2222 cesctab", "#2222 control: an escaped TAB in the field after the key, on a row out of order /"
+     " partitioned, 1 worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 cbsdot", "#2222 control: an escaped backslash before a dot, on a row out of order / partitioned, 1"
+     " worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 ccont", "#2222 control: a record over two lines, out of order / partitioned, 1 worker: the splitter"
+     " reads the key and refuses the order (22000)"),
+    ("2222 clatin1", "#2222 control: a byte valid in the caller's LATIN1 but not in the UTF8 database, on a row"
+     " out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 cgen", "#2222 control: a stored generated column, which COPY skips, and a row out of order /"
+     " partitioned, 1 worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 cdrop", "#2222 control: a dropped column, which COPY skips, and a row out of order / partitioned, 1"
+     " worker: the splitter reads the key and refuses the order (22000)"),
+)
+
+
+@pytest.mark.parametrize("key,name", MALFORMED_CONTROLS, ids=[k[5:] for k, _ in MALFORMED_CONTROLS])
+def test_parallel_copy_row_copy_loads_is_not_left_for_core(pcopy, expect, key, name):
+    """#2222 controls: a row COPY loads keeps going through the splitter, which reads
+    its key and refuses the out-of-order row (22000). A row left for core by mistake
+    would load instead."""
+    expect.text(pcopy[key], MAL_SORTED, name)
+
+
+def test_parallel_copy_eod_marker_after_last_field_follows_the_major(pcopy, expect):
+    """#2222 control: \\. then LF after the last field. PG 17 and older end the line
+    there and load the row, so the splitter must read its key; PG 18 refuses it."""
+    expect.text(pcopy["2222 ceodlf"], pcopy["2222 ceodlf want"],
+                "#2222 control: an end-of-data marker then LF after the last field, on a row out of order /"
+                " partitioned, 1 worker: on PG 17 and older, where COPY loads the row, the splitter reads the key"
+                " and refuses the order (22000); on PG 18, COPY's 22P04")
+
+
+def test_parallel_copy_eod_marker_crlf_after_last_field_follows_the_major(pcopy, expect):
+    """#2222 control: \\. then CR LF after the last field, in a file with CRLF line ends.
+    PG 17 and older end the line there and load the row; PG 18 refuses it."""
+    expect.text(pcopy["2222 ceodcrlf"], pcopy["2222 ceodlf want"],
+                "#2222 control: an end-of-data marker then CR LF after the last field, in a file with CRLF line"
+                " ends, on a row out of order / partitioned, 1 worker: on PG 17 and older, where COPY loads the"
+                " row, the splitter reads the key and refuses the order (22000); on PG 18, COPY's 22P04")
+
+
+def test_parallel_copy_malformed_then_unsorted_premise(pcopy, expect):
+    """#2222 premise: heap COPY refuses badunsorted.txt on row 1200, and row 1600 is 0 TAB x."""
+    expect.text(pcopy["2222 badunsorted premise"], '22P04|missing data for column "txt" 300978',
+                "#2222 premise: heap COPY refuses badunsorted.txt with 22P04 missing data for column txt (row 1200"
+                " has no TAB); its row 1600 is 30 09 78")
+
+
+def test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core(pcopy, expect):
+    """#2222 (review of #2259, mutant N4): a row left for its loader must not stop the
+    sort check, so a later out-of-order row is still refused (22000) before any loader
+    runs. With 4 workers a missing check made two loaders write one partition."""
+    expect.text(pcopy["2222 badunsorted"], f"1:{MAL_SORTED} 2:{MAL_SORTED} 4:{MAL_SORTED}",
+                "#2222 a row COPY refuses, then a row out of order / partitioned at 500, 1000 and 1500, 1, 2 and 4"
+                " workers: the splitter still refuses the order (22000), 0 rows, no prepared transaction")

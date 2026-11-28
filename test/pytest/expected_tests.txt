@@ -2628,13 +2628,23 @@ guard_tests 910
 # the waits on the workers are neither limited by lock_timeout nor logged, and the caller's settings read back
 # unchanged, and a worker picked as the deadlock victim reaches the caller as 40P01 with its detail, by
 # collection of that file (64 on main 0072cd88, 71 here) and over the cluster files.
-# cluster_tests 6365 -> 6389 for #2263's twenty-four tests in test_vacuum_retire_visibility.py (a reader during
+# cluster_tests 6365 -> 6384 for #2222's nineteen tests in test_parallel_copy.py: two premises
+# (test_parallel_copy_malformed_row_premise and _controls_premise), test_parallel_copy_malformed_row_gets_copys_error
+# (9 parametrized rows COPY refuses before it reads a value, compared with heap COPY),
+# test_parallel_copy_row_copy_loads_is_not_left_for_core (6 parametrized controls), and
+# test_parallel_copy_eod_marker_after_last_field_follows_the_major and its CRLF twin, by collection of that file
+# (369 on main 0da8ea00, 388 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6384 -> 6386, still #2222, for jdatcmd's review of #2259 at 2fc9283d (mutant N4 there): the premise
+# test_parallel_copy_malformed_then_unsorted_premise and test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core,
+# by collection of test_parallel_copy.py (388 at 2fc9283d, 390 here) and over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it).
+# cluster_tests 6386 -> 6410 for #2263's twenty-four tests in test_vacuum_retire_visibility.py (a reader during
 # lazy VACUUM's retirement, the reader's guard against a row group with data and no column chunks, and a VACUUM
 # held in its visibility-map step), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it).
-# cluster_tests 6389 -> 6414 for #2264's twenty-five tests in test_vacuum_retire_snapshot.py, the twin of the
+# cluster_tests 6410 -> 6435 for #2264's twenty-five tests in test_vacuum_retire_snapshot.py, the twin of the
 # new vacuum_retire_snapshot.sh (a row group lazy VACUUM retires stays retired when another session reads its
 # catalog rows meanwhile, with no 23505 on free_space_pkey and the free-space accounting intact: two variants
 # of premises, retirement, free_space overlap and sum, the next VACUUM and the table's rows, and a crash
 # count), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6414
+cluster_tests 6435
