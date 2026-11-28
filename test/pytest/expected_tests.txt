@@ -2706,4 +2706,10 @@ guard_tests 910
 # test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
 # test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6563
+# cluster_tests 6563 -> 6565, still #2161, after #2226 (#2215) made the add_projection race unreachable: the two
+# race tests, test_parallel_copy_projection_committed_during_the_load_premise and _fails_cleanly, are replaced by
+# test_parallel_copy_truncated_projections_premise, test_parallel_copy_after_truncate_fills_both_projections,
+# test_parallel_copy_storage_row_gone_during_the_load_premise and
+# test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6565

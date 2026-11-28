@@ -1161,17 +1161,57 @@ def _wait_count(db, where, want, tries=200):
     return "no"
 
 
-def _projection_during_load(db, path):
-    """-> (premise, outcome) for a 2-worker parallel_copy that a projection reaches after
-    the coordinator's pre-create (#2161, #2213 review). add_projection releases its table
-    lock before it commits (#2215). A CHECK constraint holds both loaders on an advisory
-    lock while add_projection's transaction commits; then they insert, which is when a
-    loader lists the projections. (A BEFORE INSERT trigger did this until #2187 refused
-    an INSERT trigger with more than one worker.) The outcome is "SQLSTATE|message |
-    rows N | prepared N", with the worker number and storage id replaced by N."""
+def _projection_rows(db, table):
+    """-> "pa N/own pb N/own": each of `table`'s projections (but the base), its rows,
+    and whose storage row it has ("none" when it has none)."""
+    return db.value(
+        f"SELECT string_agg(p.name || ' ' || (SELECT count(*) FROM pgcolumnar.read_projection('{table}', p.name))"
+        f" || '/' || coalesce((SELECT CASE WHEN s.relation_oid = '{table}'::regclass THEN 'own' ELSE 'other' END"
+        " FROM pgcolumnar.storage s WHERE s.storage_id = p.proj_storage_id), 'none'), ' ' ORDER BY p.name)"
+        f" FROM pgcolumnar.projection p WHERE p.storage_id = pgcolumnar.get_storage_id('{table}')"
+        " AND p.projection_id <> 0")
+
+
+def _truncated_projections_load(db, path):
+    """-> (premise, outcome) for a 2-worker parallel_copy after TRUNCATE of a table whose
+    two projections held rows (#2161). TRUNCATE gives the table new storage and records
+    each projection again under a new storage id, with no row until something is written
+    to it, so the coordinator must create both rows again. The premise is "before ... |
+    after ..." around the TRUNCATE; the outcome "returned|table rows|pa N/own pb N/own"."""
+    db.run("CREATE TABLE t_eptt (id int, txt text) USING pgcolumnar")
+    db.run("SELECT pgcolumnar.set_options('t_eptt', stripe_row_limit => 1000)")
+    for name, cols in (("pa", "'txt','id'"), ("pb", "'id'")):
+        db.run(f"SELECT pgcolumnar.add_projection('t_eptt', '{name}', columns => ARRAY[{cols}], sort_key => ARRAY['id'])")
+    db.run("INSERT INTO t_eptt SELECT g, 'pre'||g FROM generate_series(1, 100) g")
+    before = _projection_rows(db, "t_eptt")
+    db.run("TRUNCATE t_eptt")
+    premise = f"before {before} | after {_projection_rows(db, 't_eptt')}"
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, options="-c statement_timeout=10s") as conn:
+            got = conn.execute(f"SELECT pgcolumnar.parallel_copy('t_eptt'::regclass, '{path}', 2)").fetchone()[0]
+    except psycopg.Error as exc:
+        if exc.sqlstate is None:
+            return premise, query_error(_message(exc))
+        got = f"{exc.sqlstate}|{exc.diag.message_primary or ''}"
+    return premise, f"{got}|{db.value('SELECT count(*) FROM t_eptt')}|{_projection_rows(db, 't_eptt')}"
+
+
+def _storage_row_gone_during_load(db, path):
+    """-> (premise, outcome) for a 2-worker parallel_copy whose loaders reach a storage row
+    of the target that is gone (#2161, #2213 review). The coordinator creates every such
+    row before the loaders start, and since #2215 and #2229 no DDL can add one during the
+    load, so the row is deleted from the catalog: a CHECK constraint holds both loaders on
+    an advisory lock after the pre-create, the projection's storage row is deleted and
+    committed, and then they insert, which is when a loader lists the projections. (A
+    BEFORE INSERT trigger did this until #2187 refused an INSERT trigger with more than
+    one worker.) The premise is "held yes|no"; the outcome "deleted N | SQLSTATE|message |
+    rows N | prepared N", with the worker number and storage id replaced by N. The deleted
+    count is in the outcome, not the premise: the row exists only if the coordinator
+    pre-created it, which is the fix."""
     db.run("CREATE FUNCTION epr_gate(int) RETURNS boolean LANGUAGE plpgsql "
            "AS $$ BEGIN PERFORM pg_advisory_xact_lock_shared(2161); RETURN true; END $$")
     db.run("CREATE TABLE t_epr (id int CONSTRAINT epr_gate CHECK (epr_gate(id)), txt text) USING pgcolumnar")
+    db.run("SELECT pgcolumnar.add_projection('t_epr', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id'])")
     out = {}
 
     def load():
@@ -1183,20 +1223,27 @@ def _projection_during_load(db, path):
             out["r"] = f"{exc.sqlstate}|{exc.diag.message_primary or ''}"
 
     try:
-        with psycopg.connect(db.dsn, autocommit=True) as gate, psycopg.connect(db.dsn) as ddl:
+        with psycopg.connect(db.dsn, autocommit=True) as gate, \
+                psycopg.connect(db.dsn, autocommit=True, options="-c lock_timeout=5s") as side:
             gate.execute("SELECT pg_advisory_lock(2161)")
-            ddl.execute("SELECT pgcolumnar.add_projection('t_epr', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id'])")
             th = threading.Thread(target=load)
             th.start()
             held = _wait_count(db, "backend_type = 'pgcolumnar parallel_copy loader' AND wait_event = 'advisory'", 2)
-            ddl.commit()
+            try:
+                deleted = side.execute(
+                    "WITH d AS (DELETE FROM pgcolumnar.storage WHERE storage_id ="
+                    " (SELECT proj_storage_id FROM pgcolumnar.projection"
+                    "   WHERE storage_id = pgcolumnar.get_storage_id('t_epr') AND name = 'p')"
+                    " RETURNING 1) SELECT count(*) FROM d").fetchone()[0]
+            except psycopg.Error as exc:
+                deleted = f"{exc.sqlstate}"
             gate.execute("SELECT pg_advisory_unlock(2161)")
             th.join(60)
     except psycopg.Error as exc:
         return f"setup failed: {_message(exc)}", query_error(_message(exc))
     got = re.sub(r"storage [0-9]+ of", "storage N of", re.sub(r"worker [0-9]+ failed", "worker N failed", out.get("r", "no reading")))
     return (f"held {held}",
-            f"{got} | rows {db.value('SELECT count(*) FROM t_epr')} | prepared {db.value(LEAK)}")
+            f"deleted {deleted} | {got} | rows {db.value('SELECT count(*) FROM t_epr')} | prepared {db.value(LEAK)}")
 
 
 def _trigger_side_load(db, path):
@@ -2592,7 +2639,8 @@ def pcopy(pgc_cluster, server_dir):
         r["ep storage"] = (f"{_projection_storage(db, 't_ep2', 't_ep1')} ; "
                            f"{_projection_storage(db, 't_ep4', 't_ep1')}")
         r["ep three"] = _three_projection_load(db, f)
-        r["ep race premise"], r["ep race"] = _projection_during_load(db, f)
+        r["ep truncate premise"], r["ep truncate"] = _truncated_projections_load(db, f)
+        r["ep gone premise"], r["ep gone"] = _storage_row_gone_during_load(db, f)
         r["ep trigger"] = _trigger_side_load(db, f)
         r["ep after"] = f"leak {db.value(LEAK)} | survived {_survived(db, pgc_cluster, before)}"
         # the trigger refusal (#2187) after the own-write refusal too
@@ -4165,22 +4213,39 @@ def test_parallel_copy_into_three_empty_projections_fills_each_one(pcopy, expect
                 " records each one's storage row (#2161)")
 
 
-def test_parallel_copy_projection_committed_during_the_load_premise(pcopy, expect):
-    expect.text(pcopy["ep race premise"], "held yes",
-                "premise: both loaders waited at the gate while add_projection committed")
+def test_parallel_copy_truncated_projections_premise(pcopy, expect):
+    expect.text(pcopy["ep truncate premise"], "before pa 100/own pb 100/own | after pa 0/none pb 0/none",
+                "premise: TRUNCATE of a table whose two projections held rows leaves both projections without a"
+                " storage row")
 
 
-def test_parallel_copy_projection_committed_during_the_load_fails_cleanly(pcopy, expect):
-    """#2161, #2213 review: a projection that commits after the coordinator's pre-create
-    has no storage row when the loaders reach it. Creating it would take the storage-row
-    lock that PREPARE TRANSACTION keeps, and the load would wait until statement_timeout
-    (57014). A loader now fails with 55000 and the coordinator rolls every range back."""
-    expect.text(pcopy["ep race"],
-                '55000|pgcolumnar.parallel_copy worker N failed: storage N of "t_epr" has no storage row that was'
+def test_parallel_copy_after_truncate_fills_both_projections(pcopy, expect):
+    """#2161: TRUNCATE records each projection again under a new storage id with no
+    storage row, a second way into the empty-projection state from an earlier, committed
+    transaction. The coordinator must create both rows again, or 2 workers wait until
+    statement_timeout (or, with the loader's refusal, fail with 55000)."""
+    expect.text(pcopy["ep truncate"], "5000|5000|pa 5000/own pb 5000/own",
+                "parallel_copy with 2 workers after TRUNCATE of a table whose two projections held rows fills both"
+                " projections and records each one's storage row (#2161)")
+
+
+def test_parallel_copy_storage_row_gone_during_the_load_premise(pcopy, expect):
+    expect.text(pcopy["ep gone premise"], "held yes",
+                "premise: both loaders waited at the gate while the projection's storage row was deleted")
+
+
+def test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly(pcopy, expect):
+    """#2161, #2213 review: a loader that finds a storage row of its target absent would
+    create it under the storage-row lock that PREPARE TRANSACTION keeps, and the load
+    would wait until statement_timeout (57014). A loader now fails with 55000 and the
+    coordinator rolls every range back. Since #2215 and #2229 no DDL can commit such a
+    row during the load, so the test deletes it from the catalog."""
+    expect.text(pcopy["ep gone"],
+                'deleted 1 | 55000|pgcolumnar.parallel_copy worker N failed: storage N of "t_epr" has no storage row that was'
                 " committed before the load started; a projection added during the load cannot be loaded in parallel,"
                 " so run the load again | rows 0 | prepared 0",
-                "parallel_copy fails with 55000, not 57014, when a projection committed during the load reaches the"
-                " loaders, and loads nothing (#2161)")
+                "parallel_copy fails with 55000, not 57014, when a storage row of the target is gone by the time the"
+                " loaders reach it, and loads nothing (#2161)")
 
 
 def test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads(pcopy, expect):

@@ -1311,18 +1311,20 @@ true until the next version shipped.
   commit any of them. A prepared transaction never waits, so PostgreSQL's
   deadlock detector saw no cycle. The coordinator now pre-creates and commits
   each projection's storage row with the table's, as a 1-worker load would
-  record it. A projection that commits after that, during the load, still has
-  no row: `add_projection` releases its table lock before it commits (#2215).
-  A single-table loader that reaches a storage row created after the load
-  started now fails with 55000 instead of creating it under the lock, and the
-  coordinator rolls every range back. Only the target's storages are refused:
-  a trigger that writes another columnar table still creates that table's row. A session that sets
+  record it. Since #2215 and #2229 no DDL can add a projection during the
+  load, so a loader should always find those rows. A single-table loader that
+  reaches a storage row of its target that is not there fails with 55000
+  instead of creating it under the lock, and the coordinator rolls every range
+  back. Only the target's storages are refused: a trigger that writes another
+  columnar table still creates that table's row. A session that sets
   `pgcolumnar.bulk_parallel_writer` by hand keeps the locked path. 2 and 4
-  workers into an empty projection, and 2 workers into three, load every row
-  and fill every projection; 1 worker, a projection that already holds rows,
-  and a table with no projection are the controls. `parallel_copy.sh` and
-  `test_parallel_copy.py`; the race with `add_projection` is forced by a
-  trigger that holds the loaders until the projection has committed.
+  workers into an empty projection, 2 workers into three, and 2 workers into
+  two projections that a `TRUNCATE` emptied load every row and fill every
+  projection; 1 worker, a projection that already holds rows, and a table with
+  no projection are the controls. `parallel_copy.sh` and
+  `test_parallel_copy.py`; the loader's refusal is reached by deleting a
+  projection's storage row from the catalog while a CHECK constraint holds the
+  loaders.
 - `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
   calling transaction has already written to the target, or to one of its
   partitions, for example with an `INSERT` earlier in the same transaction
