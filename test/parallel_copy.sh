@@ -1871,9 +1871,8 @@ fi
 # a projection at statement end with no active snapshot. It does not: on main's
 # code, too, both cases below load and no backend dies. The check keeps that true.
 # Each table gets an options row (set_options), because the crash needed one.
-# Not covered: 2 or more workers into a projection that holds no rows yet. That
-# load hangs until cancelled, on another cause (#2161). So the 2-worker case
-# fills its projection first, and every load runs under a statement_timeout.
+# The 2-worker case fills its projection first. A projection that holds no rows
+# yet is #2161's case, checked in its own section at the end of this suite.
 proj_load() {	# proj_load WORKERS PRELOAD -> "wWORKERS:returned/rows/projection rows"
 	local t="t_proj_w$1"
 	psql_run "CREATE TABLE $t (id int, txt text) USING pgcolumnar;
@@ -2083,6 +2082,190 @@ check "parallel_copy into a primary-key table after the caller's own INSERT with
 check "parallel_copy after LOCK TABLE IN ACCESS EXCLUSIVE MODE and an INSERT into the same table gets the #2183 lock refusal first (#2211)" \
 	"$(self_lock_copy "LOCK TABLE t_ownw IN ACCESS EXCLUSIVE MODE; INSERT INTO t_ownw VALUES (0, 'pre')" t_ownw)" \
 	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_ownw"'
+
+# ---- #2161: 2 or more workers into a projection that holds no rows yet ---------
+# A projection's flush records the projection's own storage row, and a projection
+# that holds no rows yet has none. The coordinator pre-created only the TABLE's
+# row, so the first loader to flush the projection created its row under the
+# storage-row lock (class 102), and its PREPARE TRANSACTION kept that lock. The
+# next loader to flush the projection waited for the prepared transaction, and the
+# coordinator waited for that loader before it would COMMIT PREPARED. The deadlock
+# detector cannot see a prepared transaction's side of the cycle, so the load ran
+# until cancelled. The coordinator now pre-creates each projection's row too.
+# Controls: 1 worker into the same shape, 2 workers into a projection that already
+# holds rows, 2 workers into a table with no projection. Every table gets
+# stripe_row_limit 1000, so the 5000 rows make several row groups and the
+# projection's storage row must carry the table's limit, not the default.
+# Every load runs under a 10s statement_timeout, so the old wait reads 57014.
+#
+# ep_load TABLE WORKERS PRELOAD PROJECTION(yes|no)
+#   -> "returned|table rows|projection rows|projection = table" or "SQLSTATE|message"
+ep_load() {
+	local t="$1" out rc
+	psql_run "CREATE TABLE $t (id int, txt text) USING pgcolumnar;
+		SELECT pgcolumnar.set_options('$t', stripe_row_limit => 1000);" >/dev/null
+	[ "$3" -gt 0 ] && psql_run "INSERT INTO $t SELECT g, 'pre'||g FROM generate_series(1, $3) g;" >/dev/null
+	[ "$4" = yes ] && psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id']);" >/dev/null
+	out="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -qtA -v ON_ERROR_STOP=1 \
+		-c "SET statement_timeout = '10s'" -c '\set VERBOSITY verbose' \
+		-c "SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $2)" 2>&1)"
+	rc=$?
+	if grep -q '^ERROR:' <<<"$out"; then
+		sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$out" | head -1
+		return
+	elif [ "$rc" -ne 0 ]; then
+		echo "no reading (psql exit $rc: $(head -1 <<<"$out"))"
+		return
+	fi
+	if [ "$4" = yes ]; then
+		printf '%s|%s|%s|%s\n' "$(tail -1 <<<"$out")" "$(q "SELECT count(*) FROM $t")" \
+			"$(q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p')")" \
+			"$(q "SELECT CASE WHEN (SELECT md5(string_agg(x, E'\n' ORDER BY x)) FROM pgcolumnar.read_projection('$t', 'p') x)
+			                     = (SELECT md5(string_agg(txt||'|'||id, E'\n' ORDER BY txt||'|'||id)) FROM $t)
+			                  THEN 'projection = table' ELSE 'projection != table' END")"
+	else
+		printf '%s|%s|no projection\n' "$(tail -1 <<<"$out")" "$(q "SELECT count(*) FROM $t")"
+	fi
+}
+# ep_storage TABLE -> the projection's storage row: whose it is, its row group
+# limit, and whether its format and vector length are the 1-worker load's (t_ep1)
+ep_storage() {
+	q "WITH r AS (SELECT s.* FROM pgcolumnar.storage s JOIN pgcolumnar.projection p
+	                ON p.proj_storage_id = s.storage_id
+	              WHERE p.storage_id = pgcolumnar.get_storage_id('$1') AND p.name = 'p'),
+	        w1 AS (SELECT s.* FROM pgcolumnar.storage s JOIN pgcolumnar.projection p
+	                ON p.proj_storage_id = s.storage_id
+	              WHERE p.storage_id = pgcolumnar.get_storage_id('t_ep1') AND p.name = 'p')
+	   SELECT coalesce((SELECT CASE WHEN r.relation_oid = '$1'::regclass THEN 'own table'
+	                               ELSE 'relation ' || r.relation_oid END
+	                      || '|rgl ' || r.row_group_limit || '|'
+	                      || CASE WHEN (r.format_version, r.vector_length)
+	                                   = (SELECT format_version, vector_length FROM w1)
+	                              THEN 'format as 1 worker' ELSE 'format differs' END
+	                    FROM r), 'no storage row')"
+}
+check "parallel_copy with 1 worker into a table whose projection holds no rows yet loads every row and fills the projection (#2161)" \
+	"$(ep_load t_ep1 1 0 yes)" "5000|5000|5000|projection = table"
+check "parallel_copy with 2 workers into a table whose projection holds no rows yet loads every row and fills the projection, not 57014 (#2161)" \
+	"$(ep_load t_ep2 2 0 yes)" "5000|5000|5000|projection = table"
+check "parallel_copy with 4 workers into a table whose projection holds no rows yet loads every row and fills the projection, not 57014 (#2161)" \
+	"$(ep_load t_ep4 4 0 yes)" "5000|5000|5000|projection = table"
+check "parallel_copy with 2 workers into a table whose projection already holds rows loads every row and fills the projection (#2161)" \
+	"$(ep_load t_ep2p 2 1000 yes)" "5000|6000|6000|projection = table"
+check "parallel_copy with 2 workers into a table with no projection loads every row (#2161)" \
+	"$(ep_load t_ep2n 2 0 no)" "5000|5000|no projection"
+check "parallel_copy with 2 and 4 workers records the empty projection's storage row as a 1-worker load does (#2161)" \
+	"$(ep_storage t_ep2) ; $(ep_storage t_ep4)" \
+	"own table|rgl 1000|format as 1 worker ; own table|rgl 1000|format as 1 worker"
+# More than one empty projection: the coordinator must create EVERY projection's
+# storage row, not the first one's (#2213 review: a `break;` after the first
+# insert passed every check above, each of which has one projection).
+psql_run "CREATE TABLE t_ep3 (id int, txt text) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('t_ep3', stripe_row_limit => 1000);
+	SELECT pgcolumnar.add_projection('t_ep3', 'pa', columns => ARRAY['txt','id'], sort_key => ARRAY['id']);
+	SELECT pgcolumnar.add_projection('t_ep3', 'pb', columns => ARRAY['id'], sort_key => ARRAY['id']);
+	SELECT pgcolumnar.add_projection('t_ep3', 'pc', columns => ARRAY['txt'], sort_key => ARRAY['txt']);" >/dev/null
+ep3_load="$(PGOPTIONS='-c statement_timeout=10s' q "SELECT pgcolumnar.parallel_copy('t_ep3'::regclass, '$F', 2)" 2>&1 | tail -1)"
+ep3_rows() {	# -> "pa N/own pb N/own pc N/own": each projection's rows and whose storage row it has
+	q "SELECT string_agg(p.name || ' ' || (SELECT count(*) FROM pgcolumnar.read_projection('t_ep3', p.name))
+	                     || '/' || coalesce((SELECT CASE WHEN s.relation_oid = 't_ep3'::regclass THEN 'own' ELSE 'other' END
+	                                           FROM pgcolumnar.storage s WHERE s.storage_id = p.proj_storage_id), 'none'),
+	                     ' ' ORDER BY p.name)
+	     FROM pgcolumnar.projection p
+	    WHERE p.storage_id = pgcolumnar.get_storage_id('t_ep3') AND p.projection_id <> 0"
+}
+check "parallel_copy with 2 workers into a table with three empty projections fills every projection and records each one's storage row (#2161)" \
+	"$ep3_load|$(q "SELECT count(*) FROM t_ep3")|$(ep3_rows)" "5000|5000|pa 5000/own pb 5000/own pc 5000/own"
+
+# A projection created in an earlier, committed transaction can also have lost
+# its storage row: TRUNCATE gives the table new storage and records each
+# projection again under a new storage id, with no row until something is
+# written to it. That is a second way into the state above, after rows have been
+# loaded, and the coordinator must create both projections' rows again.
+psql_run "CREATE TABLE t_eptt (id int, txt text) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('t_eptt', stripe_row_limit => 1000);
+	SELECT pgcolumnar.add_projection('t_eptt', 'pa', columns => ARRAY['txt','id'], sort_key => ARRAY['id']);
+	SELECT pgcolumnar.add_projection('t_eptt', 'pb', columns => ARRAY['id'], sort_key => ARRAY['id']);
+	INSERT INTO t_eptt SELECT g, 'pre'||g FROM generate_series(1, 100) g;" >/dev/null
+eptt_rows() {	# -> "pa N/own pb N/own": each projection's rows and whose storage row it has
+	q "SELECT string_agg(p.name || ' ' || (SELECT count(*) FROM pgcolumnar.read_projection('t_eptt', p.name))
+	                     || '/' || coalesce((SELECT CASE WHEN s.relation_oid = 't_eptt'::regclass THEN 'own' ELSE 'other' END
+	                                           FROM pgcolumnar.storage s WHERE s.storage_id = p.proj_storage_id), 'none'),
+	                     ' ' ORDER BY p.name)
+	     FROM pgcolumnar.projection p
+	    WHERE p.storage_id = pgcolumnar.get_storage_id('t_eptt') AND p.projection_id <> 0"
+}
+eptt_before="$(eptt_rows)"
+psql_run "TRUNCATE t_eptt;" >/dev/null
+check "premise: TRUNCATE of a table whose two projections held rows leaves both projections without a storage row" \
+	"before $eptt_before | after $(eptt_rows)" "before pa 100/own pb 100/own | after pa 0/none pb 0/none"
+eptt_load="$(PGOPTIONS='-c statement_timeout=10s' q "SELECT pgcolumnar.parallel_copy('t_eptt'::regclass, '$F', 2)" 2>&1 | tail -1)"
+check "parallel_copy with 2 workers after TRUNCATE of a table whose two projections held rows fills both projections and records each one's storage row (#2161)" \
+	"$eptt_load|$(q "SELECT count(*) FROM t_eptt")|$(eptt_rows)" "5000|5000|pa 5000/own pb 5000/own"
+
+# A loader that finds a storage row of its TARGET absent fails with 55000, and
+# the coordinator rolls every range back. The coordinator created every such row
+# before the loaders started, and since #2215 and #2229 no DDL can add one during
+# the load: add_projection and drop_projection hold their table locks to the end
+# of their transactions, and the caller holds ROW EXCLUSIVE on the target from
+# before the coordinator starts, so either the load waits for the DDL to commit
+# (and the coordinator then sees its projection) or the DDL waits for the load.
+# Creating the row would take the storage-row lock, which PREPARE TRANSACTION
+# keeps, and the next loader would wait on it until statement_timeout, which is
+# #2161 again. The one way left to reach that state is to delete the row from the
+# catalog, so this forces it that way: a CHECK constraint holds both loaders on an
+# advisory lock after the coordinator's pre-create, a third session deletes the
+# projection's storage row and commits, and only then do the loaders insert, which
+# is when a loader lists the projections. COPY checks the constraint before it
+# hands the row to the table. (A BEFORE INSERT trigger did this until #2187
+# refused a table with an INSERT trigger with more than one worker.)
+psql_run "CREATE TABLE epr_go (step int);
+	CREATE FUNCTION epr_gate(int) RETURNS boolean LANGUAGE plpgsql
+	  AS \$\$ BEGIN PERFORM pg_advisory_xact_lock_shared(2161); RETURN true; END \$\$;
+	CREATE TABLE t_epr (id int CONSTRAINT epr_gate CHECK (epr_gate(id)), txt text) USING pgcolumnar;
+	SELECT pgcolumnar.add_projection('t_epr', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id']);" >/dev/null
+epr_psql() { timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA "$@"; }
+epr_psql -c "SELECT pg_advisory_lock(2161); SET application_name = 'epr_gate';
+	DO \$\$ BEGIN WHILE NOT EXISTS (SELECT 1 FROM epr_go WHERE step >= 2) LOOP PERFORM pg_sleep(0.05); END LOOP; END \$\$;
+	SELECT pg_advisory_unlock(2161);" >/dev/null 2>&1 &
+epr_bg_gate=$!
+epr_named() { local i; for i in $(seq 1 200); do [ "$(q "SELECT count(*) FROM pg_stat_activity WHERE $1")" = "$2" ] && { echo yes; return; }; sleep 0.05; done; echo no; }
+epr_ready="gate $(epr_named "application_name = 'epr_gate'" 1)"
+epr_psql -v ON_ERROR_STOP=1 -c "SET statement_timeout = '10s'" -c '\set VERBOSITY verbose' \
+	-c "SELECT pgcolumnar.parallel_copy('t_epr'::regclass, '$F', 2)" >"$PGC_WORKDIR/epr_load.out" 2>&1 &
+epr_bg_load=$!
+epr_held="$(epr_named "backend_type = 'pgcolumnar parallel_copy loader' AND wait_event = 'advisory'" 2)"
+epr_deleted="$(PGOPTIONS='-c lock_timeout=5s' q "WITH d AS (DELETE FROM pgcolumnar.storage WHERE storage_id =
+	(SELECT proj_storage_id FROM pgcolumnar.projection WHERE storage_id = pgcolumnar.get_storage_id('t_epr') AND name = 'p')
+	RETURNING 1) SELECT count(*) FROM d" 2>&1 | tail -1)"
+psql_run "INSERT INTO epr_go VALUES (2);" >/dev/null	# the loaders go on
+wait "$epr_bg_load"; wait "$epr_bg_gate"
+check "premise: both loaders waited at the gate while the projection's storage row was deleted" \
+	"$epr_ready | held $epr_held" "gate yes | held yes"
+epr_got="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' "$PGC_WORKDIR/epr_load.out" | head -1 \
+	| sed -E 's/worker [0-9]+ failed/worker N failed/; s/storage [0-9]+ of/storage N of/')"
+check "parallel_copy fails with 55000, not 57014, when a storage row of the target is gone by the time the loaders reach it, and loads nothing (#2161)" \
+	"deleted $epr_deleted | ${epr_got:-no error: $(head -1 "$PGC_WORKDIR/epr_load.out")} | rows $(q "SELECT count(*) FROM t_epr") | prepared $(q "SELECT count(*) FROM pg_prepared_xacts")" \
+	'deleted 1 | 55000|pgcolumnar.parallel_copy worker N failed: storage N of "t_epr" has no storage row that was committed before the load started; a projection added during the load cannot be loaded in parallel, so run the load again | rows 0 | prepared 0'
+# The loader refuses an absent storage row of its TARGET only. A trigger may write
+# another columnar table, whose row the coordinator never pre-created; with one
+# worker that load must still go through. (Two or more workers into such a
+# trigger are refused before the load starts, by #2187's trigger refusal.)
+psql_run "CREATE TABLE t_ept (id int, txt text) USING pgcolumnar;
+	CREATE TABLE t_ept_side (id int, txt text) USING pgcolumnar;
+	CREATE FUNCTION t_ept_copy() RETURNS trigger LANGUAGE plpgsql
+	  AS \$\$ BEGIN INSERT INTO t_ept_side VALUES (NEW.id, NEW.txt); RETURN NEW; END \$\$;
+	CREATE TRIGGER t_ept_copy AFTER INSERT ON t_ept FOR EACH ROW EXECUTE FUNCTION t_ept_copy();" >/dev/null
+ept_got="$(epr_psql -v ON_ERROR_STOP=1 -c "SET statement_timeout = '10s'" -c '\set VERBOSITY verbose' \
+	-c "SELECT pgcolumnar.parallel_copy('t_ept'::regclass, '$F', 1)" 2>&1)"
+ept_got="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$ept_got" | head -1 | grep . || tail -1 <<<"$ept_got")"
+check "parallel_copy with 1 worker into a table whose trigger writes another empty columnar table still loads (#2161)" \
+	"$ept_got|$(q "SELECT count(*) FROM t_ept")|$(q "SELECT count(*) FROM t_ept_side")" "5000|5000|5000"
+check "parallel_copy into an empty projection leaves no prepared transaction and keeps the server up (#2161)" \
+	"leak $(q "SELECT count(*) FROM pg_prepared_xacts") | survived $(survived "$CRASHES_BEFORE")" \
+	"leak 0 | survived 1"
+
 # The trigger refusal (#2187) comes after this one too: the caller's own INSERT
 # into a table with an INSERT trigger, then 2 workers, gets 55000. The caller's
 # INSERT runs the trigger itself, which writes to t_tgk.
