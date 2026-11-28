@@ -1123,6 +1123,15 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
  * on a latch, and the deadlock detector sees that wait (#2229).
  */
 #define PGCOLUMNAR_LOCKCLASS_PCOPY_RUN		107
+/*
+ * The rewrite turnstile of one storage (#2185). recluster and compact_rewrite
+ * take it before their row-group locks and keep it to commit; a DELETE or
+ * UPDATE planned in a transaction that holds no row-group or storage-row lock
+ * yet waits a bounded time for it to come free (see
+ * PgColumnarRewriteTurnstileBeforeWrite in columnar_metadata.c). 108 is
+ * taken by #2245.
+ */
+#define PGCOLUMNAR_LOCKCLASS_REWRITE_TURNSTILE	109
 
 /*
  * Each parallel_export_parquet worker holds this from just after it connects,

@@ -2706,4 +2706,23 @@ guard_tests 910
 # cluster_tests 6565 -> 6566 for the review of #2224 at b9747c41 (#2186): one test in test_arrow_import.py, a
 # struct or map field with no children vector, by collection over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it): 6132 collected.
-cluster_tests 6566
+# cluster_tests 6566 -> 6597, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
+# daemon's launcher and due premise; a writer beside both verbs of one daemon pass commits, its writes show, the
+# verbs log in order from one worker, no deadlock; with a 1.5 s limit the writer commits and the recluster
+# finishes; a cancelled compact_rewrite ends the pass) and seventeen in test_native_rewrite_conc.py (steady deletes
+# finish, per verb; the turnstile: a new transaction waits, the wait stops at deadlock_timeout, a group-lock holder
+# and a storage-row-lock holder skip it, the verb finishes and the writes show, per verb; a paused compact_rewrite
+# holds its group lock, gives the turnstile back, and commits), by collection of those two files (102 for
+# test_native_rewrite_conc.py on main, 119 here, and 14) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+# cluster_tests 6597 -> 6611, the review of #2253 at 815dce06: fourteen tests in test_native_rewrite_conc.py (an
+# INSERT does not wait at the turnstile, per verb; a delete held at the turnstile commits, its row is gone and
+# the verb finishes, per verb; a verb stopped with 55P03 holds no turnstile lock and the next delete does not
+# wait, per verb), one test renamed (the turnstile is kept to commit), by collection of that file (133 here)
+# and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6611 -> 6617, the review of #2253 at 3de3537e (C1): six tests in test_native_rewrite_conc.py (a
+# delete at REPEATABLE READ, at SERIALIZABLE, and at REPEATABLE READ by default_transaction_isolation, the first
+# statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
+# collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+cluster_tests 6617
