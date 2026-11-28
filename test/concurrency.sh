@@ -717,8 +717,72 @@ for verb in "recluster:pgcolumnar.recluster('%T', 'id')" "compact_rewrite:pgcolu
 		"$(errs_since "$mark")/$(ctl_q "SELECT count(*) || ' ' || count(*) FILTER (WHERE id IN (0,-1)) FROM $t;")" "1/1501 1"
 done
 
+# L: the group locks must be held from before the same-row check to commit, not
+# only around the upsert. s3 holds the lock of the second group of s1's UPDATE, so
+# s1's flush holds the first group's lock and waits. s2 then updates a row of
+# that first group that s1 is updating, and waits on its lock. If s1 gave the
+# lock back before its check, s2 would get it, both checks would run before
+# either commits, and both new versions of the row would survive.
+ctl_q "CREATE TABLE tl (id int) USING pgcolumnar;" >/dev/null
+ctl_q "INSERT INTO tl SELECT g FROM generate_series(1,4) g;" >/dev/null
+ctl_q "INSERT INTO tl SELECT g FROM generate_series(5,8) g;" >/dev/null
+start_session s3
+send s3 "SET application_name='cc_s3';"
+mark="$(err_mark)"
+serial_before="$(grep -c 'ERROR:  40001: columnar: could not serialize access due to concurrent update or delete of the same row' "$WORKDIR/s2.out")"
+send_wait s3 l_del "BEGIN; DELETE FROM tl WHERE id = 6; SELECT count(*) FROM tl;"
+send s1 "BEGIN; UPDATE tl SET id = id + 100 WHERE id IN (2, 7);"
+send s1 "\\echo <<l_upd1>>"
+wait_blocked cc_s1 || true
+check "premise: L s1's UPDATE holds its first group's lock and waits on the second's, which s3 holds" \
+	"$(lks cc_s1 101)" "ExclusiveLock,ExclusiveLock(waiting)"
+send s2 "BEGIN; UPDATE tl SET id = -2 WHERE id = 2;"
+send s2 "\\echo <<l_upd2>>"
+wait_blocked cc_s2 || true
+check "premise: L s2's UPDATE of a row s1 is updating waits on that row's group lock" \
+	"$(lks cc_s2 101)" "ExclusiveLock(waiting)"
+send_wait s3 l_c3 "COMMIT;"
+wait_sentinel s1 l_upd1
+send_wait s1 l_c1 "COMMIT;"
+wait_sentinel s2 l_upd2
+send_wait s2 l_c2 "COMMIT;"
+check "L once s1 commits, s2's UPDATE of the same row fails with serialization_failure" \
+	"$(errs_since "$mark")/$(( $(grep -c 'ERROR:  40001: columnar: could not serialize access due to concurrent update or delete of the same row' "$WORKDIR/s2.out") - serial_before ))" "1/1"
+check "L the row both updated has one version, s1's" \
+	"$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM tl;")" "1,3,4,5,8,102,107"
+
+# M: a flush takes its group locks in group order, not in the order it visited
+# the rows. s1's DELETE, an index nested loop over a VALUES list, visits a row of
+# the third group and then one of the first, which s2 holds. Taken in visit
+# order, s1 would hold the third group's lock while it waited, and s2's next
+# DELETE there would close a cycle.
+ctl_q "CREATE TABLE tm (id int) USING pgcolumnar;" >/dev/null
+ctl_q "SELECT pgcolumnar.set_options('tm', chunk_group_row_limit => 1000, stripe_row_limit => 1000);" >/dev/null
+ctl_q "INSERT INTO tm SELECT g FROM generate_series(1,3000) g;" >/dev/null
+ctl_q "CREATE INDEX tm_id ON tm (id);" >/dev/null
+ctl_q "ANALYZE tm;" >/dev/null
+M_SET="SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off; SET LOCAL enable_seqscan = off;"
+M_DEL="DELETE FROM tm USING (VALUES (1, 2510), (2, 20)) v(o, id) WHERE tm.id = v.id"
+check "premise: M s1's DELETE is an index nested loop driven by the VALUES list" \
+	"$(ctl_q "${M_SET//LOCAL /} EXPLAIN (COSTS OFF) $M_DEL;" | sed 's/^ *//; s/^-> *//' | cut -d' ' -f1-2 | paste -sd'|')" \
+	"Delete on|Nested Loop|Values Scan|Index Scan|Index Cond:"
+mark="$(err_mark)"
+send_wait s2 m_del "BEGIN; DELETE FROM tm WHERE id = 10; SELECT count(*) FROM tm;"
+send s1 "BEGIN; $M_SET $M_DEL;"
+send s1 "\\echo <<m_del1>>"
+wait_blocked cc_s1 || true
+check "M s1's DELETE, which visits the third group first, waits for the first group holding no group lock" \
+	"$(lks cc_s1 101)" "ExclusiveLock(waiting)"
+send_wait s2 m_del2 "DELETE FROM tm WHERE id = 2520; SELECT count(*) FROM tm;"
+send_wait s2 m_c2 "COMMIT;"
+wait_sentinel s1 m_del1
+send_wait s1 m_c1 "COMMIT;"
+check "M both DELETE transactions commit, and the four rows are gone" \
+	"$(errs_since "$mark")/$(ctl_q "SELECT count(*) FROM tm WHERE id IN (10, 20, 2510, 2520);")" "0/0"
+
 send s1 "\\q"
 send s2 "\\q"
+send s3 "\\q"
 
 echo
 if [ "$fail" = 0 ]; then

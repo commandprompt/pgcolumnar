@@ -1092,6 +1092,10 @@ concurrency	concurrency	K compact_rewrite after s1's own INSERT, while s2's INSE
 concurrency	concurrency	K once s1 has rolled back, s2's compact_rewrite after its own INSERT commits, and the rows are kept	15;16;17;18;19	2026-11-27	columnar_vacuum.c lock_rewrite_groups: a rewrite after a write refuses without trying the storage-row lock
 concurrency	concurrency	K once s1 has rolled back, s2's recluster after its own INSERT commits, and the rows are kept	15;16;17;18;19	2026-11-27	columnar_vacuum.c lock_rewrite_groups: a rewrite after a write refuses without trying the storage-row lock
 concurrency	concurrency	K recluster after s1's own INSERT, while s2's INSERT is open, refuses at once with 55P03	15;16;17;18;19	2026-11-27	columnar_metadata.c PgColumnarStorageRowShareHeldByMe tests ExclusiveLock instead of ShareLock;columnar_vacuum.c lock_rewrite_groups: a rewrite after a write waits for the storage-row lock in ExclusiveLock as before
+concurrency	concurrency	L once s1 commits, s2's UPDATE of the same row fails with serialization_failure	15;16;17;18;19	2026-11-28	columnar_delete_vector.c delete_vector_flush_buffer: the group locks given back right after the pre-lock loop, before the same-row check
+concurrency	concurrency	L the row both updated has one version, s1's	15;16;17;18;19	2026-11-28	columnar_delete_vector.c delete_vector_flush_buffer: the group locks given back right after the pre-lock loop, before the same-row check
+concurrency	concurrency	M both DELETE transactions commit, and the four rows are gone	15;16;17;18;19	2026-11-28	columnar_delete_vector.c delete_vector_flush_buffer: no list_sort of the chunks, so the group locks follow the order rows were visited
+concurrency	concurrency	M s1's DELETE, which visits the third group first, waits for the first group holding no group lock	15;16;17;18;19	2026-11-28	columnar_delete_vector.c delete_vector_flush_buffer: no list_sort of the chunks, so the group locks follow the order rows were visited
 concurrency	concurrency	premise: D s1's DELETE in that group waits on s2's group lock	15;16;17;18;19	never	-
 concurrency	concurrency	premise: D s2's DELETE holds the group lock of the row it deleted	15;16;17;18;19	never	-
 concurrency	concurrency	premise: E t5's storage row carries an earlier build's stamp	15;16;17;18;19	never	-
@@ -1099,6 +1103,9 @@ concurrency	concurrency	premise: F t6 has no storage row before its first write	
 concurrency	concurrency	premise: H s2's UPDATE waits on a group lock while s1 is open	15;16;17;18;19	never	-
 concurrency	concurrency	premise: I t9 has no storage row before its first write	15;16;17;18;19	never	-
 concurrency	concurrency	premise: I the second first writer waits on the storage-row lock	15;16;17;18;19	never	-
+concurrency	concurrency	premise: L s1's UPDATE holds its first group's lock and waits on the second's, which s3 holds	15;16;17;18;19	never	-
+concurrency	concurrency	premise: L s2's UPDATE of a row s1 is updating waits on that row's group lock	15;16;17;18;19	never	-
+concurrency	concurrency	premise: M s1's DELETE is an index nested loop driven by the VALUES list	15;16;17;18;19	never	-
 concurrent_diff	concurrent_diff	all workers succeeded	15;16;17;18;19	2026-10-19	every stripe reserves the same stripe id;row-number reservation loses an update (the metapage lock dropped between read and write)
 concurrent_diff	concurrent_diff	concurrent bloom eq	15;16;17;18;19	never	-
 concurrent_diff	concurrent_diff	concurrent count/sum	15;16;17;18;19	2026-10-19	row-number reservations overlap by one (rowCount - 1)

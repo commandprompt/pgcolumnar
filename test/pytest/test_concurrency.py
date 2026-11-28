@@ -19,7 +19,9 @@ serializes two writers of one row is the chunk-group lock of every group in the 
 taken before the same-row check (H). A second first writer at REPEATABLE READ re-checks
 the storage row against the latest committed state (I). Six writers of their own rows,
 five rounds each, never fail (J, #2251). A rewrite verb after a write refuses with 55P03
-while another writer is open, and runs once it is alone (K). Each
+while another writer is open, and runs once it is alone (K). The group locks are held
+from before the same-row check to commit, so a writer of the same row cannot slip in
+between (L), and a flush takes them in group order, not visit order (M). Each
 session there is a queue of statements run by its own thread, as the shell's sessions
 are psql reading a FIFO, so a statement that blocks never blocks the controller.
 
@@ -201,6 +203,9 @@ def _wait_settled(r, dsn, sess, app, label):
         r["timeouts"].setdefault("settle", app)
 
 
+SERIAL = "40001: columnar: could not serialize access due to concurrent update or delete of the same row"
+M_SET = "SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off; SET LOCAL enable_seqscan = off;"
+M_DEL = "DELETE FROM tm USING (VALUES (1, 2510), (2, 20)) v(o, id) WHERE tm.id = v.id"
 J_W, J_R, J_N = 6, 5, 3000
 J_ALL = J_W * J_R * J_N
 K_VERBS = (("recluster", "pgcolumnar.recluster('%T', 'id')"),
@@ -266,6 +271,7 @@ def _writers(r, dsn):
         c.execute("UPDATE pgcolumnar.storage SET format_version = 1 WHERE relation_oid = 't5'::regclass")
         c.execute("CREATE TABLE t6 (id int) USING pgcolumnar")
     s1, s2 = _Queue(dsn, "cc_s1"), _Queue(dsn, "cc_s2")
+    s3 = None
     try:
         both = ("SELECT count(*) FILTER (WHERE id IN (5,6)) || ' ' || "
                           "count(*) FILTER (WHERE id IN (0,-1)) FROM {}")
@@ -414,9 +420,57 @@ def _writers(r, dsn):
             _send_wait(r, s2, f"SELECT {call}; COMMIT", f"k_rw_{vname}")
             r[f"K {vname} runs"] = (f"{len(s1.errors) + len(s2.errors) - mark}/"
                                     f"{_ctl(dsn, f'SELECT count(*) || chr(32) || count(*) FILTER (WHERE id IN (0,-1)) FROM {t}')}")
+
+        # L
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE tl (id int) USING pgcolumnar")
+            c.execute("INSERT INTO tl SELECT g FROM generate_series(1,4) g")
+            c.execute("INSERT INTO tl SELECT g FROM generate_series(5,8) g")
+        s3 = _Queue(dsn, "cc_s3")
+        mark = len(s1.errors) + len(s2.errors)
+        serial_before = sum(1 for e in s2.errors if e == SERIAL)
+        _send_wait(r, s3, "BEGIN; DELETE FROM tl WHERE id = 6; SELECT count(*) FROM tl", "l_del")
+        s1.send("BEGIN; UPDATE tl SET id = id + 100 WHERE id IN (2, 7)", "l_upd1")
+        _wait_blocked(r, dsn, "cc_s1")
+        r["L s1 waits"] = _lks(dsn, "cc_s1", 101)
+        s2.send("BEGIN; UPDATE tl SET id = -2 WHERE id = 2", "l_upd2")
+        _wait_blocked(r, dsn, "cc_s2")
+        r["L s2 waits"] = _lks(dsn, "cc_s2", 101)
+        _send_wait(r, s3, "COMMIT", "l_c3")
+        _wait_label(r, s1, "l_upd1")
+        _send_wait(r, s1, "COMMIT", "l_c1")
+        _wait_label(r, s2, "l_upd2")
+        _send_wait(r, s2, "COMMIT", "l_c2")
+        r["L s2 fails"] = (f"{len(s1.errors) + len(s2.errors) - mark}/"
+                           f"{sum(1 for e in s2.errors if e == SERIAL) - serial_before}")
+        r["L ids"] = _ids(dsn, "tl")
+
+        # M
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE tm (id int) USING pgcolumnar")
+            c.execute("SELECT pgcolumnar.set_options('tm', chunk_group_row_limit => 1000, stripe_row_limit => 1000)")
+            c.execute("INSERT INTO tm SELECT g FROM generate_series(1,3000) g")
+            c.execute("CREATE INDEX tm_id ON tm (id)")
+            c.execute("ANALYZE tm")
+            c.execute(M_SET.replace("LOCAL ", ""))
+            plan = [row[0] for row in c.execute(f"EXPLAIN (COSTS OFF) {M_DEL}").fetchall()]
+        r["M plan"] = "|".join(" ".join(l.strip().removeprefix("->").strip().split(" ")[:2]) for l in plan)
+        mark = len(s1.errors) + len(s2.errors)
+        _send_wait(r, s2, "BEGIN; DELETE FROM tm WHERE id = 10; SELECT count(*) FROM tm", "m_del")
+        s1.send(f"BEGIN; {M_SET} {M_DEL}", "m_del1")
+        _wait_blocked(r, dsn, "cc_s1")
+        r["M s1 waits"] = _lks(dsn, "cc_s1", 101)
+        _send_wait(r, s2, "DELETE FROM tm WHERE id = 2520; SELECT count(*) FROM tm", "m_del2")
+        _send_wait(r, s2, "COMMIT", "m_c2")
+        _wait_label(r, s1, "m_del1")
+        _send_wait(r, s1, "COMMIT", "m_c1")
+        r["M both commit"] = (f"{len(s1.errors) + len(s2.errors) - mark}/"
+                              f"{_ctl(dsn, 'SELECT count(*) FROM tm WHERE id IN (10, 20, 2510, 2520)')}")
     finally:
         s1.close()
         s2.close()
+        if s3 is not None:
+            s3.close()
 
 
 @pytest.fixture(scope="module")
@@ -678,6 +732,39 @@ def test_k_rewrite_after_write_refuses_while_another_writer_is_open(cc, expect, 
 def test_k_rewrite_after_write_runs_alone(cc, expect, vname):
     expect.text(str(cc[f"K {vname} runs"]), "1/1501 1",
                 f"K once s1 has rolled back, s2's {vname} after its own INSERT commits, and the rows are kept")
+
+
+def test_l_premise_s1_waits_holding_first_group(cc, expect):
+    expect.text(str(cc["L s1 waits"]), "ExclusiveLock,ExclusiveLock(waiting)",
+                "premise: L s1's UPDATE holds its first group's lock and waits on the second's, which s3 holds")
+
+
+def test_l_premise_s2_waits_on_group_lock(cc, expect):
+    expect.text(str(cc["L s2 waits"]), "ExclusiveLock(waiting)",
+                "premise: L s2's UPDATE of a row s1 is updating waits on that row's group lock")
+
+
+def test_l_same_row_update_fails_40001(cc, expect):
+    expect.text(str(cc["L s2 fails"]), "1/1",
+                "L once s1 commits, s2's UPDATE of the same row fails with serialization_failure")
+
+
+def test_l_one_version_of_the_row(cc, expect):
+    expect.text(str(cc["L ids"]), "1,3,4,5,8,102,107", "L the row both updated has one version, s1's")
+
+
+def test_m_premise_index_nested_loop(cc, expect):
+    expect.text(str(cc["M plan"]), "Delete on|Nested Loop|Values Scan|Index Scan|Index Cond:",
+                "premise: M s1's DELETE is an index nested loop driven by the VALUES list")
+
+
+def test_m_waits_holding_no_group_lock(cc, expect):
+    expect.text(str(cc["M s1 waits"]), "ExclusiveLock(waiting)",
+                "M s1's DELETE, which visits the third group first, waits for the first group holding no group lock")
+
+
+def test_m_both_commit(cc, expect):
+    expect.text(str(cc["M both commit"]), "0/0", "M both DELETE transactions commit, and the four rows are gone")
 
 
 def test_every_bounded_wait_completed(cc, expect):

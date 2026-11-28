@@ -643,7 +643,7 @@ true until the next version shipped.
   risk a deadlock; before, that writer waited. A table that 1.0-alpha4 wrote
   and this build only deleted from is now refused by 1.0-alpha4 (`0A000`),
   as after any other write. docs/limitations.md. `test/concurrency.sh` and
-  `test_concurrency.py`, scenarios D to K.
+  `test_concurrency.py`, scenarios D to M.
 
 - `ORDER BY ... LIMIT` no longer returns rows in the wrong order on a table
   whose sort key column was dropped on a build older than #2135, once another

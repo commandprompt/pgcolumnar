@@ -751,13 +751,19 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
-- Two plain writers to one table, transactions that only insert, delete and
-  update, do not deadlock on pgColumnar's own table locks (#2184, #2251). A
-  rewrite verb in a transaction that has written to the table is the
-  exception below. A writer holds the delete lock of each row group it deletes from until
-  commit. It also holds the table's storage-row lock, which every flush of new
-  rows takes. Writers share the storage-row lock, so a transaction that inserts and
-  then deletes, and one that deletes and then inserts, both commit. The first write
+- A writer holds the delete lock of each row group it deletes from until
+  commit. Two transactions can touch the same two row groups in opposite order,
+  in separate statements. They can then deadlock on those locks, and one gets
+  `deadlock_detected` (40P01). This happens even when no row is shared, because
+  the lock covers a whole row group. A heap locks rows, so it deadlocks only when
+  rows are shared. Within one statement a writer takes its row groups' locks in
+  group order, so a single statement does not close such a cycle. Retry on 40P01.
+- Writers no longer deadlock on the storage-row lock (#2184) or on the
+  row-identity locks of rows they do not share (#2251). A writer also holds the
+  table's storage-row lock, which every flush of new rows takes. Writers share
+  it, so a transaction that inserts and then deletes, and one that deletes and
+  then inserts, both commit. A rewrite verb in a transaction that has written to
+  the table is the exception below. The first write
   to a table takes it alone. So do the write that raises an earlier build's
   format stamp and the two rewrite verbs below. A
   `DELETE` that finds the stamp of an earlier build raises it first, before it

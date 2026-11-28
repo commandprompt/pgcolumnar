@@ -10071,11 +10071,11 @@ The fixture runs pg_isolation_regress once over all seven specs in a private dat
 
 ## 230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive
 
-The twin of `test/concurrency.sh` (#4). Two sessions deleting different rows of one chunk group serialize on the chunk-group lock, and both deletes survive -- with the group's delete_vector row present and absent; deletes into different chunk groups do not wait and finish in a live transaction. Scenarios D, E and F (#2184): a transaction that inserts and then deletes in a group and one that deletes in that group and then inserts both commit, on a table whose storage row is current and on one an earlier build stamped, where the DELETE waits for the raising INSERT before it takes its group lock; a second first writer that waited for the first keeps only ShareLock, so a third writer does not wait for it. Writers of unrelated rows that share a row-identity bucket do not wait for each other at a flush (G), and two writers of one row still serialize, on the chunk-group locks a flush takes before its same-row check (H). A second first writer at REPEATABLE READ re-checks the storage row against the latest committed state (I). Six writers of their own rows, five rounds each, with and without an INSERT first, never fail (J, #2251). A rewrite verb in a transaction that wrote to the table refuses with 55P03 while another writer is open, and runs once it is alone (K).
+The twin of `test/concurrency.sh` (#4). Two sessions deleting different rows of one chunk group serialize on the chunk-group lock, and both deletes survive -- with the group's delete_vector row present and absent; deletes into different chunk groups do not wait and finish in a live transaction. Scenarios D, E and F (#2184): a transaction that inserts and then deletes in a group and one that deletes in that group and then inserts both commit, on a table whose storage row is current and on one an earlier build stamped, where the DELETE waits for the raising INSERT before it takes its group lock; a second first writer that waited for the first keeps only ShareLock, so a third writer does not wait for it. Writers of unrelated rows that share a row-identity bucket do not wait for each other at a flush (G), and two writers of one row still serialize, on the chunk-group locks a flush takes before its same-row check (H). A second first writer at REPEATABLE READ re-checks the storage row against the latest committed state (I). Six writers of their own rows, five rounds each, with and without an INSERT first, never fail (J, #2251). A rewrite verb in a transaction that wrote to the table refuses with 55P03 while another writer is open, and runs once it is alone (K). The group locks are held from before the same-row check to commit, so a writer of the same row that waits on one cannot slip in between check and upsert (L), and a flush takes them in group order rather than the order it visited rows (M).
 
 ### Every test
 
-One module fixture runs the eleven scenarios in a private database; session 2's blocking DELETE runs in a thread while the controller polls pg_stat_activity as the shell does, every wait bounded at 60s. In D to K each session is a queue of statements run by its own thread, as the shell's psql reads a FIFO, so a statement that blocks never blocks the controller.
+One module fixture runs the thirteen scenarios in a private database; session 2's blocking DELETE runs in a thread while the controller polls pg_stat_activity as the shell does, every wait bounded at 60s. In D to M each session is a queue of statements run by its own thread, as the shell's psql reads a FIFO, so a statement that blocks never blocks the controller.
 
 | test | what it holds |
 | --- | --- |
@@ -10122,6 +10122,13 @@ One module fixture runs the eleven scenarios in a private database; session 2's 
 | `test_j_existing_rows_writers_rows` | J and those rows are what the rounds leave |
 | `test_k_rewrite_after_write_refuses_while_another_writer_is_open` | K {recluster, compact_rewrite} after s1's own INSERT, while s2's INSERT is open, refuses at once with 55P03 (2 parametrized) |
 | `test_k_rewrite_after_write_runs_alone` | K once s1 has rolled back, s2's {recluster, compact_rewrite} after its own INSERT commits, and the rows are kept (2 parametrized) |
+| `test_l_premise_s1_waits_holding_first_group` | premise: L s1's UPDATE holds its first group's lock and waits on the second's, which s3 holds |
+| `test_l_premise_s2_waits_on_group_lock` | premise: L s2's UPDATE of a row s1 is updating waits on that row's group lock |
+| `test_l_same_row_update_fails_40001` | L once s1 commits, s2's UPDATE of the same row fails with serialization_failure |
+| `test_l_one_version_of_the_row` | L the row both updated has one version, s1's |
+| `test_m_premise_index_nested_loop` | premise: M s1's DELETE is an index nested loop driven by the VALUES list |
+| `test_m_waits_holding_no_group_lock` | M s1's DELETE, which visits the third group first, waits for the first group holding no group lock |
+| `test_m_both_commit` | M both DELETE transactions commit, and the four rows are gone |
 | `test_every_bounded_wait_completed` | a bounded wait for a session to reach idle-in-transaction completed -- the shell's five wait_timeout names, recorded only where a wait timed out; declines on a green run, where the shell records nothing |
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
