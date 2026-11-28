@@ -2611,4 +2611,15 @@ guard_tests 910
 # INSERT row trigger with 2 workers gets the 0A000 trigger refusal before the file is opened, and the control
 # that the same call with 1 worker gets 58P01, by collection of that file (369 on main 0072cd88, 371 here) and
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6337
+# cluster_tests 6337 -> 6354 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
+# target (LOCK TABLE, CREATE INDEX) and waiting for the caller's lock gets 40P01 on one side (2), the caller's
+# lock_timeout ends a wait for another session's SHARE on the target and on a partition (2), the caller waits in
+# the lock manager before any worker starts (2) and then loads (2 controls), #2183's and #2211's refusals come
+# before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
+# CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
+# lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
+# cluster_tests 6354 -> 6358 for the review of #2244 in test_parallel_copy.py: the second-loader row lock (a
+# fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
+# step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
+# cluster files.
+cluster_tests 6358
