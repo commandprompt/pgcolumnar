@@ -2622,7 +2622,13 @@ guard_tests 910
 # fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
 # step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
 # cluster files.
-# cluster_tests 6358 -> 6389, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
+# cluster_tests 6358 -> 6365 for #2245's seven tests in test_parallel_export_parquet.py: an ACCESS EXCLUSIVE
+# request queued behind the caller on the table and on a leaf does not hang the export (2), a cycle through the
+# dispatcher's own wait still ends in 40P01 (control), the caller's lock_timeout bounds its wait for the table,
+# the waits on the workers are neither limited by lock_timeout nor logged, and the caller's settings read back
+# unchanged, and a worker picked as the deadlock victim reaches the caller as 40P01 with its detail, by
+# collection of that file (64 on main 0072cd88, 71 here) and over the cluster files.
+# cluster_tests 6365 -> 6396, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
 # daemon's launcher and due premise; a writer beside both verbs of one daemon pass commits, its writes show, the
 # verbs log in order from one worker, no deadlock; with a 1.5 s limit the writer commits and the recluster
 # finishes; a cancelled compact_rewrite ends the pass) and seventeen in test_native_rewrite_conc.py (steady deletes
@@ -2631,9 +2637,9 @@ guard_tests 910
 # holds its group lock, gives the turnstile back, and commits), by collection of those two files (102 for
 # test_native_rewrite_conc.py on main, 119 here, and 14) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-# cluster_tests 6389 -> 6403, the review of #2253 at 815dce06: fourteen tests in test_native_rewrite_conc.py (an
+# cluster_tests 6396 -> 6410, the review of #2253 at 815dce06: fourteen tests in test_native_rewrite_conc.py (an
 # INSERT does not wait at the turnstile, per verb; a delete held at the turnstile commits, its row is gone and
 # the verb finishes, per verb; a verb stopped with 55P03 holds no turnstile lock and the next delete does not
 # wait, per verb), one test renamed (the turnstile is kept to commit), by collection of that file (133 here)
 # and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6403
+cluster_tests 6410
