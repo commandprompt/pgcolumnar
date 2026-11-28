@@ -632,6 +632,24 @@ true until the next version shipped.
   already set is left to the writer, which clears its own rows' blocks after it
   writes them. `test/index_only.sh` and `test_index_only.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` in a lock cycle through a flush worker (#2256).
+  A worker opens a composite column's table with ACCESS SHARE when it reads
+  the type cache. When another session held a conflicting lock on that table
+  and then asked for a lock the inserting transaction holds, such as
+  `LOCK TABLE ... IN SHARE MODE` on the columnar table, the worker waited for
+  that session and that session waited for the backend. The backend waited
+  for the worker on a latch, which the deadlock detector does not see. Each
+  worker now holds an advisory lock of a new class (110) from the moment it
+  connects, and the backend waits on those locks. The deadlock detector then
+  ends the cycle with `deadlock detected` (40P01) after `deadlock_timeout`.
+  If it picks the worker, the backend logs the worker's error as a WARNING
+  with its SQLSTATE, detail and hint, encodes that worker's columns itself,
+  and the INSERT goes on. If it picks the backend or the other session, that
+  statement fails with 40P01. These waits on the workers do not count against
+  `lock_timeout` and are not reported by `log_lock_waits`.
+  docs/configuration.md and docs/limitations.md. `parallel_flush_optin.sh`
+  arm 9 and `test_parallel_flush_optin.py`.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   until `statement_timeout` when a column's type is or contains a composite
   whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
   `TRUNCATE` or `LOCK TABLE` on that table (#2182). The column may be the

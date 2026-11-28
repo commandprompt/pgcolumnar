@@ -745,3 +745,240 @@ def test_type_a_composite_held_in_share_mode_flushes_in_workers(ty, expect):
     expect.text(ty["share"], TY_WORKERS,
                 "a parallel flush of a composite column whose table the transaction holds in SHARE mode "
                 "flushes every column in workers (#2182)")
+
+
+# ---- the backend waits for its flush workers in the lock manager (#2256) ----------
+#
+# A worker reads the type cache in its own transaction, so for a composite column it
+# takes ACCESS SHARE on the composite's table. The backend waited for its workers on a
+# latch, which the deadlock detector does not follow. So when another session B held
+# ACCESS EXCLUSIVE on that table and then asked for SHARE on the columnar table, the
+# worker waited for B, B waited for the backend, and the backend waited for the worker
+# unseen: the INSERT waited until statement_timeout. Each worker now holds an advisory
+# lock of class 110 from the moment it connects, and the backend waits on those, so
+# the detector sees the cycle and ends it with 40P01.
+#
+# jdatcmd's order: A loads cy_c's type cache entry first, B takes ACCESS EXCLUSIVE on
+# cy_c, A runs a parallel INSERT with one worker, and B, once that worker waits on
+# cy_c, asks for SHARE on the columnar table. The worker runs at the server's 1 s
+# deadlock_timeout; A and B pick theirs, which decides the victim. A gets a 10 s
+# statement_timeout and B 20 s; on main every case is A's 57014 at 10 s.
+CY_DB = "pgc_parallel_flush_cycle"
+CY_RUN_LOCK = re.compile(r"waits for ShareLock on advisory lock \[[0-9]*,[0-9]*,[0-9]*,110\]")
+CY_WORKER_VICTIM = ("A: committed after WARNING 40P01 pgcolumnar parallel_flush worker 0 failed, completing its "
+                    "columns serially: deadlock detected | B: got both | 20000 rows | ")
+CY_CALLER_VICTIM = "A: 40P01 deadlock detected | B: got both | 0 rows | "
+CY_OTHER_VICTIM = "A: committed, every column in workers | B: 40P01 deadlock detected | 20000 rows | "
+
+
+def _cy_until(cond):
+    """A DO block that polls cond every 20 ms, for up to 8 s, as the shell's cy_until.
+    pg_stat_activity is read once per transaction unless the snapshot is cleared."""
+    return (f"DO $$ BEGIN FOR i IN 1..400 LOOP PERFORM pg_stat_clear_snapshot(); EXIT WHEN {cond}; "
+            "PERFORM pg_sleep(0.02); END LOOP; END $$")
+
+
+def _cy_crashes(cluster):
+    try:
+        text = (cluster.datadir / "server.log").read_text(errors="replace")
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
+    return sum(1 for line in text.splitlines() if "terminated by signal" in line)
+
+
+def _cy_note(n):
+    return (n.severity_nonlocalized or n.severity or "", n.sqlstate or "", n.message_primary or "",
+            n.message_detail or "")
+
+
+def _cycle(db, table, a_dt, b_dt, mpw=2, select="g, row(g, g)::cy_c"):
+    """-> ("A: .. | B: .. | <rows> rows | <run lock named?> | <time>", A's details), as the
+    shell's cycle. max_parallel_workers 2 gives the flush one worker."""
+    out = {}
+    notes = []
+    details = []
+    t0 = time.monotonic()
+
+    def a():
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, application_name="pf_cy_a") as c:
+                c.add_notice_handler(lambda n: notes.append(_cy_note(n)))
+                c.execute(f"SET deadlock_timeout = '{a_dt}'")
+                c.execute(f"SET max_parallel_workers = {mpw}")
+                c.execute("SELECT (row(1, 1)::cy_c).x")
+                c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'cy_c'::regclass "
+                                    "AND mode = 'AccessExclusiveLock' AND granted)"))
+                c.execute("SET pgcolumnar.parallel_flush = on")
+                c.execute("SET client_min_messages = debug1")
+                c.execute("SET statement_timeout = '10s'")
+                c.execute(f"INSERT INTO {table} SELECT {select} FROM generate_series(1, 20000) g")
+        except psycopg.Error as exc:
+            out["a"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+            out["a detail"] = exc.diag.message_detail or ""
+            details.append(exc.diag.message_detail or "")
+
+    t = threading.Thread(target=a)
+    t.start()
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, application_name="pf_cy_b") as c:
+            c.execute(f"SET deadlock_timeout = '{b_dt}'")
+            c.execute("SET statement_timeout = '20s'")
+            c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'pf_cy_a' "
+                                "AND query LIKE 'DO%')"))
+            with c.transaction():
+                c.execute("LOCK TABLE cy_c IN ACCESS EXCLUSIVE MODE")
+                c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'cy_c'::regclass "
+                                    "AND NOT granted)"))
+                c.execute(f"LOCK TABLE {table} IN SHARE MODE")
+                b = "got both"
+    except psycopg.Error as exc:
+        b = f"{exc.sqlstate} {exc.diag.message_primary}"
+        details.append(exc.diag.message_detail or "")
+    t.join(60)
+    ms = int((time.monotonic() - t0) * 1000)
+    warnings = [n for n in notes if n[0] == "WARNING"]
+    details += [n[3] for n in notes]
+    if t.is_alive():
+        a_got = "the insert never returned"
+    elif "a" in out:
+        a_got = out["a"]
+    elif warnings:
+        a_got = f"committed after WARNING {warnings[0][1]} {warnings[0][2]}"
+    else:
+        a_got = f"committed, {_all_split([n[2] for n in notes])}"
+    named = ("the deadlock names the run lock" if any(CY_RUN_LOCK.search(d) for d in details)
+             else "no run lock named")
+    return (f"A: {a_got} | B: {b} | {db.q(f'SELECT count(*) FROM {table}')} rows | {named} | "
+            + ("under 6 s" if ms < 6000 else f"took {ms} ms")), [out.get("a detail", "")] + [n[3] for n in notes]
+
+
+@pytest.fixture(scope="module")
+def cy(pgc_cluster):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {CY_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {CY_DB}")
+    try:
+        d = _Db(pgc_cluster.dsn(dbname=CY_DB))
+        d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        d.run("CREATE TABLE cy_c (x int, y int)")
+        for t in ("cy_w", "cy_wa", "cy_wb", "cy_wd"):
+            d.run(f"CREATE TABLE {t} (a int, r cy_c) USING pgcolumnar")
+        d.run("CREATE TABLE cy_lt (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar")
+        before = _cy_crashes(pgc_cluster)
+        r = {
+            "worker": _cycle(d, "cy_w", "30s", "30s")[0],
+            "caller": _cycle(d, "cy_wa", "500ms", "30s")[0],
+            "other": _cycle(d, "cy_wb", "30s", "100ms")[0],
+            "default": _cycle(d, "cy_wd", "1s", "1s")[0],
+        }
+        # Two workers, each encoding a composite column, so both wait on cy_c. The
+        # backend waits for worker 0 first; at the server's 1 s worker 0 is the victim.
+        # The backend then waits for worker 1, which closes the cycle again: worker 1,
+        # if its own check comes after, or the backend at its 2 s, ends it. Either way
+        # a report A received names worker 1's run lock.
+        d.run("CREATE TABLE cy_w2 (r cy_c, s cy_c) USING pgcolumnar")
+        r["two"] = _cycle(d, "cy_w2", "2s", "30s", 4, "row(g, g)::cy_c, row(g, g)::cy_c")
+
+        # A 1 ms lock_timeout does not end an uncontended parallel flush, and with
+        # deadlock_timeout 1 ms and log_lock_waits on, no wait for a worker is
+        # reported. client_min_messages = debug1 sends the LOG lines to the session.
+        notes = []
+        try:
+            with psycopg.connect(d.dsn, autocommit=True,
+                                 options="-c lock_timeout=1ms -c deadlock_timeout=1ms -c log_lock_waits=on") as c:
+                c.add_notice_handler(lambda n: notes.append(n.message_primary or ""))
+                c.execute("SET pgcolumnar.parallel_flush = on")
+                c.execute("SET client_min_messages = debug1")
+                c.execute("SET statement_timeout = '60s'")
+                c.execute(f"INSERT INTO cy_lt {WNUM}")
+            got = f"{d.q('SELECT count(*) FROM cy_lt')} rows"
+        except psycopg.Error as exc:
+            got = f"{exc.sqlstate} {exc.diag.message_primary}"
+        logged = sum(1 for n in notes if "still waiting for ShareLock on advisory lock" in n)
+        r["lock_timeout"] = f"{got}, {_all_split(notes)}, {logged} waits for a worker logged"
+
+        # and the session's settings are its own again once the flush returns
+        notes = []
+        try:
+            with psycopg.connect(d.dsn, autocommit=True) as c:
+                c.add_notice_handler(lambda n: notes.append(n.message_primary or ""))
+                with c.transaction():
+                    c.execute("SET LOCAL lock_timeout = '2s'")
+                    c.execute("SET LOCAL log_lock_waits = on")
+                    c.execute("SET LOCAL pgcolumnar.parallel_flush = on")
+                    c.execute("SET LOCAL client_min_messages = debug1")
+                    c.execute(f"INSERT INTO cy_lt (a, b, c, d, e, f, g, h) {LK_ROWS}")
+                    shown = [c.execute("SHOW lock_timeout").fetchone()[0],
+                             c.execute("SHOW log_lock_waits").fetchone()[0]]
+            r["gucs"] = f"{_all_split(notes)}, {'|'.join(shown)}"
+        except psycopg.Error as exc:
+            r["gucs"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+        now = _cy_crashes(pgc_cluster)
+        r["crashes"] = (f"{now - before} terminated by signal" if isinstance(before, int) and isinstance(now, int)
+                        else f"unreadable:[{before}][{now}]")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {CY_DB} WITH (FORCE)")
+
+
+def test_cycle_a_worker_victim_reaches_the_backend_as_a_warning(cy, expect):
+    expect.text(cy["worker"], CY_WORKER_VICTIM + "the deadlock names the run lock | under 6 s",
+                "a parallel flush worker chosen as the deadlock victim reaches the backend as a 40P01 WARNING "
+                "naming the run lock, and the INSERT commits its rows serially within 6 s (#2256)")
+
+
+def test_cycle_the_backend_as_victim_fails_with_40p01(cy, expect):
+    expect.text(cy["caller"], CY_CALLER_VICTIM + "the deadlock names the run lock | under 6 s",
+                "a backend waiting for its parallel flush worker, chosen as the deadlock victim, fails with 40P01 "
+                "naming the run lock within 6 s (#2256)")
+
+
+def test_cycle_the_other_session_as_victim_lets_the_insert_finish(cy, expect):
+    expect.text(cy["other"], CY_OTHER_VICTIM + "the deadlock names the run lock | under 6 s",
+                "the other session chosen as the deadlock victim fails with 40P01 naming the run lock, and the "
+                "parallel INSERT finishes in its worker within 6 s (#2256)")
+
+
+def test_cycle_the_issues_case_ends_with_one_side_giving_way(cy, expect):
+    # Every deadlock_timeout at 1 s: any of the three outcomes, well before the timeout.
+    got = cy["default"]
+    gave = (got.rsplit(" | ", 1)[-1]
+            if any(got.startswith(w) for w in (CY_WORKER_VICTIM, CY_CALLER_VICTIM, CY_OTHER_VICTIM))
+            else f"neither gave way:[{got}]")
+    expect.text(gave, "under 6 s",
+                "with every deadlock_timeout at 1 s, the ordered two-session cycle through a parallel flush worker "
+                "ends with one side giving way within 6 s, not at statement_timeout (#2256)")
+
+
+def test_cycle_the_backend_waits_for_the_second_worker_too(cy, expect):
+    got, details = cy["two"]
+    ok = (got == CY_CALLER_VICTIM + "the deadlock names the run lock | under 6 s"
+          or re.fullmatch(r"A: committed after WARNING 40P01 pgcolumnar parallel_flush worker [01] failed, "
+                          r"completing its columns serially: deadlock detected \| B: got both \| 20000 rows \| "
+                          r"the deadlock names the run lock \| under 6 s", got))
+    if ok:
+        named = any(re.search(r"waits for ShareLock on advisory lock \[[0-9]*,[0-9]*,1,110\]", d) for d in details)
+        reading = ("worker 1's run lock named" if named else "worker 1's run lock not named") + ", under 6 s"
+    else:
+        reading = f"neither gave way:[{got}]"
+    expect.text(reading, "worker 1's run lock named, under 6 s",
+                "with two parallel flush workers waiting on the cycle, the backend waits for the second worker's "
+                "run lock too, and one side gives way within 6 s (#2256)")
+
+
+def test_cycle_the_worker_waits_ignore_lock_timeout(cy, expect):
+    expect.text(cy["lock_timeout"], "300000 rows, every column in workers, 0 waits for a worker logged",
+                "a parallel flush under lock_timeout 1 ms, deadlock_timeout 1 ms and log_lock_waits on still "
+                "flushes every column in workers, and logs no wait for its workers (#2256)")
+
+
+def test_cycle_the_sessions_settings_read_back(cy, expect):
+    expect.text(cy["gucs"], "every column in workers, 2s|on",
+                "lock_timeout and log_lock_waits read back unchanged after a parallel flush in the same "
+                "transaction (#2256)")
+
+
+def test_cycle_no_backend_died(cy, expect):
+    expect.text(cy["crashes"], "0 terminated by signal",
+                "no backend died during the lock-cycle cases (#2256)")
