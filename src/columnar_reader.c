@@ -2834,6 +2834,39 @@ pgcolumnar_native_qual_skipvec(PgColumnarReadState *rs, int vecCount)
 }
 
 /*
+ * pgcolumnar_require_group_chunks
+ *		Refuse a row group whose bytes are on disk but whose column_chunk rows
+ *		are gone (#2263).
+ *
+ * A flush writes the row_group row and its column_chunk rows in one
+ * transaction, and every path that removes a group removes both in one
+ * transaction, so under one snapshot a group with data has at least one chunk.
+ * byte_length is the sum of the chunk lengths, so it is 0 exactly when the
+ * group had no column to store (a table with no stored column). A group that
+ * breaks this is what a lazy VACUUM left behind before #2263 was fixed: its
+ * row_group delete was lost and the rest of its catalog rows were deleted.
+ *
+ * Reading on would return every row of the group with every column NULL,
+ * because a column without a chunk reads as NULL. Skipping the rows is not
+ * provable either: the group's delete vector may be gone with its chunks, so
+ * the reader cannot tell which rows were deleted. So it is an error.
+ */
+static void
+pgcolumnar_require_group_chunks(const NativeRowGroupMetadata *rg, List *chunks,
+								Relation rel)
+{
+	if (chunks != NIL || rg->byteLength == 0)
+		return;
+	ereport(ERROR,
+			(errcode(ERRCODE_DATA_CORRUPTED),
+			 errmsg("columnar row group " UINT64_FORMAT " of relation \"%s\" has no column chunks",
+					rg->groupNumber, RelationGetRelationName(rel)),
+			 errdetail("The row group holds " UINT64_FORMAT " rows and " UINT64_FORMAT
+					   " bytes of data, but its column metadata is missing.",
+					   rg->rowCount, rg->byteLength)));
+}
+
+/*
  * pgcolumnar_native_load_group
  *		Load the next native row group (PGCN v1, Phase D3): read the bytes of the
  *		projected columns into the group context and set each such column's
@@ -2946,6 +2979,7 @@ pgcolumnar_native_load_group(PgColumnarReadState *rs)
 	 */
 	chunks = PgColumnarReadColumnChunkList(rs->storageId, rg->groupNumber,
 										 rs->metaSnapshot);
+	pgcolumnar_require_group_chunks(rg, chunks, rs->rel);
 
 	/*
 	 * Column projection (#338). The buffer is always sized to the full group so
@@ -5007,8 +5041,19 @@ pgcolumnar_fetch_row(Relation rel, Snapshot snapshot, uint64 rowNumber,
 
 	if (!hit)
 	{
-		MemoryContext entryOld = MemoryContextSwitchTo(entry->cx);
+		MemoryContext entryOld;
 		List	   *nchunks;
+
+		/*
+		 * The chunk list is read, in tmp, and checked before the entry is
+		 * touched, so a refused group leaves no half-filled entry behind for a
+		 * later fetch in this command to hit.
+		 */
+		nchunks = PgColumnarReadColumnChunkList(storageId, rg->groupNumber,
+											  metaSnapshot);
+		pgcolumnar_require_group_chunks(rg, nchunks, rel);
+
+		entryOld = MemoryContextSwitchTo(entry->cx);
 
 		entry->firstRowNumber = rg->firstRowNumber;
 		entry->rowCount = rg->rowCount;
@@ -5030,8 +5075,6 @@ pgcolumnar_fetch_row(Relation rel, Snapshot snapshot, uint64 rowNumber,
 		 * pageOffset and pageLength -- so a column is read when it is first
 		 * touched and a column nobody projects is never read at all.
 		 */
-		nchunks = PgColumnarReadColumnChunkList(storageId, rg->groupNumber,
-											  metaSnapshot);
 		foreach(nlc, nchunks)
 		{
 			NativeColumnChunkMetadata *cc = (NativeColumnChunkMetadata *) lfirst(nlc);

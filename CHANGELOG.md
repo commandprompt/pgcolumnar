@@ -630,6 +630,21 @@ true until the next version shipped.
   `default_transaction_isolation` of `repeatable read` does not make it skip a
   busy table. docs/limitations.md and docs/sql-reference.md.
   `test/rewrite_snapshot.sh` and `test_rewrite_snapshot.py`.
+- A lazy VACUUM that retires a fully deleted row group no longer brings back a
+  deleted row with every column NULL (#2263). Core runs a lazy VACUUM with
+  PROC_IN_VACUUM set, and other backends leave its xid out of their snapshots.
+  The retirement deletes catalog rows inside that VACUUM's transaction. A
+  reader that met one of those rows before the VACUUM committed took the delete
+  for aborted and set a hint bit that kept the row for good. Measured on main:
+  the group's row_group row survived while its column_chunk and delete_vector
+  rows were deleted, so a sequential scan and an index scan returned the
+  deleted row with every column NULL, one row more than heap. A VACUUM now
+  leaves PROC_IN_VACUUM before the retirement writes anything; it keeps the
+  flag while it sets the visibility map. Readers now refuse a row group whose
+  data is on disk but whose column_chunk rows are gone, with XX001, instead of
+  returning its rows as NULLs. A table damaged by an earlier version reports
+  that error until the leftover group is removed (docs/limitations.md).
+  `test/vacuum_retire_visibility.sh` and `test_vacuum_retire_visibility.py`.
 - An AFTER trigger of a DELETE or UPDATE that reads the table through an
   index-only scan no longer counts rows its own statement deleted, when a
   VACUUM ran during the statement (#2169). The writer keeps its delete marks in

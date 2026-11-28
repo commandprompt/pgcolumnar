@@ -32,6 +32,7 @@
 #include "catalog/storage.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "commands/trigger.h"
 #include "catalog/dependency.h"
@@ -1864,6 +1865,41 @@ pgcolumnar_scan_analyze_next_tuple(COLUMNAR_ANALYZE_NEXT_TUPLE_ARGS)
 	}
 }
 
+/*
+ * pgcolumnar_leave_lazy_vacuum
+ *		Take this backend out of PROC_IN_VACUUM before lazy VACUUM writes its
+ *		first catalog row (#2263).
+ *
+ * Core sets PROC_IN_VACUUM for a lazy VACUUM, and GetSnapshotData leaves the
+ * xid of such a backend out of every other backend's snapshot. Core's own lazy
+ * VACUUM therefore writes nothing transactional: "we mustn't do any regular
+ * updates" (vacuum.c, above vac_update_relstats). The retirement below deletes
+ * catalog rows and inserts free_space rows. A reader that ran while the VACUUM
+ * was still open found the deleting xid neither in its snapshot nor committed,
+ * took it for aborted, and set HEAP_XMAX_INVALID on the tuple, so the delete
+ * was lost when the VACUUM committed. Measured: the row_group row of a retired
+ * group survived while its column_chunk and delete_vector rows were deleted,
+ * and the group's one deleted row came back with every column NULL.
+ *
+ * Clearing the flag before this transaction has an xid is enough. A snapshot
+ * taken before the xid exists has its xmax at or below it and treats it as
+ * running, and every snapshot taken after the clear lists it. The flag's other
+ * effect, that other VACUUMs ignore this backend's xmin, ends here too, which
+ * only makes their horizon more conservative for the rest of this short
+ * transaction. Core clears the remaining vacuum flags at transaction end.
+ */
+static void
+pgcolumnar_leave_lazy_vacuum(void)
+{
+	/* nothing earlier in relation_vacuum writes, so there is no xid to hide */
+	Assert(!TransactionIdIsValid(GetTopTransactionIdIfAny()));
+
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	MyProc->statusFlags &= ~PROC_IN_VACUUM;
+	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
+	LWLockRelease(ProcArrayLock);
+}
+
 /* VACUUM: mark all-visible groups in the VM fork and retire fully-deleted
  * groups online, both under ShareUpdateExclusiveLock */
 static void
@@ -1949,7 +1985,12 @@ pgcolumnar_relation_vacuum(Relation rel, COLUMNAR_VACUUM_PARAMS params,
 	 * every snapshot agrees are dead) and is safe under ShareUpdateExclusiveLock,
 	 * so a plain VACUUM / autovacuum reclaims fully-deleted groups online without
 	 * the AccessExclusiveLock rewrite.
+	 *
+	 * Those catalog writes are transactional, so the VACUUM first stops
+	 * hiding its xid from other snapshots (#2263). The steps above write only
+	 * the VM fork and pg_class in place, and keep PROC_IN_VACUUM.
 	 */
+	pgcolumnar_leave_lazy_vacuum();
 	PgColumnarRetireFullyDeletedGroups(rel);
 }
 
