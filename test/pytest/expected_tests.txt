@@ -2725,4 +2725,9 @@ guard_tests 910
 # statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
 # collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6617
+# cluster_tests 6617 -> 6627 for #2216's ten tests in test_parallel_copy.py: for each of the issue's own-lock cases
+# (the referenced table with 2 workers and with 1, the trigger's table, the trigger's sequence, the fresh columnar
+# table a trigger writes), the 40P01's DETAIL names the loader's lock and its relation (5), and a retry after
+# ROLLBACK TO SAVEPOINT gets 40P01 again while a load after ROLLBACK loads (5), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6627
