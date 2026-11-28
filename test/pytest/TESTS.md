@@ -7757,6 +7757,12 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 | `test_premise_the_rescanned_subquery_runs_a_gather` | premise: the correlated subquery below plans as a Gather |
 | `test_a_rescanned_gather_after_a_write_completes` | after a write, a Gather rescanned 1,000 times completes with heap's sum |
 | `test_a_write_then_a_parallel_query_leaks_no_segment` | a committed transaction with a write and two parallel queries gets no `resource was not closed` or `dynamic shared memory leak` warning, read through the connection's notices |
+| `test_premise_the_lifetime_queries_run_a_gather` | third review of #2269, premise: the count and the failing count below each plan as a Gather |
+| `test_a_loop_of_writes_each_followed_by_a_parallel_query_completes` | 2,000 iterations of a write then a parallel query complete with heap's count, so each query detaches its copy at ExecutorEnd (W) |
+| `test_failed_parallel_queries_in_exception_blocks_give_back_their_copies` | after a write, 2,000 parallel queries that fail with division by zero inside an EXCEPTION block all fail cleanly, and a parallel query then answers as heap does, so a subtransaction abort detaches its copies (E) |
+| `test_premise_the_volatile_function_runs_a_parallel_index_only_scan` | premise: the VOLATILE function's query is a Parallel Index Only Scan that launches workers |
+| `test_a_volatile_function_parallel_index_only_scan_sees_the_statement_s_earlier_rows` | the function, called for each row of an INSERT, sees the statement's earlier rows as heap does, so the leader writes its buffered rows before it publishes (V) |
+| `test_after_failed_parallel_queries_the_next_transaction_does_not_crash` | a parallel query fails at top level and in a savepoint, then a new transaction writes and runs a parallel query; the server log gains no `terminated by signal`, so the transaction's end detaches what is left (A), with its premise |
 | `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
 | `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
 | `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |

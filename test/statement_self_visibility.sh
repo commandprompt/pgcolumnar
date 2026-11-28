@@ -362,6 +362,74 @@ check "premise: the write and the parallel queries ran and committed" \
 check "a write followed by a parallel query in the same transaction prints no resource-leak warning" \
 	"$(grep -cE 'resource was not closed|dynamic shared memory leak' <<<"$leak_out") warnings" "0 warnings"
 
+# ---- the copy's lifetime (third review of #2269) --------------------------------
+# One copy per parallel query rests on four rules, and the checks above pass with
+# any one of them removed (OffgridwithJD, third review of #2269):
+# - each query detaches its copy at ExecutorEnd. A copy left attached is reused
+#   by the next query while the registry is unchanged, so only a registry that
+#   changes before every query runs the slots out: W writes before each query;
+# - the leader writes its buffered rows before it publishes, so the workers see
+#   the statement's earlier rows: V, a VOLATILE function's parallel index-only
+#   scan inside the INSERT that wrote them (main answers this wrongly too);
+# - a subtransaction abort detaches the copies its queries left. Each ROLLBACK TO
+#   changes the registry, so the next query makes a new copy: E fails 2,000
+#   parallel queries inside an EXCEPTION block;
+# - the transaction's end detaches what is left. Without it the resource owner
+#   frees the segment and the next transaction uses it after it was freed: A, a
+#   failed parallel query at top level and in a savepoint, then a new
+#   transaction, with the server log read for a crash.
+PARLIFE="SET LOCAL statement_timeout = '300s'; SET LOCAL pgcolumnar.enable_custom_scan = on; $PAR0"
+psql_run "CREATE OR REPLACE FUNCTION ins_cnt(t regclass, n int) RETURNS bigint LANGUAGE plpgsql AS \$\$
+          DECLARE c bigint; total bigint := 0;
+          BEGIN FOR i IN 1..n LOOP
+            EXECUTE format('INSERT INTO %s VALUES (%s, %s)', t, -1000000 - i, -i);
+            EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; total := total + c;
+          END LOOP; RETURN total; END \$\$;
+          CREATE OR REPLACE FUNCTION exc_loop(t regclass, n int) RETURNS text LANGUAGE plpgsql AS \$\$
+          DECLARE c bigint; ok int := 0;
+          BEGIN FOR i IN 1..n LOOP
+            BEGIN EXECUTE format('SELECT count(*) FROM %s WHERE 1 / (pad - 100) > -5', t) INTO c;
+            EXCEPTION WHEN division_by_zero THEN ok := ok + 1; END;
+          END LOOP;
+          EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c;
+          RETURN ok || '|' || c; END \$\$;
+          CREATE OR REPLACE FUNCTION fv(t regclass) RETURNS bigint VOLATILE LANGUAGE plpgsql AS \$\$
+          DECLARE n bigint; BEGIN
+            EXECUTE format('SELECT count(*) FROM %s WHERE id BETWEEN 1000001 AND 2000000 OR id BETWEEN 1 AND 25000', t) INTO n;
+            RETURN n; END \$\$;"
+check "premise: the lifetime checks' queries run a Gather" \
+	"$(plan_has "BEGIN; $PARLIFE EXPLAIN (COSTS OFF) SELECT count(*) FROM %t WHERE pad % 7 <> 3; ROLLBACK;" 'Gather') $(plan_has "BEGIN; $PARLIFE EXPLAIN (COSTS OFF) SELECT count(*) FROM %t WHERE 1 / (pad - 100) > -5; ROLLBACK;" 'Gather')" "yes yes"
+check "a loop of 2,000 writes, each followed by a parallel query, completes with heap's count" \
+	"$(same "BEGIN; $PARLIFE SELECT ins_cnt('%t', 2000); ROLLBACK;")" "same"
+check "2,000 parallel queries that fail inside an EXCEPTION block after a write all fail cleanly, and a parallel query then answers as heap does" \
+	"$(same "BEGIN; $PARLIFE INSERT INTO %t VALUES (-3, -3); SELECT exc_loop('%t', 2000); ROLLBACK;")" "same"
+PARIOS="$CSOFF SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;
+        SET LOCAL min_parallel_index_scan_size = 0; SET LOCAL min_parallel_table_scan_size = 0;
+        SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;"
+VQ="SELECT count(*) FROM %t WHERE id BETWEEN 1000001 AND 2000000 OR id BETWEEN 1 AND 25000;"
+check "premise: the VOLATILE function's query is a parallel index-only scan that launches workers" \
+	"$(plan_has "BEGIN; $PARIOS EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $VQ ROLLBACK;" 'Parallel Index Only Scan') $(plan_has "BEGIN; $PARIOS EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $VQ ROLLBACK;" 'Workers Launched: [1-9]')" "yes yes"
+check "a VOLATILE function's parallel index-only scan inside an INSERT sees the statement's earlier rows, as heap does" \
+	"$(same "BEGIN; $PARIOS INSERT INTO %t SELECT 1000000 + g, fv('%t') FROM generate_series(1, 5) g;
+	         SELECT string_agg(pad::text, ',' ORDER BY id) FROM %t WHERE id > 1000000; ROLLBACK;")" "same"
+crash_before="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+a_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qAt 2>&1 <<SQL
+$SET SET pgcolumnar.enable_custom_scan = on; SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+BEGIN; INSERT INTO sv_pgcolumnar VALUES (-1, -1); SELECT count(*) FROM sv_pgcolumnar WHERE 1 / (pad - 100) > -5; ROLLBACK;
+BEGIN; INSERT INTO sv_pgcolumnar VALUES (-2, -2); SAVEPOINT a;
+SELECT count(*) FROM sv_pgcolumnar WHERE 1 / (pad - 100) > -5; ROLLBACK TO a;
+SELECT count(*) FROM sv_pgcolumnar WHERE pad % 7 <> 3; ROLLBACK;
+BEGIN; INSERT INTO sv_pgcolumnar VALUES (-3, -3); SELECT count(*) FROM sv_pgcolumnar WHERE pad % 7 <> 3; ROLLBACK;
+SELECT 'end';
+SQL
+)"
+crash_after="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+check "premise: both parallel queries failed with division by zero, and both later counts ran" \
+	"$(grep -c 'division by zero' <<<"$a_out") $(grep -c '^[0-9][0-9]*$' <<<"$a_out")" "2 2"
+check "after a parallel query fails at top level and in a savepoint, the next transaction's write and parallel query run, and no backend crashes" \
+	"$( { [ -n "$crash_before" ] && [ -n "$crash_after" ]; } && echo "$((crash_after - crash_before)) crashes" || echo "the server log could not be read") $(tail -1 <<<"$a_out")" "0 crashes end"
+
 # ---- without shared_preload_libraries (review of #2269) --------------------------
 # The workers' copy of the registry lives in shared memory that exists only when
 # pgcolumnar is preloaded. Without the library preloaded, no session can load it:

@@ -2769,4 +2769,9 @@ guard_tests 910
 # by collection of that file (1 on main 503f05f9, 54 here),
 # restated after the merges of origin/main 1a126cdb, 02d7c185, 503f05f9 and 1fa34ea1 (6538 -> 6586 before them;
 # 6639 + 53 = 6692 after #2161; 6647 + 53 = 6700 after main f321a612).
-cluster_tests 6700
+# cluster_tests 6700 -> 6706 for the third review of #2269 in test_statement_self_visibility.py: the copy's lifetime,
+# a premise that the queries run a Gather, W (a write before each of 2,000 parallel queries), E (2,000 failing
+# parallel queries in EXCEPTION blocks), a premise that the function runs a parallel index-only scan, V (that scan
+# inside the INSERT sees the statement's earlier rows) and A (no crash after failed parallel queries), by collection
+# of that file (54 -> 60).
+cluster_tests 6706

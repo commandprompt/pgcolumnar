@@ -658,6 +658,142 @@ def test_a_write_then_a_parallel_query_leaks_no_segment(pgc_conn, expect):
                 "a write followed by a parallel query in the same transaction prints no resource-leak warning")
 
 
+# The copy's lifetime (third review of #2269). One copy per parallel query rests
+# on four rules, and the checks above pass with any one of them removed
+# (OffgridwithJD, third review of #2269):
+# - each query detaches its copy at ExecutorEnd. A copy left attached is reused
+#   by the next query while the registry is unchanged, so only a registry that
+#   changes before every query runs the slots out: W writes before each query;
+# - the leader writes its buffered rows before it publishes, so the workers see
+#   the statement's earlier rows: V, a VOLATILE function's parallel index-only
+#   scan inside the INSERT that wrote them (main answers this wrongly too);
+# - a subtransaction abort detaches the copies its queries left. Each ROLLBACK TO
+#   changes the registry, so the next query makes a new copy: E fails 2,000
+#   parallel queries inside an EXCEPTION block;
+# - the transaction's end detaches what is left. Without it the resource owner
+#   frees the segment and the next transaction uses it after it was freed: A, a
+#   failed parallel query at top level and in a savepoint, then a new
+#   transaction, with the server log read for a crash.
+PARLIFE = [SLOW, "SET LOCAL pgcolumnar.enable_custom_scan = on"] + PAR0
+LIFE_FUNCS = ("CREATE OR REPLACE FUNCTION ins_cnt(t regclass, n int) RETURNS bigint LANGUAGE plpgsql AS $$ "
+              "DECLARE c bigint; total bigint := 0; "
+              "BEGIN FOR i IN 1..n LOOP "
+              "EXECUTE format('INSERT INTO %s VALUES (%s, %s)', t, -1000000 - i, -i); "
+              "EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; total := total + c; "
+              "END LOOP; RETURN total; END $$; "
+              "CREATE OR REPLACE FUNCTION exc_loop(t regclass, n int) RETURNS text LANGUAGE plpgsql AS $$ "
+              "DECLARE c bigint; ok int := 0; "
+              "BEGIN FOR i IN 1..n LOOP "
+              "BEGIN EXECUTE format('SELECT count(*) FROM %s WHERE 1 / (pad - 100) > -5', t) INTO c; "
+              "EXCEPTION WHEN division_by_zero THEN ok := ok + 1; END; "
+              "END LOOP; "
+              "EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; "
+              "RETURN ok || '|' || c; END $$; "
+              "CREATE OR REPLACE FUNCTION fv(t regclass) RETURNS bigint VOLATILE LANGUAGE plpgsql AS $$ "
+              "DECLARE n bigint; BEGIN "
+              "EXECUTE format('SELECT count(*) FROM %s WHERE id BETWEEN 1000001 AND 2000000 OR id BETWEEN 1 AND 25000', t) INTO n; "
+              "RETURN n; END $$")
+PARIOS = CSOFF + ["SET LOCAL max_parallel_workers_per_gather = 2", "SET LOCAL parallel_setup_cost = 0",
+                  "SET LOCAL parallel_tuple_cost = 0", "SET LOCAL min_parallel_index_scan_size = 0",
+                  "SET LOCAL min_parallel_table_scan_size = 0", "SET LOCAL enable_seqscan = off",
+                  "SET LOCAL enable_bitmapscan = off"]
+VQ = "SELECT count(*) FROM %t WHERE id BETWEEN 1000001 AND 2000000 OR id BETWEEN 1 AND 25000"
+EXPLAIN_RUN = "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+
+
+def test_premise_the_lifetime_queries_run_a_gather(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    got = " ".join(_plan_has(pgc_conn, PARLIFE + ["EXPLAIN (COSTS OFF) " + q], "Gather")
+                   for q in ("SELECT count(*) FROM %t WHERE pad % 7 <> 3",
+                             "SELECT count(*) FROM %t WHERE 1 / (pad - 100) > -5"))
+    expect.text(got, "yes yes", "premise: the lifetime checks' queries run a Gather")
+
+
+def test_a_loop_of_writes_each_followed_by_a_parallel_query_completes(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    pgc_conn.execute(LIFE_FUNCS)
+    expect.text(_same_tx(pgc_conn, PARLIFE + ["SELECT ins_cnt('%t', 2000)"]), "same",
+                "a loop of 2,000 writes, each followed by a parallel query, completes with heap's count")
+
+
+def test_failed_parallel_queries_in_exception_blocks_give_back_their_copies(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    pgc_conn.execute(LIFE_FUNCS)
+    expect.text(_same_tx(pgc_conn, PARLIFE + ["INSERT INTO %t VALUES (-3, -3)", "SELECT exc_loop('%t', 2000)"]),
+                "same",
+                "2,000 parallel queries that fail inside an EXCEPTION block after a write all fail cleanly, "
+                "and a parallel query then answers as heap does")
+
+
+def test_premise_the_volatile_function_runs_a_parallel_index_only_scan(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    got = " ".join(_plan_has(pgc_conn, PARIOS + [EXPLAIN_RUN + VQ], pattern)
+                   for pattern in ("Parallel Index Only Scan", "Workers Launched: [1-9]"))
+    expect.text(got, "yes yes",
+                "premise: the VOLATILE function's query is a parallel index-only scan that launches workers")
+
+
+def test_a_volatile_function_parallel_index_only_scan_sees_the_statement_s_earlier_rows(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    pgc_conn.execute(LIFE_FUNCS)
+    expect.text(_same_tx(pgc_conn, PARIOS + [
+        "INSERT INTO %t SELECT 1000000 + g, fv('%t') FROM generate_series(1, 5) g",
+        "SELECT string_agg(pad::text, ',' ORDER BY id) FROM %t WHERE id > 1000000"]), "same",
+                "a VOLATILE function's parallel index-only scan inside an INSERT sees the statement's earlier "
+                "rows, as heap does")
+
+
+def _crashes(pgc_cluster):
+    """-> how many backends the server log says died, or None when the log can't be
+    read: a blind count must not read as "no crashes"."""
+    try:
+        return (pgc_cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
+    except OSError:
+        return None
+
+
+def test_after_failed_parallel_queries_the_next_transaction_does_not_crash(pgc_cluster, pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    before = _crashes(pgc_cluster)
+    errors, counts, last = 0, 0, None
+    steps = [
+        ["INSERT INTO sv_pgcolumnar VALUES (-1, -1)", "SELECT count(*) FROM sv_pgcolumnar WHERE 1 / (pad - 100) > -5"],
+        ["INSERT INTO sv_pgcolumnar VALUES (-2, -2)", "SAVEPOINT a",
+         "SELECT count(*) FROM sv_pgcolumnar WHERE 1 / (pad - 100) > -5", "ROLLBACK TO a",
+         "SELECT count(*) FROM sv_pgcolumnar WHERE pad % 7 <> 3"],
+        ["INSERT INTO sv_pgcolumnar VALUES (-3, -3)", "SELECT count(*) FROM sv_pgcolumnar WHERE pad % 7 <> 3"],
+    ]
+    try:
+        with pgc_conn.cursor() as cur:
+            _session(cur)
+            for sql in ["SET pgcolumnar.enable_custom_scan = on"] + [s.replace("SET LOCAL", "SET") for s in PAR0]:
+                cur.execute(sql)
+            for tx in steps:
+                cur.execute("BEGIN")
+                for sql in tx:
+                    try:
+                        cur.execute(sql)
+                        if sql.startswith("SELECT count"):
+                            cur.fetchone()
+                            counts += 1
+                    except psycopg.errors.DivisionByZero:
+                        errors += 1
+                        if sql != tx[-1] and "SAVEPOINT a" not in tx:
+                            break
+                cur.execute("ROLLBACK")
+            cur.execute("SELECT 'end'")
+            last = cur.fetchone()[0]
+    except psycopg.Error as exc:
+        last = str(exc).splitlines()[0]
+    after = _crashes(pgc_cluster)
+    expect.text(f"{errors} {counts}", "2 2",
+                "premise: both parallel queries failed with division by zero, and both later counts ran")
+    crashes = "the server log could not be read" if before is None or after is None else f"{after - before} crashes"
+    expect.text(f"{crashes} {last}", "0 crashes end",
+                "after a parallel query fails at top level and in a savepoint, the next transaction's write and "
+                "parallel query run, and no backend crashes")
+
+
 # Without shared_preload_libraries (review of #2269). The workers' copy of the
 # registry lives in shared memory that exists only when pgcolumnar is preloaded.
 # Without the library preloaded, no session can load it: it defines settings fixed
