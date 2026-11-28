@@ -19,9 +19,10 @@
 
 #include "columnar.h"
 
-extern void PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber);
+extern void PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber, CommandId cid);
 
-extern bool PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber);
+extern bool PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber,
+												  Snapshot snapshot);
 
 extern void PgColumnarFlushAllDeleteVectors(void);
 extern void PgColumnarFlushDeleteVectorsOfSubXact(SubTransactionId subid);

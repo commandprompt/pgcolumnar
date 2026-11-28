@@ -633,6 +633,21 @@ true until the next version shipped.
 
 ### Fixed
 
+- A statement no longer reads, through an index, the rows it wrote itself
+  (#2247). A self-join `UPDATE` through index scans computed each row from
+  another row's new value instead of its old one, a self-join `DELETE` deleted
+  only every other row, an `INSERT ... SELECT` from its own table through an
+  index range scan inserted its rows again, and an `UPDATE` that joined the same
+  target row twice failed with `no row group covers it`. A columnar row has no
+  command id of its own, so the write buffer and the delete-mark buffer now
+  record the command that wrote each row and mark, and a fetch under an MVCC
+  snapshot hides what its own command or a later one wrote, as heap does. A
+  parallel worker gets a copy of that record from its leader, so a `STABLE`
+  function's parallel query filters as a serial one does. Sequential scans
+  still see such rows in four cases, now in docs/limitations.md and tracked in
+  #2267, part of #2064.
+  `test/statement_self_visibility.sh` and `test_statement_self_visibility.py`.
+
 - `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
   reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
   ends the line at the `\.` and loads the row, so `a<TAB>1200\.` then LF has

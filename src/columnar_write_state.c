@@ -17,6 +17,7 @@
 #include "columnar_metadata.h"
 #include "columnar_storage.h"
 #include "columnar_write_state.h"
+#include "columnar_cid_registry.h"
 #include "columnar_compat.h"
 #include "access/detoast.h"
 #include "access/htup_details.h"
@@ -408,6 +409,22 @@ struct PgColumnarWriteState
 	bool		haveReservation;
 	uint64		stripeId;
 	uint64		stripeFirstRowNumber;
+
+	/*
+	 * Which command wrote which rows of the buffered stripe (#2247), as runs:
+	 * run i covers rows cidRunFirst[i] up to the next run's first row, and was
+	 * written by cidRunCid[i]. Command ids only rise within one buffer, because
+	 * a statement's buffers are flushed when it ends, so the rows a snapshot
+	 * may see are always a prefix. writerCid is the id the table AM passed for
+	 * the row being written, or InvalidCommandId for a path that passes none
+	 * (a rewrite), whose rows are visible to every snapshot as before. In
+	 * writeContext; emptied with the stripe, kept with a kept flush (#1360).
+	 */
+	CommandId	writerCid;
+	int			nCidRuns;
+	int			cidRunsSize;
+	uint64	   *cidRunFirst;
+	CommandId  *cidRunCid;
 
 	/*
 	 * Every stripe id this write state has reserved, appended as it is reserved
@@ -899,6 +916,7 @@ PgColumnarGetWriteState(Relation rel)
 	oldContext = MemoryContextSwitchTo(PgColumnarWriteContext);
 
 	writeState = palloc0(sizeof(PgColumnarWriteState));
+	writeState->writerCid = InvalidCommandId;
 	writeState->relid = relid;
 	writeState->subid = subid;
 	/* CopyConstr (not CopyEntry) so attgenerated is preserved: the flush skips
@@ -1151,6 +1169,90 @@ row_value_bytes(PgColumnarWriteState *writeState, Datum *values, bool *nulls)
 }
 
 /*
+ * write_state_note_cid
+ *		Start a new command-id run at rowNumber when the writer's command id
+ *		differs from the last run's (#2247).
+ */
+static void
+write_state_note_cid(PgColumnarWriteState *writeState, uint64 rowNumber)
+{
+	int			n = writeState->nCidRuns;
+	MemoryContext old;
+
+	if (n > 0 && writeState->cidRunCid[n - 1] == writeState->writerCid)
+		return;
+	old = MemoryContextSwitchTo(writeState->writeContext);
+	if (n >= writeState->cidRunsSize)
+	{
+		int			newSize = writeState->cidRunsSize == 0 ? 4 : writeState->cidRunsSize * 2;
+
+		writeState->cidRunFirst = grow_uint64_array(writeState->cidRunFirst,
+													writeState->cidRunsSize, newSize);
+		if (writeState->cidRunCid == NULL)
+			writeState->cidRunCid = palloc(sizeof(CommandId) * newSize);
+		else
+			writeState->cidRunCid = repalloc(writeState->cidRunCid,
+											 sizeof(CommandId) * newSize);
+		writeState->cidRunsSize = newSize;
+	}
+	writeState->cidRunFirst[n] = rowNumber;
+	writeState->cidRunCid[n] = writeState->writerCid;
+	writeState->nCidRuns = n + 1;
+	MemoryContextSwitchTo(old);
+}
+
+/*
+ * write_state_row_cid
+ *		The command id that wrote a buffered row: the last run starting at or
+ *		before it. Runs are in row order, so a binary search finds it.
+ */
+static CommandId
+write_state_row_cid(PgColumnarWriteState *ws, uint64 rowNumber)
+{
+	int			lo = 0;
+	int			hi = ws->nCidRuns - 1;
+	int			found = -1;
+
+	while (lo <= hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (ws->cidRunFirst[mid] <= rowNumber)
+		{
+			found = mid;
+			lo = mid + 1;
+		}
+		else
+			hi = mid - 1;
+	}
+	return found < 0 ? InvalidCommandId : ws->cidRunCid[found];
+}
+
+/*
+ * PgColumnarWriteRowCid
+ *		PgColumnarWriteRow for the table AM, which knows the writing command's
+ *		id and records it for the row (#2247).
+ */
+uint64
+PgColumnarWriteRowCid(PgColumnarWriteState *writeState, Relation rel,
+					  Datum *values, bool *nulls, CommandId cid)
+{
+	volatile uint64 rowNumber = 0;
+
+	writeState->writerCid = cid;
+	PG_TRY();
+	{
+		rowNumber = PgColumnarWriteRow(writeState, rel, values, nulls);
+	}
+	PG_FINALLY();
+	{
+		writeState->writerCid = InvalidCommandId;
+	}
+	PG_END_TRY();
+	return rowNumber;
+}
+
+/*
  * PgColumnarWriteRow
  *		Append one row to the current stripe, opening a new chunk group when
  *		the current one is full and flushing the stripe when it reaches the
@@ -1220,6 +1322,7 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 	}
 
 	rowNumber = writeState->stripeFirstRowNumber + writeState->stripeRowCount;
+	write_state_note_cid(writeState, rowNumber);
 
 	if (group == NULL ||
 		group->rowCount >= (uint64) writeState->chunkGroupRowLimit)
@@ -1433,7 +1536,7 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
  *		to call while the caller holds an index buffer lock.
  */
 bool
-PgColumnarBufferedRowByNumber(Relation rel, uint64 rowNumber,
+PgColumnarBufferedRowByNumber(Relation rel, uint64 rowNumber, Snapshot snapshot,
 							Datum *values, bool *nulls)
 {
 	Oid			relid = RelationGetRelid(rel);
@@ -1452,6 +1555,14 @@ PgColumnarBufferedRowByNumber(Relation rel, uint64 rowNumber,
 		if (rowNumber < ws->stripeFirstRowNumber ||
 			rowNumber >= ws->stripeFirstRowNumber + ws->stripeRowCount)
 			continue;
+
+		/*
+		 * A row written by this snapshot's own command, or a later one, is not
+		 * there for it (#2247). An MVCC snapshot only: the unique check's dirty
+		 * snapshot and a trigger's re-fetch under SnapshotAny see every row.
+		 */
+		if (!PgColumnarCidVisible(snapshot, write_state_row_cid(ws, rowNumber)))
+			return false;
 
 		offset = rowNumber - ws->stripeFirstRowNumber;
 
@@ -3704,6 +3815,7 @@ reset_stripe(PgColumnarWriteState *writeState)
 	writeState->stripeRowCount = 0;
 	writeState->stripeValueBytes = 0;
 	writeState->haveReservation = false;
+	writeState->nCidRuns = 0;
 
 	/*
 	 * The sketch registers belong to the buffer, so they are cleared with it and
@@ -4068,6 +4180,27 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 	PG_END_TRY();
 
 	/*
+	 * Record which command wrote each run of these rows (#2247), so a fetch
+	 * can hide them from a snapshot of that command or an earlier one. Under
+	 * the subtransaction the catalog rows went under, so an abort of it
+	 * forgets them with the rows.
+	 */
+	{
+		int			i;
+		uint64		end = writeState->stripeFirstRowNumber + rowCount;
+
+		for (i = 0; i < writeState->nCidRuns; i++)
+		{
+			uint64		first = writeState->cidRunFirst[i];
+			uint64		next = (i + 1 < writeState->nCidRuns)
+				? writeState->cidRunFirst[i + 1] : end;
+
+			PgColumnarCidRegisterRows(writeState->storageId, first, next - first,
+									  writeState->cidRunCid[i]);
+		}
+	}
+
+	/*
 	 * The column extent (#1304 option 5) folds this group's whole-chunk zone
 	 * maps; the transaction writes its row at pre-commit. The base table only:
 	 * a projection's writer has its own tuple descriptor, and nothing reads a
@@ -4221,6 +4354,7 @@ pgcolumnar_build_write_state(Oid relid, TupleDesc srcTupdesc, uint64 storageId,
 	oldContext = MemoryContextSwitchTo(PgColumnarWriteContext);
 
 	ws = palloc0(sizeof(PgColumnarWriteState));
+	ws->writerCid = InvalidCommandId;
 	ws->relid = relid;
 	ws->subid = GetCurrentSubTransactionId();
 	ws->tupdesc = CreateTupleDescCopy(srcTupdesc);

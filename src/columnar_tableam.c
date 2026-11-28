@@ -16,6 +16,7 @@
 #include "columnar_customscan.h"
 #include "columnar_sink.h"
 #include "columnar_delete_vector.h"
+#include "columnar_cid_registry.h"
 #include "columnar_metadata.h"
 #include "columnar_reader.h"
 #include "columnar_storage.h"
@@ -484,6 +485,7 @@ pgcolumnar_slot_decode_upto(TupleTableSlot *slot, int natts)
 									 cslot->rowNumber, slot->tts_values,
 									 slot->tts_isnull, needed))
 		(void) PgColumnarBufferedRowByNumber(cslot->rel, cslot->rowNumber,
+										   cslot->snapshot,
 										   slot->tts_values, slot->tts_isnull);
 
 	MemoryContextDelete(scratch);
@@ -1254,8 +1256,8 @@ pgcolumnar_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid,
 	 */
 	PgColumnarLockUniqueKeys(rel, slot);
 
-	rowNumber = PgColumnarWriteRow(writeState, rel, slot->tts_values,
-								 slot->tts_isnull);
+	rowNumber = PgColumnarWriteRowCid(writeState, rel, slot->tts_values,
+									slot->tts_isnull, cid);
 
 	/* fan the row out to every additional projection of this table (gap 26) */
 	PgColumnarProjectionFanoutRow(rel, writeState, rowNumber, slot->tts_values,
@@ -1292,8 +1294,8 @@ pgcolumnar_multi_insert(Relation rel, TupleTableSlot **slots, int nslots,
 
 		slot_getallattrs(slots[i]);
 		PgColumnarLockUniqueKeys(rel, slots[i]);	/* issue #5 */
-		rowNumber = PgColumnarWriteRow(writeState, rel, slots[i]->tts_values,
-									 slots[i]->tts_isnull);
+		rowNumber = PgColumnarWriteRowCid(writeState, rel, slots[i]->tts_values,
+										slots[i]->tts_isnull, cid);
 		PgColumnarProjectionFanoutRow(rel, writeState, rowNumber,
 									slots[i]->tts_values, slots[i]->tts_isnull);
 		PgColumnarWriteStateAfterAppend(writeState);	/* #1403 review */
@@ -2148,7 +2150,7 @@ pgcolumnar_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid,
 	 */
 	if (PgColumnarRowIsLive(rel, snapshot, rowNumber))
 		PgColumnarSlotStoreDeferred(slot, rel, snapshot, rowNumber);
-	else if (PgColumnarBufferedRowByNumber(rel, rowNumber,
+	else if (PgColumnarBufferedRowByNumber(rel, rowNumber, snapshot,
 										 slot->tts_values, slot->tts_isnull))
 		ExecStoreVirtualTuple(slot);
 	else if (snapshot != NULL && snapshot->snapshot_type == SNAPSHOT_DIRTY &&
@@ -2223,7 +2225,7 @@ pgcolumnar_tuple_fetch_row_version(Relation rel, ItemPointer tid,
 	 */
 	if (!PgColumnarReadRowByNumber(rel, snapshot, rowNumber,
 								 slot->tts_values, slot->tts_isnull) &&
-		!PgColumnarBufferedRowByNumber(rel, rowNumber,
+		!PgColumnarBufferedRowByNumber(rel, rowNumber, snapshot,
 									 slot->tts_values, slot->tts_isnull))
 		return false;
 
@@ -2287,11 +2289,30 @@ pgcolumnar_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 
 	values = palloc(sizeof(Datum) * Max(natts, 1));
 	nulls = palloc(sizeof(bool) * Max(natts, 1));
-	buffered = PgColumnarBufferedRowByNumber(rel, rowNumber, values, nulls);
+	buffered = PgColumnarBufferedRowByNumber(rel, rowNumber, snapshot, values, nulls);
+	if (buffered)
+	{
+		pfree(values);
+		pfree(nulls);
+		return true;
+	}
+
+	/*
+	 * Buffered, but written by this snapshot's own command or a later one
+	 * (#2247): not visible, and this transaction's, which is what core reads
+	 * xmin next to learn. Heap answers the same for its own row of the
+	 * current command.
+	 */
+	if (PgColumnarBufferedRowByNumber(rel, rowNumber, SnapshotAny, values, nulls))
+	{
+		pfree(values);
+		pfree(nulls);
+		if (slot->tts_ops == &PgColumnarSlotOps)
+			((PgColumnarSlot *) slot)->xmin = GetCurrentTransactionId();
+		return false;
+	}
 	pfree(values);
 	pfree(nulls);
-	if (buffered)
-		return true;
 
 	if (slot->tts_ops == &PgColumnarSlotOps)
 		((PgColumnarSlot *) slot)->xmin =
@@ -2421,7 +2442,8 @@ pgcolumnar_tuple_complete_speculative(Relation rel, TupleTableSlot *slot,
 	 * reads this transaction's rows.
 	 */
 	PgColumnarFlushWriteStateForRelation(RelationGetRelid(rel));
-	PgColumnarMarkRowDeleted(rel, PgColumnarItemPointerToRowNumber(&slot->tts_tid));
+	PgColumnarMarkRowDeleted(rel, PgColumnarItemPointerToRowNumber(&slot->tts_tid),
+							 GetCurrentCommandId(false));
 }
 
 /*
@@ -2453,7 +2475,7 @@ pgcolumnar_tuple_delete(COLUMNAR_TUPLE_DELETE_ARGS)
 #endif
 		PgColumnarSerializeRowNow(rel, rowNumber);
 
-	PgColumnarMarkRowDeleted(rel, rowNumber);
+	PgColumnarMarkRowDeleted(rel, rowNumber, cid);
 	return TM_Ok;
 }
 
@@ -2495,7 +2517,7 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 	if (PgColumnarHasUniqueIndex(rel))
 		PgColumnarSerializeRowNow(rel, oldRowNumber);
 
-	PgColumnarMarkRowDeleted(rel, oldRowNumber);
+	PgColumnarMarkRowDeleted(rel, oldRowNumber, cid);
 
 	writeState = PgColumnarGetWriteState(rel);
 	slot_getallattrs(slot);
@@ -2503,8 +2525,8 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 	/* the new row version is a fresh insert: serialize its unique keys too */
 	PgColumnarLockUniqueKeys(rel, slot);		/* issue #5 */
 
-	rowNumber = PgColumnarWriteRow(writeState, rel, slot->tts_values,
-								 slot->tts_isnull);
+	rowNumber = PgColumnarWriteRowCid(writeState, rel, slot->tts_values,
+									slot->tts_isnull, cid);
 
 	/*
 	 * The new version is a new row number. Projections store that number as
@@ -3028,6 +3050,7 @@ pgcolumnar_xact_callback(XactEvent event, void *arg)
 			{
 				PgColumnarDiscardAllPendingWrites();
 				PgColumnarDiscardAllDeleteVectors();
+				PgColumnarCidRegistryReset();
 			}
 
 			/*
@@ -3046,6 +3069,7 @@ pgcolumnar_xact_callback(XactEvent event, void *arg)
 		case XACT_EVENT_PARALLEL_ABORT:
 			PgColumnarDiscardAllPendingWrites();
 			PgColumnarDiscardAllDeleteVectors();
+			PgColumnarCidRegistryReset();
 			PgColumnarDiscardFetchCache();
 			PgColumnarExtentAtXactEnd();
 			PgColumnarRewriteTurnstileAtXactEnd();
@@ -3074,6 +3098,7 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 		case SUBXACT_EVENT_ABORT_SUB:
 			PgColumnarWriteStateDiscardSubXact(mySubid);
 			PgColumnarDeleteVectorDiscardSubXact(mySubid);
+			PgColumnarCidRegistryDiscardSubXact(mySubid);
 
 			/*
 			 * The abort flips the xmin verdict on any group the savepoint
@@ -3088,6 +3113,7 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 		case SUBXACT_EVENT_COMMIT_SUB:
 			PgColumnarWriteStatePromoteSubXact(mySubid, parentSubid);
 			PgColumnarDeleteVectorPromoteSubXact(mySubid, parentSubid);
+			PgColumnarCidRegistryPromoteSubXact(mySubid, parentSubid);
 			break;
 		default:
 			break;
@@ -3127,6 +3153,29 @@ pgcolumnar_executor_start(QueryDesc *queryDesc, int eflags)
 	/* an entry that is not a table has no marks, whatever its relid */
 	foreach(lc, queryDesc->plannedstmt->rtable)
 		PgColumnarFlushDeleteVectorForRelid(((RangeTblEntry *) lfirst(lc))->relid);
+
+	/*
+	 * A plan that may run in parallel workers (#2247, review of #2269):
+	 * write every buffer of its tables first, so the registry is complete
+	 * and nothing the workers could need stays in this backend's memory,
+	 * then publish one copy of the registry for the workers of this query.
+	 * Both happen before standard_ExecutorStart enters parallel mode, which
+	 * forbids the catalog writes of a flush. A parallel query writes
+	 * nothing, so the registry does not change until it ends, and this one
+	 * copy serves all of its Gathers, rescans included. pgcolumnar_executor_end
+	 * detaches it.
+	 */
+	if (queryDesc->plannedstmt->parallelModeNeeded)
+	{
+		foreach(lc, queryDesc->plannedstmt->rtable)
+		{
+			RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+			if (rte->rtekind == RTE_RELATION && OidIsValid(rte->relid))
+				PgColumnarFlushWriteStateForRelation(rte->relid);
+		}
+		PgColumnarCidRegistryPublish(queryDesc, queryDesc->snapshot);
+	}
 
 	if (prev_executor_start_hook)
 		prev_executor_start_hook(queryDesc, eflags);
@@ -3202,6 +3251,9 @@ pgcolumnar_executor_end(QueryDesc *queryDesc)
 		prev_executor_end_hook(queryDesc);
 	else
 		standard_ExecutorEnd(queryDesc);
+
+	/* its workers have finished: detach this query's registry copy (#2247) */
+	PgColumnarCidRegistryUnpublish(queryDesc);
 
 	/* A top-level statement ended: its object-store pins end with it. */
 	if (pgcolumnar_exec_depth == 0)
@@ -5358,7 +5410,11 @@ _PG_init(void)
 	 * without preload simply loses the daemon.
 	 */
 	if (process_shared_preload_libraries_in_progress)
+	{
 		PgColumnarAutovacuumRegister();
+		/* the slots a parallel leader publishes its own-write registry in (#2247) */
+		PgColumnarCidRegistryShmemRegister();
+	}
 
 	RegisterXactCallback(pgcolumnar_xact_callback, NULL);
 	RegisterSubXactCallback(pgcolumnar_subxact_callback, NULL);

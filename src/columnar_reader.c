@@ -16,6 +16,7 @@
 #include "columnar_encdesc.h"
 
 #include "columnar_delete_vector.h"
+#include "columnar_cid_registry.h"
 #include "columnar_metadata.h"
 #include "columnar_reader.h"
 #include "columnar_storage.h"
@@ -4942,7 +4943,14 @@ pgcolumnar_fetch_row(Relation rel, Snapshot snapshot, uint64 rowNumber,
 	 * the reset events that keep a memo HIT sound.
 	 */
 	rg = pgcolumnar_lookup_row_group(storageId, metaSnapshot, rowNumber);
-	if (rg == NULL)
+
+	/*
+	 * metaSnapshot sees every group this transaction flushed, including the
+	 * ones its own command flushed a moment ago. The registry knows which
+	 * command wrote the row, and hides it from a snapshot of that command or
+	 * an earlier one, as heap's cmin does (#2247).
+	 */
+	if (rg == NULL || PgColumnarCidRowHidden(storageId, rowNumber, snapshot))
 	{
 		MemoryContextSwitchTo(oldContext);
 		MemoryContextDelete(tmp);
@@ -4971,15 +4979,23 @@ pgcolumnar_fetch_row(Relation rel, Snapshot snapshot, uint64 rowNumber,
 													   rg->groupNumber,
 													   metaSnapshot);
 		ListCell   *mlc;
-		bool		deleted = PgColumnarDeleteVectorBufferedDeleted(rel, rowNumber);
+		bool		deleted = PgColumnarDeleteVectorBufferedDeleted(rel, rowNumber, snapshot);
+		bool		flushed = false;
 
 		foreach(mlc, maskList)
 		{
 			DeleteVectorMetadata *rm = (DeleteVectorMetadata *) lfirst(mlc);
 
 			if (dv_row_deleted(rm->bitmap, rm->bitmapLen, rowInGrp))
-				deleted = true;
+				flushed = true;
 		}
+
+		/*
+		 * A flushed mark that this snapshot's own command, or a later one, made
+		 * does not delete the row for it (#2247).
+		 */
+		if (flushed && !PgColumnarCidMarkHidden(storageId, rowNumber, snapshot))
+			deleted = true;
 		if (deleted)
 		{
 			MemoryContextSwitchTo(oldContext);

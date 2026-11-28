@@ -928,6 +928,33 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   long as the other session holds the lock, and so does the statement. A serial
   flush would not wait at all.
 
+## A transaction's own changes, read by a sequential scan
+
+A statement must not see the rows it writes, and a cursor must not see changes
+that later commands of the same transaction make. Index scans, index-only scans
+and the fetches that `UPDATE` and `DELETE` make by row follow this rule, as heap
+does (#2247). Sequential scans do not yet follow it in four cases. Each gives
+wrong results, and no error:
+
+- A cursor that reads the table with a sequential scan returns rows that a
+  later `INSERT`, `UPDATE` or `DELETE` in the same transaction wrote. This holds
+  with the custom scan on and off.
+- The outer query of a `WITH` clause that holds a `DELETE` or an `UPDATE` sees
+  the changes that the `WITH` clause made.
+- A sequential scan on the inner side of a nested loop starts again for each
+  outer row. When the statement fills a stripe and writes it out part-way, the
+  next restart sees that stripe. The row just after the stripe boundary can then
+  match both the old and the new version of a row.
+- A `STABLE` function runs its query under the snapshot of the statement that
+  calls it. When that statement writes the table and the function reads it
+  with a sequential scan, the function sees rows the statement has already
+  changed. The answer is the same whether the function's query runs in
+  parallel workers or not.
+
+This is tracked in #2267, part of #2064. Until it is fixed, read the table
+through an index in these statements. For the third case, a plan that reads the
+inner side once also avoids it, such as a hash join or a `Materialize` node.
+
 ## Row locking
 
 `SELECT ... FOR UPDATE`, `FOR SHARE` and `FOR KEY SHARE` are not implemented on a

@@ -7713,13 +7713,62 @@ The pytest twin of `test/recovery_minimal_wal.sh` (#1341), every check by the sh
 
 ## 119. test_statement_self_visibility.py: a statement does not see its own writes
 
-The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
+The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. It also holds #2247's checks of a statement reading, through an index, the rows it wrote; see the table. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_a_statement_does_not_see_its_own_writes` | the four shapes run to completion and answer as heap does, and the mid-statement flush |
+| `test_premise_the_self_join_runs_as_a_nested_loop` | #2247 premise: the self-join UPDATE plans as a nested loop over index scans (custom scan on and off) |
+| `test_a_self_join_update_through_index_scans` | #2247: a self-join UPDATE through index scans reads each row's old value (custom scan on and off) |
+| `test_premise_the_self_join_runs_as_a_merge_join` | #2247 premise: the self-join UPDATE plans as a merge join |
+| `test_a_self_join_update_through_a_merge_join` | #2247: the same through a merge join |
+| `test_a_self_join_delete_through_index_scans` | #2247: a self-join DELETE through index scans deletes the rows heap deletes |
+| `test_an_insert_select_through_an_index_range_scan` | #2247: an INSERT SELECT from its own table through an index range scan inserts each row once, bounded so a leak cannot loop (stripe_row_limit 150000 and 1000) |
+| `test_a_correlated_subquery_through_an_index_scan` | #2247: an UPDATE with a correlated subquery through an index scan reads the old value |
+| `test_premise_the_subquery_runs_as_an_index_only_scan` | #2247 premise: the correlated subquery plans as an index-only scan on the covering index |
+| `test_a_correlated_subquery_through_an_index_only_scan` | #2247: the same through the index-only scan |
+| `test_a_self_join_chained_across_row_groups` | #2247: a self-join UPDATE chained across row groups (ids 5, 10005, 20005, 30005) |
+| `test_a_big_self_join_flushed_part_way` | #2247: a 3000-row self-join UPDATE with row groups of 1000 rows flushed part-way |
+| `test_a_big_self_join_fully_buffered` | #2247: the same with every new row still in the write buffer |
+| `test_a_self_join_after_an_earlier_update` | #2247: after an earlier UPDATE in the transaction, a self-join UPDATE sees it but not its own rows |
+| `test_a_target_row_joined_twice` | #2247: an UPDATE that joins the same target row twice through an index changes it once |
+| `test_a_cursor_through_an_index_scan` | #2247: a cursor fetched after a later UPDATE reads the old values through an index scan |
+| `test_a_self_join_calling_a_function_that_reads_the_table` | #2247: a self-join UPDATE that calls a function reading the table, so the function's statement writes the outer statement's rows and delete marks to the catalog part-way, still reads each row's old value |
+| `test_a_before_row_trigger_sees_earlier_rows` | #2247: a BEFORE ROW trigger that inserts into its own table, so the write buffer holds runs from several commands, sees the statement's earlier rows and its own earlier rows |
+| `test_guard_a_duplicate_key_in_one_statement` | #2247 guard: a duplicate key inserted twice in one statement is still refused (the unique check's dirty snapshot sees every buffered row) |
+| `test_guard_an_after_row_trigger_reads_old_and_new` | #2247 guard: an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW (the re-fetch under SnapshotAny sees every row) |
+| `test_a_mark_under_a_rolled_back_savepoint_is_forgotten` | review of #2269, S1: a delete mark made under a savepoint that rolled back is forgotten, read through a cursor after a later DELETE of the same row |
+| `test_a_mark_under_a_released_savepoint_goes_with_its_parent` | review of #2269, R2: a delete mark made under a released savepoint goes with its parent's rollback |
+| `test_on_conflict_do_nothing_with_a_duplicate_in_one_statement[iso]` | review of #2269, R3: `INSERT ... VALUES (1), (1) ON CONFLICT DO NOTHING` keeps one row at REPEATABLE READ and at SERIALIZABLE |
+| `test_the_first_row_flushed_after_an_earlier_run_is_hidden` | review of #2269, R4: the first row a statement flushes, just after an earlier statement's run, is hidden from that statement |
+| `test_a_trigger_does_not_read_its_own_rows_in_the_outer_buffer` | review of #2269, R5: a BEFORE ROW trigger's INSERT ... SELECT does not read rows it wrote into the outer statement's buffer |
+| `test_premise_the_function_index_query_runs_in_parallel` | premise: the STABLE function's index query launches parallel workers |
+| `test_a_stable_function_parallel_index_scan_inside_an_update` | a STABLE function's parallel index scan inside an UPDATE that moves rows out of its range sees the rows as they were, as heap does |
+| `test_a_stable_function_parallel_index_scan_inside_a_cte_delete` | the same inside a DELETE in a WITH clause |
+| `test_a_stable_function_parallel_index_scan_in_a_cursor` | the same in a cursor fetched after a later DELETE |
+| `test_premise_the_function_sequential_query_runs_in_parallel[setting]` | premise: the STABLE function's sequential query launches parallel workers, with parallel costs at 0 and with PostgreSQL's default settings on a 3,000,000-row table |
+| `test_a_stable_function_parallel_sequential_scan_inside_an_update[setting]` | a STABLE function's parallel sequential scan inside an UPDATE answers as it does serially (the heap answer is #2267's) |
+| `test_a_stable_function_parallel_sequential_scan_inside_a_cte_delete[setting]` | the same inside a DELETE in a WITH clause |
+| `test_a_stable_function_parallel_sequential_scan_in_a_cursor[setting]` | the same in a cursor fetched after a later DELETE |
+| `test_without_preload_a_parallel_index_scan_is_refused_or_right` | review of #2269: on a private cluster started without pgcolumnar in `shared_preload_libraries`, the STABLE function's parallel index scan inside an UPDATE is refused or answers as heap does, never wrongly; today the library refuses to load with `cannot create PGC_POSTMASTER variables after startup` |
+| `test_a_loop_of_parallel_queries_after_a_write_completes` | second review of #2269: after a write in the transaction, a PL/pgSQL loop of 1,000 parallel queries completes with heap's total, so no registry copy is left attached per query |
+| `test_premise_the_rescanned_subquery_runs_a_gather` | premise: the correlated subquery below plans as a Gather |
+| `test_a_rescanned_gather_after_a_write_completes` | after a write, a Gather rescanned 1,000 times completes with heap's sum |
+| `test_a_write_then_a_parallel_query_leaks_no_segment` | a committed transaction with a write and two parallel queries gets no `resource was not closed` or `dynamic shared memory leak` warning, read through the connection's notices |
+| `test_premise_the_lifetime_queries_run_a_gather` | third review of #2269, premise: the count and the failing count below each plan as a Gather |
+| `test_a_loop_of_writes_each_followed_by_a_parallel_query_completes` | 2,000 iterations of a write then a parallel query complete with heap's count, so each query detaches its copy at ExecutorEnd (W) |
+| `test_failed_parallel_queries_in_exception_blocks_give_back_their_copies` | after a write, 2,000 parallel queries that fail with division by zero inside an EXCEPTION block all fail cleanly, and a parallel query then answers as heap does, so a subtransaction abort detaches its copies (E) |
+| `test_premise_the_volatile_function_runs_a_parallel_index_only_scan` | premise: the VOLATILE function's query is a Parallel Index Only Scan that launches workers |
+| `test_a_volatile_function_parallel_index_only_scan_sees_the_statement_s_earlier_rows` | the function, called for each row of an INSERT, sees the statement's earlier rows as heap does, so the leader writes its buffered rows before it publishes (V) |
+| `test_after_failed_parallel_queries_the_next_transaction_does_not_crash` | a parallel query fails at top level and in a savepoint, then a new transaction writes and runs a parallel query; the server log gains no `terminated by signal`, so the transaction's end detaches what is left (A); it also checks that both divisions by zero and both later counts happened |
+| `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
+| `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
+| `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |
+| `test_guard_an_insert_select_by_sequential_scan` | #2247 guard: an INSERT SELECT from its own table by sequential scan inserts each row once |
+| `test_guard_premise_the_count_runs_in_parallel_workers` | #2247 guard premise: the count after the transaction's writes launches parallel workers (custom scan on and off) |
+| `test_guard_a_parallel_scan_after_flushed_writes` | #2247 guard: that parallel scan sees the transaction's flushed writes, as heap does (custom scan on and off) |
 
 ## 120. test_maintenance_rollback.py: a maintenance function that rolls back leaves the table as it was
 

@@ -2771,4 +2771,23 @@ guard_tests 910
 # cluster_tests 6662 -> 6663 for #2191 in test_parallel_export_parquet.py:
 # test_pexport_the_documented_worker_counts_fit_a_default_server, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6663
+# cluster_tests 6626 -> 6679 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
+# (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
+# guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
+# AFTER ROW trigger, and parallel premises and scans by the custom scan off and on), and for the review of #2269
+# the probes S1, R2, R3 (two isolation levels), R4 and R5 (6), a STABLE function's parallel index scan (premise
+# and 3) and its parallel sequential scan against serial (premise and 3, at two settings: 8), a parallel index scan without
+# shared_preload_libraries (1), and one registry copy per parallel query (a loop of parallel queries, a
+# rescanned Gather with its premise, and no leak warning: 4), one test per check,
+# by collection of that file (1 on main 503f05f9, 54 here),
+# restated after the merges of origin/main 1a126cdb, 02d7c185, 503f05f9 and 1fa34ea1 (6538 -> 6586 before them;
+# 6639 + 53 = 6692 after #2161; 6647 + 53 = 6700 after main f321a612).
+# cluster_tests 6700 -> 6706 for the third review of #2269 in test_statement_self_visibility.py: the copy's lifetime,
+# a premise that the queries run a Gather, W (a write before each of 2,000 parallel queries), E (2,000 failing
+# parallel queries in EXCEPTION blocks), a premise that the function runs a parallel index-only scan, V (that scan
+# inside the INSERT sees the statement's earlier rows) and A (no crash after failed parallel queries), by collection
+# of that file (54 -> 60).
+# restated after the merge of origin/main 899f788f (#2277): 6657 + 59 = 6716.
+# restated after the merge of origin/main dd3dca87 (#2275): 6662 + 59 = 6721.
+# restated after the merge of origin/main 63036dd3 (#2278): 6663 + 59 = 6722.
+cluster_tests 6722

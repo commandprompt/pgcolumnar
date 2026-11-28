@@ -765,6 +765,8 @@ typedef struct PgColumnarWriteState PgColumnarWriteState;
 extern PgColumnarWriteState *PgColumnarGetWriteState(Relation rel);
 extern uint64 PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 							   Datum *values, bool *nulls);
+extern uint64 PgColumnarWriteRowCid(PgColumnarWriteState *writeState, Relation rel,
+								  Datum *values, bool *nulls, CommandId cid);
 extern void PgColumnarProjectionFanoutRow(Relation rel, PgColumnarWriteState *baseWs,
 										uint64 rowNumber, Datum *values,
 										bool *nulls);
