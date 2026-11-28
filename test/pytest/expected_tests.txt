@@ -2750,4 +2750,7 @@ guard_tests 910
 # test_parallel_copy_storage_row_gone_during_the_load_premise and
 # test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6639
+# cluster_tests 6639 -> 6640 for #2240: one test in test_projection_drop_column.py, a column dropped by ALTER
+# TYPE ... DROP ATTRIBUTE ... CASCADE or DROP DOMAIN ... CASCADE takes its projections with it, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6640
