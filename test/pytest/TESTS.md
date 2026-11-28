@@ -15345,7 +15345,9 @@ Removal proof, PG 17 and PG 18, each in both harnesses with the same names:
 | the sequential scan's guard call dropped | the sequential refusal (`NULL:NULL,2:two`) | the same |
 | the index fetch's guard call dropped | the fetch refusal (`NULL:NULL`) | the same |
 | the guard without its `byte_length` condition | the two no-column-table arms | the same 2 |
-| the guard refusing every group that has chunks | 15 red | the same 15 |
+| the guard refusing every group that has chunks | 23 red | the same 23 |
+| the flush inserting the row_group row first, with the hold before the chunks (#2266 review B1) | the four part-4 arms: the upserts never wait and fail with XX001 | the same 4 |
+| the guard refusing a group with fewer chunks than the table has columns (#2266 review B2) | the seq and index-fetch arms of the added-column table | the same 2 |
 
 Two mutants pass: the flag cleared in the `ProcGlobal` mirror but not in `MyProc` (snapshots and horizons read only the mirror, and core clears both at transaction end), and every status flag cleared instead of PROC_IN_VACUUM alone (for a VACUUM a statement runs the flags are exactly PROC_IN_VACUUM; only an autovacuum worker would also lose PROC_IS_AUTOVACUUM, and no test drives one into a retirement).
 

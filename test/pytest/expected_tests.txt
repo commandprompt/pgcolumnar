@@ -2647,4 +2647,7 @@ guard_tests 910
 # catalog rows meanwhile, with no 23505 on free_space_pkey and the free-space accounting intact: two variants
 # of premises, retirement, free_space overlap and sum, the next VACUUM and the table's rows, and a crash
 # count), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6435
+# cluster_tests 6435 -> 6452 for #2266's review: seventeen more tests in test_vacuum_retire_visibility.py, five
+# for a table given a column after its data (test_*added_column*) and twelve for an upsert during another
+# session's flush (test_*upsert_*), by collection over the cluster files.
+cluster_tests 6452
