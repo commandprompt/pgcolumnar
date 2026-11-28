@@ -974,25 +974,48 @@ PgColumnarGetWriteState(Relation rel)
 /*
  * PgColumnarEnsureStorageRow
  *		Create the native storage catalog row for `rel` if it does not exist,
- *		with exactly the metadata a normal flush would record. Used by
- *		pgcolumnar.parallel_copy's coordinator to pre-create and commit the storage
- *		row before launching concurrent loaders, so each loader (with
- *		pgcolumnar_bulk_parallel_writer set) sees it committed and skips the
- *		storage-row creation lock. Idempotent -- PgColumnarInsertNativeStorageRow
- *		returns if the row already exists.
+ *		and one for each of its projections, with exactly the metadata a normal
+ *		flush would record. Used by pgcolumnar.parallel_copy's coordinator to
+ *		pre-create and commit the storage rows before launching concurrent
+ *		loaders, so each loader (with pgcolumnar_bulk_parallel_writer set) sees
+ *		them committed and skips the storage-row creation lock. Idempotent --
+ *		PgColumnarInsertNativeStorageRow returns if the row already exists.
+ *
+ *		THE PROJECTIONS NEED IT AS MUCH AS THE BASE (#2161). Every loader fans
+ *		its rows out to each projection, and a projection's flush records that
+ *		projection's own storage row. A projection that holds no rows yet has
+ *		none, so the first loader to flush it took the creation lock, and its
+ *		PREPARE TRANSACTION kept the lock. The next loader to flush the same
+ *		projection waited for it, while the coordinator waited for that loader
+ *		before it would COMMIT PREPARED. A prepared transaction never waits, so
+ *		the deadlock detector saw no cycle and the load ran until cancelled.
+ *		A projection's writer takes its row group limit from the base write
+ *		state, so its row gets the base's limit, as a one-loader load records.
  */
 void
 PgColumnarEnsureStorageRow(Relation rel)
 {
 	NativeStorageMetadata s;
 	int			stripeRowLimit = pgcolumnar_effective_stripe_row_limit(RelationGetRelid(rel));
+	uint64		baseStorageId = PgColumnarStorageId(rel);
+	ListCell   *lc;
 
-	s.storageId = PgColumnarStorageId(rel);
+	s.storageId = baseStorageId;
 	s.relationOid = RelationGetRelid(rel);
 	s.formatVersion = COLUMNAR_NATIVE_FORMAT_VERSION;
 	s.vectorLength = COLUMNAR_NATIVE_VECTOR_LENGTH;
 	s.rowGroupLimit = stripeRowLimit;
 	PgColumnarInsertNativeStorageRow(&s);
+
+	foreach(lc, PgColumnarListProjections(baseStorageId))
+	{
+		PgColumnarProjection *p = (PgColumnarProjection *) lfirst(lc);
+
+		if (p->projectionId == 0)
+			continue;			/* the base projection is the table's own storage */
+		s.storageId = p->projStorageId;
+		PgColumnarInsertNativeStorageRow(&s);
+	}
 }
 
 /*
