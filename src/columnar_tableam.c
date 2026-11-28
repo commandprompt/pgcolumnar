@@ -229,6 +229,7 @@ pgcolumnar_record_rewritten(Oid relid)
 
 static object_access_hook_type prev_object_access_hook = NULL;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+static ExecutorStart_hook_type prev_executor_start_hook = NULL;
 static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 static ExecutorRun_hook_type prev_executor_run_hook = NULL;
 static ExecutorFinish_hook_type prev_executor_finish_hook = NULL;
@@ -3032,6 +3033,46 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 }
 
 /* -------------------------------------------------------------------------
+ * executor start hook: flush delete marks before a statement reads (#2169)
+ *
+ * An index-only scan trusts a block's all-visible bit and returns the index
+ * entry without asking the table AM, so a row this backend marked deleted but
+ * has not flushed is invisible to it once a concurrent VACUUM has set the bit
+ * again. VACUUM cannot see such marks: they are only in this backend's memory.
+ * The mark cleared the bit (PgColumnarMarkRowDeleted), and the flush clears it
+ * again after writing the delete_vector row (#2059), but a VACUUM may set it
+ * between the two. A statement nested in the writer then counted rows its own
+ * statement had deleted: an AFTER trigger, which fires before the writer's
+ * ExecutorEnd flush, or a function the writer calls.
+ *
+ * So, before a statement starts, flush this backend's marks for every relation
+ * it names, as a sequential scan's scan_begin does for its relation. From then
+ * on a VACUUM sees them under its dirty snapshot and leaves the blocks clear,
+ * and the flush's own clear removes any bit it set meanwhile. Every other read
+ * asks the table AM row by row, and the AM consults the unflushed buffer, so
+ * for them this only moves a flush earlier. The index fetch callback cannot
+ * flush instead: the unique check calls it with an index buffer locked.
+ *
+ * Parallel mode starts later, in ExecutorRun, so the flush's catalog writes
+ * are allowed here. A relation this backend holds no marks for costs one walk
+ * of the (usually empty) buffer list.
+ * ------------------------------------------------------------------------- */
+static void
+pgcolumnar_executor_start(QueryDesc *queryDesc, int eflags)
+{
+	ListCell   *lc;
+
+	/* an entry that is not a table has no marks, whatever its relid */
+	foreach(lc, queryDesc->plannedstmt->rtable)
+		PgColumnarFlushDeleteVectorForRelid(((RangeTblEntry *) lfirst(lc))->relid);
+
+	if (prev_executor_start_hook)
+		prev_executor_start_hook(queryDesc, eflags);
+	else
+		standard_ExecutorStart(queryDesc, eflags);
+}
+
+/* -------------------------------------------------------------------------
  * executor end hook: flush pending writes at statement end
  *
  * INSERT/UPDATE/DELETE do not call finish_bulk_insert, so flush here at the
@@ -5240,6 +5281,9 @@ _PG_init(void)
 
 	prev_process_utility_hook = ProcessUtility_hook;
 	ProcessUtility_hook = pgcolumnar_process_utility_counted;
+
+	prev_executor_start_hook = ExecutorStart_hook;
+	ExecutorStart_hook = pgcolumnar_executor_start;
 
 	prev_executor_end_hook = ExecutorEnd_hook;
 	ExecutorEnd_hook = pgcolumnar_executor_end;

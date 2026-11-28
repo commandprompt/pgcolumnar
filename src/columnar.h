@@ -771,6 +771,7 @@ extern void PgColumnarResetProjectionWritersForRelation(Oid relid);
  * delete vector / delete tracking (pgcolumnar_delete_vector.c, spec 7.5, 9)
  * ------------------------------------------------------------------------- */
 extern void PgColumnarFlushDeleteVectorForRelation(Relation rel);
+extern void PgColumnarFlushDeleteVectorForRelid(Oid relid);
 
 /* -------------------------------------------------------------------------
  * reader (pgcolumnar_reader.c)
@@ -1114,11 +1115,18 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
  */
 #define PGCOLUMNAR_LOCKCLASS_PCOPY_OPEN		106
 /*
+ * The parallel_copy coordinator, and each loader, holds this from just after it
+ * connects, so the calling backend waits for it in the lock manager rather than
+ * on a latch, and the deadlock detector sees that wait (#2229).
+ */
+#define PGCOLUMNAR_LOCKCLASS_PCOPY_RUN		107
+/*
  * The rewrite turnstile of one storage (#2185). recluster and compact_rewrite
- * hold it while they take their row-group locks; a writer that holds no
- * row-group or storage-row lock yet waits a bounded time for it to come free
- * before it takes its first one (rewrite_turnstile_pass in columnar_metadata.c).
- * 107 and 108 are taken by parallel_copy's run locks (#2229) and #2245.
+ * take it before their row-group locks and keep it to commit; a DELETE or
+ * UPDATE planned in a transaction that holds no row-group or storage-row lock
+ * yet waits a bounded time for it to come free (see
+ * PgColumnarRewriteTurnstileBeforeWrite in columnar_metadata.c). 108 is
+ * taken by #2245.
  */
 #define PGCOLUMNAR_LOCKCLASS_REWRITE_TURNSTILE	109
 
