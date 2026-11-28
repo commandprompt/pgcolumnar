@@ -623,6 +623,22 @@ true until the next version shipped.
   now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
   already set is left to the writer, which clears its own rows' blocks after it
   writes them. `test/index_only.sh` and `test_index_only.py`.
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb inside the
+  transaction no longer changes what the transaction sees (#2167). `recluster`,
+  `recluster_hilbert`, `compact_rewrite`, `cluster`, `cluster_hilbert`, `vacuum`
+  and `vacuum_sorted` read the newest committed rows and write them as the
+  calling transaction's own, so the transaction then saw a row another session
+  inserted after its snapshot and lost a row another session deleted after it.
+  Heap's `CLUSTER` keeps both as the snapshot saw them. At those levels each verb
+  now compares what the transaction's snapshot and its own read see of the groups
+  it rewrites: each group visible to the snapshot with the same deleted-row count,
+  and for a whole-table verb the same list of groups. When they differ it raises
+  40001 with `could not rewrite table "t": rows changed after this transaction's
+  snapshot`, and a retry runs. When they agree it runs as before. The maintenance
+  daemon now forces `READ COMMITTED`, as PostgreSQL's autovacuum does, so a
+  `default_transaction_isolation` of `repeatable read` does not make it skip a
+  busy table. docs/limitations.md and docs/sql-reference.md.
+  `test/rewrite_snapshot.sh` and `test_rewrite_snapshot.py`.
 - An AFTER trigger of a DELETE or UPDATE that reads the table through an
   index-only scan no longer counts rows its own statement deleted, when a
   VACUUM ran during the statement (#2169). The writer keeps its delete marks in
