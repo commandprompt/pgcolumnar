@@ -622,6 +622,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- A lazy VACUUM no longer clears the all-visible bits of clean blocks that an
+  earlier VACUUM had set, when a DELETE commits while it runs (#2170). Its
+  second pass (#2059) cleared every block of its first list that had left the
+  all-visible row groups. That list works by row group, so a delete of one row
+  took the bits of every block in the group, and index-only scans fetched those
+  blocks again until the next VACUUM. Results stayed correct. The second pass
+  now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
+  already set is left to the writer, which clears its own rows' blocks after it
+  writes them. `test/index_only.sh` and `test_index_only.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   until `statement_timeout` when a column's type is or contains a composite
   whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after

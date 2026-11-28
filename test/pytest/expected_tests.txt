@@ -2663,4 +2663,10 @@ guard_tests 910
 # cluster_tests 6451 -> 6455 for the #2250 re-review's four tests in test_parallel_flush_optin.py: a column whose
 # enum type, or whose ICU collation, a savepoint created, released or still open, flushes serially with no worker
 # failure, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6455
+# cluster_tests 6455 -> 6472 for #2170's seventeen tests in test_index_only.py (test_2170_*): eight for a
+# DELETE between VACUUM's two steps (three premises, the deleted blocks cleared, the clean blocks an earlier
+# VACUUM set and the blocks this VACUUM set in a clean group keeping their bits, two index-only counts); five
+# for a DELETE in the last block of a run during the hold and four for a DELETE in a block shared by two
+# row groups (the #2257 review's B1 and B2), by collection of that file (98 on main dd4e2f6e, 115 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6472

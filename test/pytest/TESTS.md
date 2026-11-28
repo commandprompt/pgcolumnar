@@ -10035,7 +10035,7 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set. And an AFTER trigger of a DELETE or UPDATE that reads through an index-only scan, after a VACUUM ran inside the statement, counts what heap counts (#2169).
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set. And an AFTER trigger of a DELETE or UPDATE that reads through an index-only scan, after a VACUUM ran inside the statement, counts what heap counts (#2169). That VACUUM clears only the bits it flipped itself, so the clean blocks an earlier VACUUM set keep theirs (#2170).
 
 ### Every test
 
@@ -10111,6 +10111,23 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_delete_over_three_row_groups_between_vacuum_steps_delete_committed_while_paused` | delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused |
 | `test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_visible_after` | delete over three row groups between vacuum's two steps: no target block all-visible after vacuum (#2059) |
 | `test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete over three row groups between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_2170_premise_group_1_set_group_2_not_yet_set_before_hold` | premise: row group 1's 67 blocks are set and row group 2's 68 blocks are not, before the hold (#2170) |
+| `test_2170_premise_vacuum_paused_before_its_set` | premise: the VACUUM paused before its set (#2170) |
+| `test_2170_premise_delete_committed_while_paused` | premise: the DELETE of blocks 1 and 5 committed while the VACUUM was paused (#2170) |
+| `test_2170_blocks_1_and_5_not_all_visible_after` | blocks 1 and 5, which hold the deleted rows, are not all-visible after the VACUUM (#2170) |
+| `test_2170_clean_blocks_set_before_hold_keep_their_bits` | the 65 clean blocks of the deleted group, set by an earlier VACUUM, keep their bits (#2170) |
+| `test_2170_blocks_this_vacuum_set_in_clean_group_keep_their_bits` | the 68 blocks this VACUUM set in the clean row group keep their bits (#2170) |
+| `test_2170_index_only_scan_returns_no_deleted_row` | an index-only scan returns none of the 202 deleted rows (#2170) |
+| `test_2170_index_only_count_of_every_id_matches_live_rows` | an index-only count of every id returns the 39798 live rows (#2170) |
+| `test_2170_premise_last_block_67_all_visible_before` | premise: block 67, the last block of row group 1's run, is all-visible before the hold (#2170, #2257 review) |
+| `test_2170_premise_last_block_vacuum_paused_before_its_set` | premise: the VACUUM paused before its set (#2170, #2257 review) |
+| `test_2170_premise_last_block_delete_committed_while_paused` | premise: the DELETE of ids 19500..19510 committed while the VACUUM was paused (#2170, #2257 review) |
+| `test_2170_last_block_67_not_all_visible_after` | block 67, the last block of the run, is not all-visible after the VACUUM: the second pass reaches the end of a run (#2170, #2257 review) |
+| `test_2170_last_block_index_only_scan_returns_no_deleted_row` | an index-only scan returns none of the 11 deleted rows of block 67 (#2170, #2257 review) |
+| `test_2170_premise_shared_block_ids_lie_in_block_3` | premise: ids 1000, 1001, 1099 and 1101 lie in block 3, shared by row groups 1 and 2 of three contiguous 1000-row groups (#2170, #2257 review) |
+| `test_2170_premise_shared_block_vacuum_set_clean_runs` | premise: the VACUUM set the five blocks of the clean groups' runs, 1..2 and 7..9 (#2170, #2257 review) |
+| `test_2170_shared_block_3_not_all_visible_after` | block 3, one past the first run and holding the deleted id 1100, is not all-visible after the VACUUM: the set stops at the end of a run (#2170, #2257 review) |
+| `test_2170_shared_block_index_only_scan_returns_no_deleted_row` | an index-only count of id 1100 is 0 (#2170, #2257 review) |
 | `test_trigger_of_delete_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger of a delete during vacuum: every target block all-visible before the writer starts |
 | `test_trigger_of_delete_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger of a delete during vacuum: vacuum ran while the writer was paused |
 | `test_trigger_of_delete_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger of a delete during vacuum: the vacuum set all 39 target blocks again |
