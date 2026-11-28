@@ -5357,11 +5357,22 @@ The two non-owner arms exist to show a stranger cannot tell a projected column f
 unprojected one. The bash suite asserts each against the literal `42501`; the port also
 compares them to each other, so indistinguishability is asserted rather than implied.
 
+#2240 added the cascade routes. `ALTER TYPE ... DROP ATTRIBUTE ... CASCADE` and `DROP
+DOMAIN ... CASCADE` drop a column without passing through `ALTER TABLE`, so the refusal
+never saw them, and the projection kept the dropped attnum. The projection now goes with
+the column. Refusing in the drop hook instead is not possible: `DROP SCHEMA ... CASCADE`
+drops a column on its own just before its table when the table predates the domain, and
+the hook cannot tell the two apart, and an arm pins that `DROP SCHEMA`. Two typed tables of one type, because each is reached
+by its own column drop. The heap oracles share the type or the domain, so they lose the
+column in the same statement. The NOTICEs are read with a notice handler here and from
+psql's stderr in the bash suite.
+
 ### Every arm
 
 | test | what it holds |
 | --- | --- |
 | `test_drop_column_is_refused_while_a_projection_depends_on_it` | every arm: the two non-owner refusals, the dependency refusal, writability afterwards, the unrelated column, and the partitioned parent |
+| `test_a_cascaded_column_drop_takes_its_projections` | #2240: `ALTER TYPE ... DROP ATTRIBUTE ... CASCADE` over two typed tables of one type, and `DROP DOMAIN ... CASCADE` on a plain table, drop every projection storing the column, declaration and storage, with one NOTICE each; projections on an exact-case `"BB"`/`"C"`, on other columns and on another table stay; the tables stay writable; a column added back under the same name is read from the base and answers as heap does until a new projection of the same name is added, which the planner then reads; a write, the cascade and a write in one transaction leave the dropped storage empty; `DROP SCHEMA ... CASCADE` still drops a table whose projection stores the column of a domain created after it; no backend crashed |
 
 ## 56. test_encode_post_codec.py: an encoding must be smaller after the codec
 

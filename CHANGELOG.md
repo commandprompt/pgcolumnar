@@ -630,6 +630,17 @@ true until the next version shipped.
   `\.` with 22P04, and the load now gives that error too. PostgreSQL 18 refuses
   `\.` anywhere but alone on its line and is unchanged. docs/limitations.md.
   `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- A column dropped by `ALTER TYPE ... DROP ATTRIBUTE ... CASCADE` or `DROP
+  DOMAIN ... CASCADE` now takes the projections that store it with it (#2240).
+  Only `ALTER TABLE ... DROP COLUMN` was checked, and it refuses with `2BP01`.
+  Through the other two the drop succeeded, and the projection kept the dropped
+  column: the next INSERT failed with `type with OID 0 does not exist`, and the
+  declaration still named the column. Each dropped projection is reported in a
+  NOTICE. Refusing these drops, as `ALTER TABLE` does, would also refuse
+  `DROP SCHEMA ... CASCADE` when a table was created before a domain one of its
+  columns uses: core drops that column on its own before the table.
+  docs/sql-reference.md. `test/projection_drop_column.sh` and
+  `test_projection_drop_column.py`.
 - The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
   transaction (#2194). It ran both in one transaction when both were due. The
   recluster then waited for a busy row group while it held the storage-row lock
