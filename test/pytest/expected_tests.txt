@@ -2725,4 +2725,4 @@ guard_tests 910
 # statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
 # collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6617
+cluster_tests 6624

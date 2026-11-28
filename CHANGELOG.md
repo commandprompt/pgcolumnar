@@ -622,6 +622,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
+  reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
+  ends the line at the `\.` and loads the row, so `a<TAB>1200\.` then LF has
+  key 1200. The splitter read the key as `1200.` and refused the file with
+  22P02. With the line end the rest of the file does not use, `COPY` refuses the
+  `\.` with 22P04, and the load now gives that error too. PostgreSQL 18 refuses
+  `\.` anywhere but alone on its line and is unchanged. docs/limitations.md.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
   transaction (#2194). It ran both in one transaction when both were due. The
   recluster then waited for a busy row group while it held the storage-row lock

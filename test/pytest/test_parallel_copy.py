@@ -2698,7 +2698,8 @@ def pcopy(pgc_cluster, server_dir):
         pg18 = str(srv).isdigit() and int(srv) >= 180000
 
         def mal_file(name, shape, row):
-            fmt = {"kt": b"%d\tx%d\n", "ktcrlf": b"%d\tx%d\r\n", "tk": b"a%d\t%d\n"}[shape]
+            fmt = {"kt": b"%d\tx%d\n", "ktcrlf": b"%d\tx%d\r\n", "tk": b"a%d\t%d\n",
+                   "tkcrlf": b"a%d\t%d\r\n"}[shape]
             path = d / f"mal_{name}.txt"
             path.write_bytes(b"".join(row if i == 1200 else fmt % (i, i) for i in range(1, 2001)))
             os.chmod(path, 0o644)
@@ -2785,6 +2786,50 @@ def pcopy(pgc_cluster, server_dir):
         r["2222 badunsorted"] = " ".join(res)
         r["2222 ceodlf want"] = ("22P04|end-of-copy marker is not alone on its line|0 rows|0 prepared" if pg18
                                  else MAL_SORTED)
+
+        # ---- #2260: a key followed by \. and a line end, on PG 15 to 17 ---------
+        # PG 15 to 17 end a line at an unescaped \. that a CR or LF follows and keep
+        # what came before it, so a TAB 1200\. LF loads with key 1200; the splitter
+        # read the key as "1200." and refused the load with 22P02. With the wrong line
+        # end for the file core refuses the \. (22P04). Files are tk, 2000 rows, row
+        # 1200 replaced, compared with heap COPY with 1, 2 and 4 workers; the shell
+        # lists them. PG 18 refuses \. anywhere but alone on its line, so the tests
+        # decline there and nothing is loaded.
+        if isinstance(r["major"], int) and r["major"] < 18:
+            e2260 = {
+                "eodlfk": ("tk", b"a\t1200\\.\n"),
+                "eodcrlfk": ("tkcrlf", b"a\t1200\\.\r\n"),
+                "eodcrk": ("tk", b"a\t1200\\.\r\n"),
+                "eodlfcrlf": ("tkcrlf", b"a\t1200\\.\n"),
+                "eodnullk": ("tk", b"a\t\\N\\.\n"),
+            }
+            ef2260 = {k: mal_file(k, shape, row) for k, (shape, row) in e2260.items()}
+            tk = mcols["tk"]
+            prem = []
+            for k in ("eodlfk", "eodcrlfk"):
+                prem.append("|".join(str(_enc_heap(edb, "UTF8", ef2260[k], tk)).split("|")[:2]))
+                prem.append(str(edb.value("SELECT id FROM h_enc WHERE txt = 'a'")))
+            for k in ("eodcrk", "eodlfcrlf"):
+                prem.append("|".join(str(_enc_heap(edb, "UTF8", ef2260[k], tk)).split("|")[:2]))
+            prem.append("|".join(str(_enc_heap(edb, "UTF8", ef2260["eodnullk"], tk)).split("|")[:2]))
+            prem.append(str(edb.value("SELECT count(*) FROM h_enc WHERE txt = 'a' AND id IS NULL")))
+            for k in e2260:
+                data = _read(ef2260[k])
+                prem.append(data.split(b"\n")[1199].hex() + "0a" if isinstance(data, bytes) else str(data))
+            r["2260 premise"] = " ".join(prem)
+            for k in ("eodlfk", "eodcrlfk", "eodcrk", "eodlfcrlf"):
+                r[f"2260 {k}"] = _enc_same(edb, "UTF8", ef2260[k], "part", (1, 2, 4), tk)
+            res = []
+            for w in (1, 2, 4):
+                _enc_target(edb, "part", tk)
+                res.append(f"{w}:" + str(_enc_outcome(
+                    edb, "UTF8", f"SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '{ef2260['eodnullk']}', {w})",
+                    "t_enc")))
+            r["2260 eodnullk"] = " ".join(res)
+            # A control: a TAB 0\. LF in place of row 1200. The splitter must read the
+            # key and refuse the order (22000), 1 worker; leaving every such row for
+            # the loader would pass the tests above.
+            r["2260 ceodk"] = mal_order("UTF8", mal_file("ceodk", "tk", b"a\t0\\.\n"), tk)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -4663,3 +4708,93 @@ def test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core(pcopy, expec
     expect.text(pcopy["2222 badunsorted"], f"1:{MAL_SORTED} 2:{MAL_SORTED} 4:{MAL_SORTED}",
                 "#2222 a row COPY refuses, then a row out of order / partitioned at 500, 1000 and 1500, 1, 2 and 4"
                 " workers: the splitter still refuses the order (22000), 0 rows, no prepared transaction")
+
+
+# ---- #2260: a key followed by \. and a line end, on PG 15 to 17 ------------------
+# The fixture and the shell list the files. PG 15 to 17 end a line at an unescaped
+# \. that a CR or LF follows; PG 18 refuses it anywhere but alone on its line, so
+# these tests decline on 18 and later, as the shell records SKIPs under the same
+# names. An unreadable major fails the test rather than being taken for a new one.
+
+def _e2260_gate(pcopy, expect, name):
+    """-> True when the test may run here; otherwise it has declined or failed."""
+    major = pcopy["major"]
+    if not isinstance(major, int):
+        expect.text(f"unreadable server major [{major}]", "a server major to gate on", name)
+        return False
+    if major >= 18:
+        expect.cannot_run(
+            "UNSUPPORTED_MAJOR",
+            f"PostgreSQL {major} refuses \\. anywhere but alone on its line; 15 to 17 end the line there",
+            name=name)
+        return False
+    return True
+
+
+def test_parallel_copy_eod_marker_after_key_premise(pcopy, expect):
+    """#2260 premise: heap COPY loads the files whose line end matches and refuses the
+    others, and reads \\N\\. as a NULL key; row 1200 of each file is as named."""
+    name = ("#2260 premise: heap COPY loads eodlfk and eodcrlfk 2000 rows each, row a with id 1200, refuses"
+            " eodcrk and eodlfcrlf with 22P04 end-of-copy marker does not match previous newline style, and"
+            " loads eodnullk 2000 rows, row a with a NULL id; row 1200 of each file is the bytes named")
+    if not _e2260_gate(pcopy, expect, name):
+        return
+    m = "22P04|end-of-copy marker does not match previous newline style"
+    expect.text(pcopy["2260 premise"],
+                f"loaded|2000 rows 1200 loaded|2000 rows 1200 {m} {m} loaded|2000 rows 1 6109313230305c2e0a"
+                " 6109313230305c2e0d0a 6109313230305c2e0d0a 6109313230305c2e0a 61095c4e5c2e0a",
+                "#2260 premise: heap COPY loads eodlfk and eodcrlfk 2000 rows each, row a with id 1200, refuses"
+                " eodcrk and eodlfcrlf with 22P04 end-of-copy marker does not match previous newline style, and"
+                " loads eodnullk 2000 rows, row a with a NULL id; row 1200 of each file is the bytes named")
+
+
+EOD_AFTER_KEY = (
+    ("2260 eodlfk", "#2260 an end-of-data marker then LF after the key, the last field / partitioned, 1, 2 and 4"
+     " workers: heap COPY's outcome, message, rows and content"),
+    ("2260 eodcrlfk", "#2260 an end-of-data marker then CR LF after the key, the last field, in a file with CRLF"
+     " line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+    ("2260 eodcrk", "#2260 an end-of-data marker then CR LF after the key, in a file with LF line ends /"
+     " partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+    ("2260 eodlfcrlf", "#2260 an end-of-data marker then LF after the key, in a file with CRLF line ends /"
+     " partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", EOD_AFTER_KEY, ids=[k[5:] for k, _ in EOD_AFTER_KEY])
+def test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does(pcopy, expect, key, name):
+    """#2260: on PG 15 to 17 a key followed by \\. and a line end gives heap COPY's
+    outcome, rows and row hash: the load where COPY loads, 22P04 where COPY refuses
+    the line end. Before the fix the splitter read the key as 1200. (22P02)."""
+    if not _e2260_gate(pcopy, expect, name):
+        return
+    expect.text(pcopy[key], "1:ok 2:ok 4:ok", name)
+
+
+def test_parallel_copy_eod_marker_after_null_key_is_a_null_key(pcopy, expect):
+    """#2260: \\N\\. then LF as the key is the NULL marker, as COPY reads it, so the
+    loader refuses the row (23514). A key reader that ends the value at the \\. but
+    steps over it reads \\N\\. as a value and refuses it with 22P02."""
+    name = ("#2260 a NULL marker then an end-of-data marker and LF as the key / partitioned, 1, 2 and 4 workers:"
+            " the key is NULL, as COPY reads it, and the loader refuses the row (23514), 0 rows, no prepared"
+            " transaction")
+    if not _e2260_gate(pcopy, expect, name):
+        return
+    w = '23514|no partition of relation "t_enc" found for row|0 rows|0 prepared'
+    expect.text(pcopy["2260 eodnullk"], f"1:{w} 2:{w} 4:{w}",
+                "#2260 a NULL marker then an end-of-data marker and LF as the key / partitioned, 1, 2 and 4"
+                " workers: the key is NULL, as COPY reads it, and the loader refuses the row (23514), 0 rows, no"
+                " prepared transaction")
+
+
+def test_parallel_copy_eod_marker_after_key_out_of_order_is_refused(pcopy, expect):
+    """#2260 control: a TAB 0\\. LF in place of row 1200. The splitter reads the key,
+    0, and refuses the order (22000); a splitter that left every row with \\. then a
+    line end for its loader would load the file instead."""
+    name = ("#2260 control: an end-of-data marker then LF after the key, on a row out of order / partitioned, 1"
+            " worker: the splitter reads the key, 0, and refuses the order (22000)")
+    if not _e2260_gate(pcopy, expect, name):
+        return
+    expect.text(pcopy["2260 ceodk"], MAL_SORTED,
+                "#2260 control: an end-of-data marker then LF after the key, on a row out of order / partitioned, 1"
+                " worker: the splitter reads the key, 0, and refuses the order (22000)")
+
