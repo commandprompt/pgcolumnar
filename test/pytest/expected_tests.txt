@@ -2768,7 +2768,13 @@ guard_tests 910
 # commits serially; a longer lock_timeout, and a caller's 0 over a role's 1 s setting, let the worker wait; no backend
 # died), by collection of that file (46 -> 51) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-# cluster_tests 6662 -> 6701 for #2268's thirty-nine tests in test_index_only.py (test_2268_*): ten for a DELETE
+# cluster_tests 6662 -> 6663 for #2191 in test_parallel_export_parquet.py:
+# test_pexport_the_documented_worker_counts_fit_a_default_server, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6663 -> 6665 for #2192 in test_unique_conc.py: test_a_partial_exclusion_constraint and
+# test_a_non_unique_index, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6665 -> 6704 for #2268's thirty-nine tests in test_index_only.py (test_2268_*): ten for a DELETE
 # that commits during VACUUM's first pause, read while VACUUM holds the row group (four premises, the block
 # unset, no deleted row through an index-only scan, a second DELETE timing out on VACUUM's lock, VACUUM
 # finishing, the state after it); five for a writer that holds the group's lock with its transaction open (two
@@ -2780,4 +2786,4 @@ guard_tests 910
 # commit); and two that the new pauses are superuser-only, by collection of that file (115 on main 1fa34ea1,
 # 154 here) and over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6701
+cluster_tests 6704

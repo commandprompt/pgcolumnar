@@ -7968,6 +7968,7 @@ parallel_export_parquet	parallel_export_parquet	accepted boundary: a 984-byte de
 parallel_export_parquet	parallel_export_parquet	accepted boundary: it wrote a _SUCCESS marker	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
 parallel_export_parquet	parallel_export_parquet	accepted boundary: it wrote both part files	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
 parallel_export_parquet	parallel_export_parquet	accepted boundary: the destination is exactly MAXPGPATH-40 bytes	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	and one worker more is refused with 53000	15;16;17;18;19	2026-11-28	D4 the SQL reference says the default fits seven workers;D5 the SQL reference says the default fits five workers
 parallel_export_parquet	parallel_export_parquet	cancel-control: a completed export writes files	15;16;17;18;19	never	-
 parallel_export_parquet	parallel_export_parquet	cleanup-scan window: a 994-byte destination raises 54000	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
 parallel_export_parquet	parallel_export_parquet	cleanup-scan window: and it is OUR message, not another 54000	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
@@ -8001,6 +8002,8 @@ parallel_export_parquet	parallel_export_parquet	part(4): read-back == source	15;
 parallel_export_parquet	parallel_export_parquet	part(4): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
 parallel_export_parquet	parallel_export_parquet	premise: local stop: a worker was stopped before the cancel	15;16;17;18;19	never	-
 parallel_export_parquet	parallel_export_parquet	premise: local stop: the export was cancelled, not completed	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	premise: the cluster runs at the default max_worker_processes	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	premise: the documented-count table holds 16 row groups, more than any count tried	15;16;17;18;19	never	-
 parallel_export_parquet	parallel_export_parquet	reject a non-columnar target	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: a non-columnar target is not refused (else if (true)), so a heap target fails on another error
 parallel_export_parquet	parallel_export_parquet	reject a non-empty output directory	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: a non-empty output directory is not refused
 parallel_export_parquet	parallel_export_parquet	rejected boundary: a 985-byte destination raises 54000	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
@@ -8027,10 +8030,15 @@ parallel_export_parquet	parallel_export_parquet	single(4): read-back == source	1
 parallel_export_parquet	parallel_export_parquet	single(4): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
 parallel_export_parquet	parallel_export_parquet	single(4): the _SUCCESS marker is empty	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
 parallel_export_parquet	parallel_export_parquet	single(4): wrote exactly 4 files (distinct per worker)	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
+parallel_export_parquet	parallel_export_parquet	the SQL reference and the user guide give the same default-server worker figure	15;16;17;18;19	2026-11-28	D4 the SQL reference says the default fits seven workers;D5 the SQL reference says the default fits five workers;D6 the user guide says seven workers fit
+parallel_export_parquet	parallel_export_parquet	the SQL reference's parallel_export_parquet worker counts export at the default max_worker_processes	15;16;17;18;19	2026-11-28	D3 the SQL reference's parallel_export_parquet example asks for 8 workers again
 parallel_export_parquet	parallel_export_parquet	the caller's lock_timeout and log_lock_waits read back unchanged after parallel_export_parquet in the same transaction (#2245)	15;16;17;18;19	2026-11-27	columnar_parallel_export.c: the caller's lock_timeout and log_lock_waits are not restored after the run-lock waits;columnar_parallel_export.c: the caller's lock_timeout is set to 0 for the whole call, not only the run-lock waits (over-applied)
 parallel_export_parquet	parallel_export_parquet	the caller's lock_timeout of 1 s ends a parallel_export_parquet that waits for another session's ACCESS EXCLUSIVE on the table with 55P03 within 4 s (#2245)	15;16;17;18;19	2026-11-27	columnar_parallel_export.c: the caller's lock_timeout is set to 0 for the whole call, not only the run-lock waits (over-applied)
+parallel_export_parquet	parallel_export_parquet	the documented default-server worker figure exports at the default max_worker_processes	15;16;17;18;19	2026-11-28	D4 the SQL reference says the default fits seven workers
 parallel_export_parquet	parallel_export_parquet	the export was cancelled mid-flight, not completed first (fixture premise)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	the how-to's parallel_export_parquet worker counts export at the default max_worker_processes	15;16;17;18;19	2026-11-28	D1 the how-to's parallel_export_parquet example asks for 8 workers again
 parallel_export_parquet	parallel_export_parquet	the retry writes a fresh _SUCCESS marker	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written;columnar_parallel_export.c: the error cleanup of a cancelled export does not remove its part files
+parallel_export_parquet	parallel_export_parquet	the user guide's parallel_export_parquet worker counts export at the default max_worker_processes	15;16;17;18;19	2026-11-28	D2 the user guide's parallel_export_parquet example asks for 7 workers
 parallel_export_parquet	parallel_export_parquet	the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group	15;16;17;18;19	2026-10-31	parallel workers not passed the caller's export_group_bytes (#1811)
 parallel_flush_optin	parallel_flush_optin	a backend waiting for its parallel flush worker, chosen as the deadlock victim, fails with 40P01 naming the run lock within 6 s (#2256)	15;16;17;18;19	2026-11-28	columnar_write_state.c: a parallel_flush worker releases its run lock as soon as it takes it;columnar_write_state.c: a parallel_flush worker takes no run lock;columnar_write_state.c: flush_columns_parallel does not call pflush_wait_for_workers;columnar_write_state.c: pflush_wait_for_workers skips the last worker;columnar_write_state.c: the backend waits on the run locks only after WaitForBackgroundWorkerShutdown;main before #2256: the backend waits for its parallel_flush workers on a latch and the workers take no run lock
 parallel_flush_optin	parallel_flush_optin	a caller's lock_timeout 0 is the parallel flush worker's too, over a role's 1 s setting in the database: the worker waits for the composite column's table and encodes every column (#2271)	15;16;17;18;19	2026-11-28	#2270 head 0eb9f165 before #2271: a parallel_flush worker takes the server's or its role's lock_timeout, not the caller's;columnar_write_state.c: a parallel_flush worker does not take the caller's lock_timeout (#2271);columnar_write_state.c: a parallel_flush worker sets the caller's lock_timeout at a priority below a role or database setting (#2271);columnar_write_state.c: a parallel_flush worker takes a lock_timeout of 1 s whatever the caller's (#2271);columnar_write_state.c: a parallel_flush worker takes the caller's lock_timeout only when it is above 0 (#2271)
@@ -10717,10 +10725,14 @@ ungrouped_vector_agg	ungrouped_vector_agg	unfiltered float avg :: on==off	15;16;
 ungrouped_vector_agg	ungrouped_vector_agg	unfiltered float sum :: on==off	15;16;17;18;19	2026-10-20	sum(float) on the fold drops the first non-null value
 ungrouped_vector_agg	ungrouped_vector_agg	unfiltered int8 sum :: on==off	15;16;17;18;19	never	-
 ungrouped_vector_agg	ungrouped_vector_agg	unfiltered numeric avg :: on==off	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: a different-key inserter does not wait	15;16;17;18;19	2026-11-28	M2 a deferrable unique index locked as one bucket
 unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: both different keys are kept	15;16;17;18;19	2026-11-28	M2 a deferrable unique index locked as one bucket
 unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: exactly one row with key 1	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: the same-key inserter got a unique_violation	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	11 deferrable initially DEFERRED unique: a different-key inserter does not wait	15;16;17;18;19	2026-11-28	M2 a deferrable unique index locked as one bucket
 unique_conc	unique_conc	11 deferrable initially DEFERRED unique: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	11 deferrable initially DEFERRED unique: both different keys are kept	15;16;17;18;19	2026-11-28	M2 a deferrable unique index locked as one bucket
 unique_conc	unique_conc	11 deferrable initially DEFERRED unique: exactly one row with key 1	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	11 deferrable initially DEFERRED unique: the same-key inserter got a unique_violation	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	12 btree exclusion constraint: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
@@ -10732,6 +10744,13 @@ unique_conc	unique_conc	13 deferrable initially DEFERRED gist exclusion: the con
 unique_conc	unique_conc	13 deferrable initially IMMEDIATE btree exclusion: a conflicting inserter blocks	15;16;17;18;19	2026-11-25	pgcolumnar_unique_build admits an exclusion index only when indimmediate: (indisunique || (indisexclusion && indimmediate))
 unique_conc	unique_conc	13 deferrable initially IMMEDIATE btree exclusion: exactly one conflicting row	15;16;17;18;19	2026-11-25	pgcolumnar_unique_build admits an exclusion index only when indimmediate: (indisunique || (indisexclusion && indimmediate))
 unique_conc	unique_conc	13 deferrable initially IMMEDIATE btree exclusion: the conflicting inserter got an exclusion_violation	15;16;17;18;19	2026-11-25	pgcolumnar_unique_build admits an exclusion index only when indimmediate: (indisunique || (indisexclusion && indimmediate))
+unique_conc	unique_conc	14 partial exclusion constraint: an overlapping row inside the predicate blocks	15;16;17;18;19	2026-11-28	M5 a partial coarse index never locked
+unique_conc	unique_conc	14 partial exclusion constraint: an overlapping row outside the predicate does not wait	15;16;17;18;19	2026-11-28	M4 the partial predicate skipped on a coarse index
+unique_conc	unique_conc	14 partial exclusion constraint: exactly one active row overlaps [5,15)	15;16;17;18;19	2026-11-28	M5 a partial coarse index never locked
+unique_conc	unique_conc	14 partial exclusion constraint: the inactive overlapping row and T1's row are both kept	15;16;17;18;19	2026-11-28	M4 the partial predicate skipped on a coarse index
+unique_conc	unique_conc	14 partial exclusion constraint: the inside overlapping row got an exclusion_violation	15;16;17;18;19	2026-11-28	M5 a partial coarse index never locked
+unique_conc	unique_conc	15 non-unique index: a same-key inserter does not wait	15;16;17;18;19	2026-11-28	M1 key-lock filter admits every valid ready index, non-unique too
+unique_conc	unique_conc	15 non-unique index: both same-key rows are kept	15;16;17;18;19	2026-11-28	M1 key-lock filter admits every valid ready index, non-unique too
 unique_conc	unique_conc	1a pre-fix: lock disabled lets both same-key inserts commit (bug)	15;16;17;18;19	2026-10-15	pgcolumnar.enable_unique_insert_lock ignored, so the lock is taken when it is off
 unique_conc	unique_conc	1b post-fix: blocked inserter got a unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
 unique_conc	unique_conc	1b post-fix: exactly one row with key 1	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
@@ -10763,8 +10782,10 @@ unique_conc	unique_conc	7 same-statement duplicate inserted no rows	15;16;17;18;
 unique_conc	unique_conc	7 same-statement duplicate raises unique_violation	15;16;17;18;19	never	-
 unique_conc	unique_conc	8 after first aborts, second insert succeeds; one row	15;16;17;18;19	never	-
 unique_conc	unique_conc	8 second inserter blocks behind uncommitted first	15;16;17;18;19	never	-
+unique_conc	unique_conc	9 exclusion constraint: a NULL range does not wait behind T1	15;16;17;18;19	2026-11-28	M3 a NULL key locked on a coarse index
 unique_conc	unique_conc	9 exclusion constraint: an overlapping inserter blocks	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	9 exclusion constraint: exactly one row overlaps [5,15)	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	9 exclusion constraint: the NULL range and T1's row are both kept	15;16;17;18;19	2026-11-28	M3 a NULL key locked on a coarse index
 unique_conc	unique_conc	9 exclusion constraint: the overlapping inserter got an exclusion_violation	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	the bucket count cannot be changed per session	15;16;17;18;19	never	-
 unique_conc	unique_conc	the cluster runs the bucket count the suite needs	15;16;17;18;19	never	-

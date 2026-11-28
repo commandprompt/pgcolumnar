@@ -282,6 +282,17 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/unique_conc.sh` and `test_unique_conc.py` pin the scope of the insert
+  key lock from the side that must not wait (#2192). With the first inserter
+  still mid-statement, a second inserter does not wait in four cases: a NULL
+  range on a gist exclusion constraint, a different key on a DEFERRABLE unique
+  constraint, a row outside a partial exclusion constraint's WHERE, and the same
+  key on a table whose only index is not unique. A row inside that WHERE still
+  waits and gets `23P01`. Before this, locking every index, locking a deferrable
+  unique index as one bucket, locking NULL keys or ignoring the predicate on a
+  coarse index, or never locking a partial coarse index, each passed both
+  suites. The pytest twin's teardown now cancels a statement still running and
+  waits until the race's sessions are gone before the next test. Test-only.
 - A lock of the `parallel_copy` caller's own on a table its loaders reach
   through a foreign key, a trigger or a sequence, or a write to a fresh
   columnar table a trigger writes, ends with `40P01` within `deadlock_timeout`
@@ -662,6 +673,16 @@ true until the next version shipped.
   `\.` with 22P04, and the load now gives that error too. PostgreSQL 18 refuses
   `\.` anywhere but alone on its line and is unchanged. docs/limitations.md.
   `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- The `parallel_export_parquet` examples in docs/how-to.md, docs/user-guide.md
+  and docs/sql-reference.md ask for 4 workers, not 8 (#2191). On a table of 7 or
+  more row groups, 8 workers failed at the default `max_worker_processes` of 8
+  with `could not register pgcolumnar parallel_export worker 7 of 8`, because
+  the server's own background workers hold two slots. docs/sql-reference.md now
+  gives the slot rule and says the default fits six workers, and the user guide
+  repeats that figure. `test/parallel_export_parquet.sh` and
+  `test_parallel_export_parquet.py` run at the default `max_worker_processes`
+  now, not 16. They export with every documented count from a table of 16 row
+  groups, and check that six workers fit and seven fail with `53000`.
 - A column dropped by `ALTER TYPE ... DROP ATTRIBUTE ... CASCADE` or `DROP
   DOMAIN ... CASCADE` now takes the projections that store it with it (#2240).
   Only `ALTER TABLE ... DROP COLUMN` was checked, and it refuses with `2BP01`.

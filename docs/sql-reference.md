@@ -1275,9 +1275,17 @@ with an underscore.
 
 When `workers` is omitted the function derives a value from the target.
 
+Each worker takes one background worker slot, and there is no coordinator. Set
+`max_worker_processes` to at least the worker count plus the slots the server's
+own background workers hold. On PostgreSQL 15 to 19 with pgcolumnar preloaded,
+the server's own workers hold two slots. So the default of 8 fits six workers
+while no parallel query runs. A parallel query's workers take slots too. A call
+that cannot get a slot fails with SQLSTATE 53000, "could not register pgcolumnar
+parallel_export worker".
+
 ```sql
--- single columnar table, split across 8 workers
-SELECT pgcolumnar.parallel_export_parquet('events', '/data/events_out', 8);
+-- single columnar table, split across 4 workers
+SELECT pgcolumnar.parallel_export_parquet('events', '/data/events_out', 4);
 -- read the whole directory back as one relation
 SELECT count(*) FROM pgcolumnar.read_parquet('/data/events_out')
   AS t(id bigint, ts timestamptz, val double precision);
