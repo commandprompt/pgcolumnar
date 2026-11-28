@@ -52,6 +52,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/lock.h"
 #include "storage/shm_toc.h"
 #include "tcop/tcopprot.h"
 #if PG_VERSION_NUM >= 160000
@@ -90,7 +91,10 @@ typedef struct PexportWorkerSlot
 	int64		rows;			/* rows written (valid when state == PEXPORT_DONE) */
 	int			sqlerrcode;
 	char		errmsg[512];
+	char		errdetail[512];	/* passed on to the caller (#2245) */
+	char		errhint[256];	/* passed on to the caller (#2245) */
 	char		filepath[MAXPGPATH];	/* single-table: the one output file */
+	pg_atomic_uint32 running;	/* 1 once the worker holds its run lock (#2245) */
 } PexportWorkerSlot;
 
 typedef struct PexportHeader
@@ -107,6 +111,7 @@ typedef struct PexportHeader
 	bool		single_table;
 	char		dirpath[MAXPGPATH];		/* output directory */
 	char		snapname[64];	/* ExportSnapshot() name workers ImportSnapshot() */
+	uint32		run_lock_key;	/* names this export's run locks (#2245) */
 } PexportHeader;
 
 /* handles + output dir for the error-cleanup callback */
@@ -699,6 +704,97 @@ pexport_remove_outputs_in_catch(void *arg)
 }
 
 /*
+ * The caller waits in the lock manager (#2245).
+ *
+ * The dispatcher holds ACCESS SHARE on the target for the whole export, and a
+ * worker opens it, or each leaf, with ACCESS SHARE in a transaction of its
+ * own. The lock manager queues a request behind a waiting request it conflicts
+ * with. So when another session asks for ACCESS EXCLUSIVE (LOCK TABLE,
+ * TRUNCATE, ALTER TABLE, VACUUM FULL, DROP) after the dispatcher's lock and
+ * before a worker's, that request waits for the caller, and the worker queues
+ * behind it. The caller used to wait for its workers on a latch, which the
+ * deadlock detector does not follow, so it saw two waits ending at the caller
+ * and no cycle, and the export waited until statement_timeout.
+ *
+ * So each worker takes an exclusive lock of class
+ * PGCOLUMNAR_LOCKCLASS_PEXPORT_RUN on (export, its index) as soon as it has
+ * connected, before it asks for any lock on a relation, and says so in shared
+ * memory. The calling backend waits for each of those in SHARE mode in turn,
+ * until the worker exits. The wait-for graph then has an edge from the caller
+ * to the worker it is waiting for. A worker queued behind a request that waits
+ * for the caller closes a cycle with one soft edge, and the deadlock detector
+ * moves the worker ahead of the request, since its ACCESS SHARE does not
+ * conflict with the locks granted; the export then goes on. The dispatcher
+ * already holds ACCESS SHARE on the target and on every leaf
+ * (find_all_inheritors keeps the leaf locks) before any worker starts, so a
+ * session that holds a lock a worker's ACCESS SHARE conflicts with makes the
+ * dispatcher wait first, in the lock manager, as before.
+ *
+ * The run lock is a session lock, so it goes with the process if the process
+ * dies. The caller's waits on it are waits for the export, not lock
+ * contention, so lock_timeout does not apply to them and log_lock_waits does
+ * not report them. A wait for a worker that has not taken its lock yet is a
+ * latch wait, but a worker takes it before it asks for anything a lock cycle
+ * could hold up.
+ *
+ * parallel_copy does the same with its own class (#2229); the two share no
+ * code, and a different class keeps their lock tags apart.
+ */
+static void
+pexport_run_locktag(LOCKTAG *tag, const PexportHeader *hdr, int idx)
+{
+	SET_LOCKTAG_ADVISORY(*tag, hdr->dbid, hdr->run_lock_key, (uint32) idx,
+						 PGCOLUMNAR_LOCKCLASS_PEXPORT_RUN);
+}
+
+/*
+ * pexport_wait_for_workers
+ *		The calling backend: for each worker in turn, wait until it has taken its
+ *		run lock, or has stopped without it, then wait in the lock manager until
+ *		it releases it. See above.
+ */
+static void
+pexport_wait_for_workers(PexportHeader *hdr, PexportWorkerSlot *slots,
+						 BackgroundWorkerHandle **handles, int nworkers)
+{
+	int			nest = NewGUCNestLevel();
+	int			i;
+
+	(void) set_config_option("lock_timeout", "0", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	(void) set_config_option("log_lock_waits", "off", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	for (i = 0; i < nworkers; i++)
+	{
+		LOCKTAG		tag;
+		bool		running = true;
+
+		while (pg_atomic_read_u32(&slots[i].running) == 0)
+		{
+			pid_t		pid;
+
+			if (pg_atomic_read_u32(&slots[i].state) != PEXPORT_PENDING ||
+				handles[i] == NULL ||
+				GetBackgroundWorkerPid(handles[i], &pid) == BGWH_STOPPED)
+			{
+				running = false;
+				break;
+			}
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 10L, PG_WAIT_EXTENSION);
+			ResetLatch(MyLatch);
+			CHECK_FOR_INTERRUPTS();
+		}
+		if (!running)
+			continue;
+		pexport_run_locktag(&tag, hdr, i);
+		(void) LockAcquire(&tag, ShareLock, false, false);
+		LockRelease(&tag, ShareLock, false);
+	}
+	AtEOXact_GUC(true, nest);
+}
+
+/*
  * pgcolumnar_parallel_export_worker
  *		Background-worker entry: attach the DSM, connect, import the dispatcher's
  *		snapshot, and write this worker's slice to its Parquet file(s). Read-only,
@@ -714,7 +810,6 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	Oid		   *leaves;
 	PexportWorkerSlot *me;
 	int			widx;
-	Snapshot	snap;
 
 	memcpy(&widx, MyBgworkerEntry->bgw_extra, sizeof(int));
 
@@ -739,34 +834,53 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
-	/* the caller's object-store settings (#1780); the caller could SET each */
-	{
-		const char *v = (const char *) shm_toc_lookup(toc, PEXPORT_KEY_GUCS, false);
-		int			g;
-
-		for (g = 0; g < (int) PEXPORT_NGUCS; g++)
-		{
-			SetConfigOption(pexport_session_gucs[g], v, PGC_SUSET, PGC_S_SESSION);
-			v += strlen(v) + 1;
-		}
-	}
-
 	/*
-	 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
-	 * repeatable-read (or serializable) transaction with no snapshot taken yet,
-	 * exactly as SET TRANSACTION SNAPSHOT does.
+	 * Everything from here on reports its error to the caller, which re-raises
+	 * it with its SQLSTATE, detail and hint (#2245). A deadlock in which this
+	 * worker is the victim then reaches the caller as 40P01, not as "exited
+	 * without reporting a result".
 	 */
-	StartTransactionCommand();
-	/* the caller's security context, now that a transaction is open (#1612) */
-	columnar_worker_take_context(hdr->roleid, hdr->secContext);
-	XactIsoLevel = XACT_REPEATABLE_READ;
-	ImportSnapshot(hdr->snapname);
-	snap = GetTransactionSnapshot();
-	PushActiveSnapshot(snap);
-
 	PG_TRY();
 	{
 		int64		rows = 0;
+		Snapshot	snap;
+
+		/*
+		 * The run lock, before any lock on a relation (#2245); see "The caller
+		 * waits in the lock manager". Held until this worker has reported.
+		 */
+		{
+			LOCKTAG		tag;
+
+			pexport_run_locktag(&tag, hdr, widx);
+			(void) LockAcquire(&tag, ExclusiveLock, true, false);
+			pg_atomic_write_u32(&me->running, 1);
+		}
+
+		/* the caller's object-store settings (#1780); the caller could SET each */
+		{
+			const char *v = (const char *) shm_toc_lookup(toc, PEXPORT_KEY_GUCS, false);
+			int			g;
+
+			for (g = 0; g < (int) PEXPORT_NGUCS; g++)
+			{
+				SetConfigOption(pexport_session_gucs[g], v, PGC_SUSET, PGC_S_SESSION);
+				v += strlen(v) + 1;
+			}
+		}
+
+		/*
+		 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
+		 * repeatable-read (or serializable) transaction with no snapshot taken
+		 * yet, exactly as SET TRANSACTION SNAPSHOT does.
+		 */
+		StartTransactionCommand();
+		/* the caller's security context, now that a transaction is open (#1612) */
+		columnar_worker_take_context(hdr->roleid, hdr->secContext);
+		XactIsoLevel = XACT_REPEATABLE_READ;
+		ImportSnapshot(hdr->snapname);
+		snap = GetTransactionSnapshot();
+		PushActiveSnapshot(snap);
 
 		if (hdr->single_table)
 		{
@@ -830,6 +944,8 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 		strlcpy(me->errmsg,
 				edata->message ? edata->message : "parallel_export worker failed",
 				sizeof(me->errmsg));
+		strlcpy(me->errdetail, edata->detail ? edata->detail : "", sizeof(me->errdetail));
+		strlcpy(me->errhint, edata->hint ? edata->hint : "", sizeof(me->errhint));
 		FlushErrorState();
 		FreeErrorData(edata);
 		AbortOutOfAnyTransaction();
@@ -837,6 +953,13 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	}
 	PG_END_TRY();
 
+	if (pg_atomic_read_u32(&me->running) != 0)
+	{
+		LOCKTAG		tag;
+
+		pexport_run_locktag(&tag, hdr, widx);
+		LockRelease(&tag, ExclusiveLock, true);
+	}
 	dsm_detach(seg);
 	proc_exit(0);
 }
@@ -1125,6 +1248,7 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	hdr->single_table = single_table;
 	strlcpy(hdr->dirpath, dir, sizeof(hdr->dirpath));
 	strlcpy(hdr->snapname, snapname, sizeof(hdr->snapname));
+	hdr->run_lock_key = (uint32) dsmh;	/* unique among live segments */
 
 	/* even-ish contiguous [startIdx, endIdx) task ranges */
 	per = ntasks / workers;
@@ -1140,7 +1264,10 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		slots[i].rows = 0;
 		slots[i].sqlerrcode = 0;
 		slots[i].errmsg[0] = '\0';
+		slots[i].errdetail[0] = '\0';
+		slots[i].errhint[0] = '\0';
 		pg_atomic_init_u32(&slots[i].state, PEXPORT_PENDING);
+		pg_atomic_init_u32(&slots[i].running, 0);
 		if (single_table)
 			snprintf(slots[i].filepath, sizeof(slots[i].filepath),
 					 "%s/part-%04d.parquet", dir, i);
@@ -1195,7 +1322,11 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 								 workers)));
 		}
 
-		/* wait for all workers, staying responsive to cancellation */
+		/*
+		 * Wait for each worker in the lock manager (#2245), then for every
+		 * worker to stop, staying responsive to cancellation.
+		 */
+		pexport_wait_for_workers(hdr, slots, handles, workers);
 		for (;;)
 		{
 			int			running = 0;
@@ -1236,9 +1367,13 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	{
 		int			code = slots[failed].sqlerrcode;
 		char		msg[512];
+		char		detail[512];
+		char		hint[256];
 
 		strlcpy(msg, slots[failed].errmsg[0] ? slots[failed].errmsg
 				: "worker exited without reporting a result", sizeof(msg));
+		strlcpy(detail, slots[failed].errdetail, sizeof(detail));
+		strlcpy(hint, slots[failed].errhint, sizeof(hint));
 		/* all workers have stopped; drop any part files they wrote so the failed
 		 * run leaves a clean directory and a retry is not half-read or blocked */
 		pexport_remove_outputs(dir, single_table ? workers : npart);
@@ -1251,7 +1386,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(code ? code : ERRCODE_INTERNAL_ERROR),
 				 errmsg("pgcolumnar.parallel_export_parquet worker %d failed: %s",
-						failed, msg)));
+						failed, msg),
+				 detail[0] ? errdetail("%s", detail) : 0,
+				 hint[0] ? errhint("%s", hint) : 0));
 	}
 
 	dsm_detach(seg);

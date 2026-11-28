@@ -562,6 +562,161 @@ check "parallel_export_parquet in a savepoint after LOCK TABLE IN ACCESS EXCLUSI
 	"$(self_lock_export "SAVEPOINT s; LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE" t_lk "$PGC_WORKDIR/lk_subx")" \
 	'25001|cannot export a snapshot from a subtransaction'
 
+# ---- #2245: the caller waits for its workers in the lock manager -------------
+# The dispatcher holds ACCESS SHARE on the target, and each worker asks for it
+# again in its own transaction. An ACCESS EXCLUSIVE request (LOCK TABLE,
+# TRUNCATE, ALTER TABLE, ...) that arrives in between waits for the caller, and
+# the lock manager queues each worker behind it. The caller waited for its
+# workers on a latch, which the deadlock detector does not follow, so the export
+# waited until statement_timeout. Each worker now holds an advisory lock of class
+# 108 from the moment it connects, and the caller waits on those, so the detector
+# sees the cycle and moves the workers ahead of the queued request. Here the
+# caller already holds ACCESS SHARE from a SELECT earlier in its transaction,
+# which makes the window deterministic. Every wait is bounded: 10 s for the
+# caller, 20 s for the other session.
+qx_sess() {	# APPNAME PSQL-ARGS... -> psql's output, errors with their SQLSTATE
+	local app="$1"; shift
+	env PGAPPNAME="$app" PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -qAt -v VERBOSITY=verbose "$@" 2>&1
+}
+qx_err() {	# FILE -> "SQLSTATE message" of the first ERROR in a qx_sess output, or nothing
+	sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$1"
+}
+qx_result() {	# FILE -> the first ERROR, or "no error (<the last number printed>)"
+	local e
+	e="$(qx_err "$1")"
+	if [ -n "$e" ]; then echo "$e"; else echo "no error ($(grep -x '[0-9]*' "$1" | tail -1))"; fi
+}
+qx_wait_lock() {	# APPNAME TABLE MODE -> returns once that session holds MODE on TABLE (up to 5 s)
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+		        WHERE a.application_name = '$1' AND l.relation = '$2'::regclass AND l.mode = '$3' AND l.granted")" = 1 ] && return
+		sleep 0.05
+	done
+}
+qx_ms() { echo $(( ($(date +%s%N) - $1) / 1000000 )); }
+qx_under() {	# MS LIMIT-S -> "under LIMIT s" or "took MS ms"
+	if [ "$1" -lt $(( $2 * 1000 )) ]; then echo "under $2 s"; else echo "took $1 ms"; fi
+}
+qx_queue() {	# TARGET LOCKED DIR -> "export | time | other session | rows read back". The
+	# caller selects from LOCKED, waits until an ACCESS EXCLUSIVE request on LOCKED
+	# queues behind it, then exports TARGET with 2 workers.
+	local t0 ms bp
+	qx_sess pexport_qx_b -c "BEGIN" -c "SELECT count(*) FROM $2" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = '$2'::regclass AND mode = 'AccessExclusiveLock' AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "SET statement_timeout = '10s'" -c "SELECT pgcolumnar.parallel_export_parquet('$1'::regclass, '$3', 2)" \
+		-c "COMMIT" >"$PGC_WORKDIR/qx_b.out" &
+	bp=$!
+	qx_wait_lock pexport_qx_b "$2" AccessShareLock
+	t0=$(date +%s%N)
+	qx_sess pexport_qx_a -c "SET statement_timeout = '20s'" -c "BEGIN" -c "LOCK TABLE $2 IN ACCESS EXCLUSIVE MODE" \
+		-c "COMMIT" >"$PGC_WORKDIR/qx_a.out"
+	wait "$bp"
+	ms=$(qx_ms "$t0")
+	printf '%s | %s | %s | %s rows read back\n' "$(qx_result "$PGC_WORKDIR/qx_b.out")" "$(qx_under "$ms" 6)" \
+		"$(e="$(qx_err "$PGC_WORKDIR/qx_a.out")"; echo "other session ${e:-locked}")" \
+		"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$3') AS t($RB)")"
+}
+check "parallel_export_parquet with ACCESS EXCLUSIVE on the table queued behind the caller exports within 6 s, not a wait until statement_timeout, and the other session then gets its lock (#2245)" \
+	"$(qx_queue t_lk t_lk "$PGC_WORKDIR/qx_single")" "no error ($NC) | under 6 s | other session locked | $NC rows read back"
+check "parallel_export_parquet of a partitioned table with ACCESS EXCLUSIVE on one leaf queued behind the caller exports within 6 s, not a wait until statement_timeout, and the other session then gets its lock (#2245)" \
+	"$(qx_queue t_part t_p1 "$PGC_WORKDIR/qx_leaf")" "no error ($NPART) | under 6 s | other session locked | $NPART rows read back"
+# control: a session that holds ACCESS EXCLUSIVE on the table and then waits for
+# a lock the caller holds already made a cycle the detector saw, since the
+# dispatcher waits for the table in the lock manager before any worker starts.
+qx_cycle() {	# -> "outcome | time"
+	local t0 ms ap ea eb
+	qx_sess pexport_qx_c -c "SET statement_timeout = '20s'" -c "BEGIN" -c "LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = 't_lk'::regclass AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "LOCK TABLE t_lk_other IN SHARE MODE" -c "COMMIT" >"$PGC_WORKDIR/qx_c.out" &
+	ap=$!
+	qx_wait_lock pexport_qx_c t_lk AccessExclusiveLock
+	t0=$(date +%s%N)
+	qx_sess pexport_qx_d -c "BEGIN" -c "INSERT INTO t_lk_other VALUES (1)" -c "SET statement_timeout = '10s'" \
+		-c "SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '$PGC_WORKDIR/qx_cycle', 2)" \
+		-c "ROLLBACK" >"$PGC_WORKDIR/qx_d.out"
+	wait "$ap"
+	ms=$(qx_ms "$t0")
+	ea="$(qx_err "$PGC_WORKDIR/qx_c.out")"; eb="$(qx_err "$PGC_WORKDIR/qx_d.out")"
+	printf '%s | %s\n' \
+		"$(if { [ "${ea%% *}" = 40P01 ] && [ -z "$eb" ]; } || { [ "${eb%% *}" = 40P01 ] && [ -z "$ea" ]; }; then
+			echo "one side 40P01, the other went on"; else echo "A ${ea:-committed}, B ${eb:-exported}"; fi)" \
+		"$(qx_under "$ms" 5)"
+}
+check "control: a session holding ACCESS EXCLUSIVE on the table that then waits for a lock the parallel_export_parquet caller holds gets 40P01 on one side within 5 s (#2245)" \
+	"$(qx_cycle)" "one side 40P01, the other went on | under 5 s"
+# The caller's lock_timeout still bounds its own wait for the table.
+qx_lock_timeout() {	# -> "error | time"
+	local t0 ms
+	qx_sess pexport_qx_h -c "BEGIN" -c "LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE" -c "SELECT pg_sleep(6)" -c "COMMIT" >/dev/null &
+	qx_wait_lock pexport_qx_h t_lk AccessExclusiveLock
+	t0=$(date +%s%N)
+	PGOPTIONS='-c statement_timeout=10s -c lock_timeout=1s' qx_sess pexport_qx_t \
+		-c "SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '$PGC_WORKDIR/qx_lt', 2)" >"$PGC_WORKDIR/qx_t.out"
+	ms=$(qx_ms "$t0")
+	wait
+	printf '%s | %s\n' "$(qx_result "$PGC_WORKDIR/qx_t.out")" "$(qx_under "$ms" 4)"
+}
+check "the caller's lock_timeout of 1 s ends a parallel_export_parquet that waits for another session's ACCESS EXCLUSIVE on the table with 55P03 within 4 s (#2245)" \
+	"$(qx_lock_timeout)" "55P03 canceling statement due to lock timeout | under 4 s"
+# The waits on the workers are waits for the export, not lock contention: a
+# 1 ms lock_timeout does not end an uncontended export, and with
+# deadlock_timeout 1 ms and log_lock_waits on, they are not logged.
+qx_lock_waits_logged() { pgc_pg "grep -c 'still waiting for ShareLock on advisory lock' '$PGC_LOGFILE'" 2>/dev/null; }
+qx_lw_before="$(qx_lock_waits_logged)"
+qx_lt_got="$(PGOPTIONS='-c statement_timeout=30s -c lock_timeout=1ms -c deadlock_timeout=1ms -c log_lock_waits=on' \
+	qx_sess pexport_qx_n -c "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PGC_WORKDIR/qx_1ms', 2)" \
+	>"$PGC_WORKDIR/qx_n.out"; qx_result "$PGC_WORKDIR/qx_n.out")"
+check "parallel_export_parquet under lock_timeout 1 ms, deadlock_timeout 1 ms and log_lock_waits on still exports, and logs no wait for its workers (#2245)" \
+	"$qx_lt_got | $(( $(qx_lock_waits_logged) - qx_lw_before )) lock waits logged" "no error ($NSRC) | 0 lock waits logged"
+# and the caller's settings are its own again once the export returns
+qx_sess pexport_qx_g -c "BEGIN" -c "SET LOCAL lock_timeout = '2s'" -c "SET LOCAL log_lock_waits = on" \
+	-c "SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '$PGC_WORKDIR/qx_guc', 2)" \
+	-c "SHOW lock_timeout" -c "SHOW log_lock_waits" -c "COMMIT" >"$PGC_WORKDIR/qx_g.out"
+check "the caller's lock_timeout and log_lock_waits read back unchanged after parallel_export_parquet in the same transaction (#2245)" \
+	"$(e="$(qx_err "$PGC_WORKDIR/qx_g.out")"; [ -n "$e" ] && echo "$e" || paste -sd'|' "$PGC_WORKDIR/qx_g.out")" "$NC|2s|on"
+
+# When the deadlock detector picks a worker as the victim, the caller re-raises
+# the worker's 40P01 with its detail, not "exited without reporting a result".
+# A cycle of hard edges: the caller waits for the worker's run lock, the worker
+# waits for another session's ACCESS EXCLUSIVE on pgcolumnar.row_group, and that
+# session waits for SHARE on t_wv_w, which the caller wrote. To get there, the
+# one worker is first held at leaf t_wv1 by a third session's ACCESS EXCLUSIVE
+# request queued behind the caller (the case above), and the other session takes
+# row_group while the worker waits. The caller and that session run with
+# deadlock_timeout 10 s, so the worker, at the server's 1 s, checks first.
+psql_run "DROP TABLE IF EXISTS t_wv, t_wv_w CASCADE;
+          CREATE TABLE t_wv ($COLS) PARTITION BY RANGE (id);
+          CREATE TABLE t_wv1 PARTITION OF t_wv FOR VALUES FROM (MINVALUE) TO (10001) USING pgcolumnar;
+          CREATE TABLE t_wv2 PARTITION OF t_wv FOR VALUES FROM (10001) TO (MAXVALUE) USING pgcolumnar;
+          INSERT INTO t_wv $GEN_TX_COMMITTED; CREATE TABLE t_wv_w (a int);" >/dev/null
+qx_victim() {	# -> "caller's error | what its detail names | time"
+	local t0 ms bp
+	qx_sess pexport_qx_vb -c "SET deadlock_timeout = '10s'" -c "BEGIN" -c "INSERT INTO t_wv_w VALUES (1)" \
+		-c "LOCK TABLE t_wv1 IN ACCESS SHARE MODE" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = 't_wv1'::regclass AND mode = 'AccessExclusiveLock' AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "SET statement_timeout = '10s'" -c "SELECT pgcolumnar.parallel_export_parquet('t_wv'::regclass, '$PGC_WORKDIR/qx_victim', 1)" \
+		-c "ROLLBACK" >"$PGC_WORKDIR/qx_vb.out" &
+	bp=$!
+	qx_wait_lock pexport_qx_vb t_wv1 AccessShareLock
+	t0=$(date +%s%N)
+	qx_sess pexport_qx_vc -c "SET statement_timeout = '20s'" -c "BEGIN" -c "LOCK TABLE t_wv1 IN ACCESS EXCLUSIVE MODE" \
+		-c "COMMIT" >/dev/null &
+	qx_sess pexport_qx_va -c "SET statement_timeout = '20s'" -c "SET deadlock_timeout = '10s'" -c "BEGIN" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = 't_wv1'::regclass AND mode = 'AccessShareLock' AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "LOCK TABLE pgcolumnar.row_group IN ACCESS EXCLUSIVE MODE" -c "LOCK TABLE t_wv_w IN SHARE MODE" \
+		-c "COMMIT" >/dev/null
+	wait "$bp"
+	ms=$(qx_ms "$t0")
+	wait
+	printf '%s | %s | %s\n' "$(qx_result "$PGC_WORKDIR/qx_vb.out")" \
+		"$(if grep -q 'waits for ShareLock on advisory lock \[[0-9]*,[0-9]*,0,108\]' "$PGC_WORKDIR/qx_vb.out"; then
+			echo "detail names the run lock"; else echo "detail [$(grep -m1 '^DETAIL:' "$PGC_WORKDIR/qx_vb.out")]"; fi)" \
+		"$(qx_under "$ms" 8)"
+}
+check "a parallel_export_parquet worker chosen as the deadlock victim reaches the caller as 40P01 with the cycle in its detail, within 8 s (#2245)" \
+	"$(qx_victim)" "40P01 pgcolumnar.parallel_export_parquet worker 0 failed: deadlock detected | detail names the run lock | under 8 s"
+
 check "server still up after the exports" "$(survived "$CRASHES_AT_START")" 1
 
 pgc_summary

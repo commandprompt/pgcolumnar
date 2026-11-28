@@ -375,6 +375,120 @@ retired_group_cmp(const void *a, const void *b)
 	return (x < y) ? -1 : (x > y) ? 1 : 0;
 }
 
+/* the deleted-row count of one group, as `snapshot` sees its delete vectors */
+static int64
+group_deleted_count(uint64 storageId, uint64 groupNumber, Snapshot snapshot)
+{
+	List	   *rmList = PgColumnarReadDeleteVectorList(storageId, groupNumber, snapshot);
+	ListCell   *lc;
+	int64		deleted = 0;
+
+	foreach(lc, rmList)
+		deleted += ((DeleteVectorMetadata *) lfirst(lc))->deletedCount;
+	list_free_deep(rmList);
+	return deleted;
+}
+
+/* is groupNumber in `rgList` (as PgColumnarReadRowGroupList returns it)? */
+static bool
+group_listed(List *rgList, uint64 groupNumber)
+{
+	ListCell   *lc;
+
+	foreach(lc, rgList)
+		if (((NativeRowGroupMetadata *) lfirst(lc))->groupNumber == groupNumber)
+			return true;
+	return false;
+}
+
+/*
+ * refuse_rewrite_past_snapshot (#2167)
+ *		Stop a rewrite that would show this transaction rows its snapshot must
+ *		not see, or hide rows it must see.
+ *
+ * Every rewrite reads the newest committed rows (readSnap, taken after its
+ * locks), because a row it skipped would be lost when it retires the old
+ * groups. It writes them into groups this transaction owns, and a transaction
+ * sees its own rows whatever its snapshot. At READ COMMITTED that is
+ * harmless: the next statement takes a newer snapshot anyway. At REPEATABLE
+ * READ and SERIALIZABLE the transaction keeps its first snapshot, so a row
+ * another session inserted after it became visible, and a row another session
+ * deleted after it vanished. Heap's CLUSTER keeps each row's xmin and xmax, so
+ * the transaction sees neither change. A row group has one xmin for all its
+ * rows, so a rewrite cannot do the same.
+ *
+ * So, at those levels, compare what the two snapshots see of the groups the
+ * rewrite reads and retires: `groups` (nGroups of them), or the whole table
+ * when groups is NULL. Each listed group must be visible to the transaction's
+ * snapshot (the caller listed it under a newer one), with the same number of
+ * deleted rows under both. A group's deletions only grow, so equal counts mean
+ * the same rows. For the whole table, the two must list the same groups. When
+ * they agree, the rewrite writes exactly the rows the transaction saw. When
+ * they do not, raise a serialization failure: a retry takes a new snapshot.
+ *
+ * Both sides are read through PgColumnarCatalogSnapshot, as the rewrite's own
+ * reader is, so this transaction's own groups and deletions count alike.
+ */
+static void
+refuse_rewrite_past_snapshot(Relation rel, uint64 storageId, Snapshot readSnap,
+							 const uint64 *groups, int nGroups)
+{
+	Snapshot	xactSnap;
+	Snapshot	xs;
+	Snapshot	rs;
+	List	   *xList;
+	bool		differs = false;
+	int			i;
+
+	if (!IsolationUsesXactSnapshot())
+		return;
+
+	xactSnap = RegisterSnapshot(GetTransactionSnapshot());
+	xs = PgColumnarCatalogSnapshot(xactSnap);
+	rs = PgColumnarCatalogSnapshot(readSnap);
+	xList = PgColumnarReadRowGroupList(storageId, xs);
+
+	if (groups == NULL)
+	{
+		List	   *rList = PgColumnarReadRowGroupList(storageId, rs);
+		ListCell   *lx;
+		ListCell   *lr;
+
+		if (list_length(xList) != list_length(rList))
+			differs = true;
+		else
+			forboth(lx, xList, lr, rList)
+			{
+				uint64		g = ((NativeRowGroupMetadata *) lfirst(lr))->groupNumber;
+
+				if (((NativeRowGroupMetadata *) lfirst(lx))->groupNumber != g ||
+					group_deleted_count(storageId, g, xs) !=
+					group_deleted_count(storageId, g, rs))
+				{
+					differs = true;
+					break;
+				}
+			}
+	}
+	else
+	{
+		for (i = 0; i < nGroups && !differs; i++)
+			differs = !group_listed(xList, groups[i]) ||
+				group_deleted_count(storageId, groups[i], xs) !=
+				group_deleted_count(storageId, groups[i], rs);
+	}
+
+	UnregisterSnapshot(xactSnap);
+
+	if (differs)
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not rewrite table \"%s\": rows changed after this transaction's snapshot",
+						RelationGetRelationName(rel)),
+				 errdetail("A rewrite copies the newest committed rows into this transaction, which would then see rows its snapshot does not, or stop seeing rows it does."),
+				 errhint("Retry the transaction, or run the rewrite at READ COMMITTED.")));
+}
+
 /* -------------------------------------------------------------------------
  * Online rewrite of partially-deleted row groups (Phase F3b)
  *
@@ -554,6 +668,7 @@ rewrite_one_group(Relation rel, PgColumnarIndexInsertState *ris, uint64 storageI
 	 * provide. */
 	snap = RegisterSnapshot(GetLatestSnapshot());
 	PushActiveSnapshot(snap);
+	refuse_rewrite_past_snapshot(rel, storageId, snap, &groupNumber, 1);
 
 	ws = PgColumnarGetWriteState(rel);
 
@@ -969,6 +1084,14 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	 * the reader derives satisfy PG18's heap-visibility assertion. */
 	snap = RegisterSnapshot(GetLatestSnapshot());
 	PushActiveSnapshot(snap);
+	{
+		uint64	   *groups = palloc(sizeof(uint64) * nGroups);
+
+		for (i = 0; i < nGroups; i++)
+			groups[i] = oldGroups[i].groupNumber;
+		refuse_rewrite_past_snapshot(rel, storageId, snap, groups, nGroups);
+		pfree(groups);
+	}
 
 	augdesc = CreateTemplateTupleDesc(natts + 1);
 	for (i = 1; i <= natts; i++)
@@ -1827,6 +1950,7 @@ pgcolumnar_compact_relation(Relation rel, int nsortkeys, AttrNumber *sortAtts)
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
 	PushActiveSnapshot(snapshot);
+	refuse_rewrite_past_snapshot(rel, oldStorageId, snapshot, NULL, 0);
 
 	/*
 	 * Read every live row (the reader skips row-mask-deleted rows) and
@@ -2048,6 +2172,7 @@ pgcolumnar_compact_relation_curve(Relation rel, int ncols, AttrNumber *atts,
 	 * reasoning as pgcolumnar_compact_relation. */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
 	PushActiveSnapshot(snapshot);
+	refuse_rewrite_past_snapshot(rel, oldStorageId, snapshot, NULL, 0);
 
 	/* augmented descriptor: the table's columns plus a trailing bytea curve key */
 	augdesc = CreateTemplateTupleDesc(natts + 1);
