@@ -894,7 +894,7 @@ Export a table to one file, or in parallel to a directory of files.
 
 ```sql
 SELECT pgcolumnar.export_parquet('events', '/data/events.parquet');
-SELECT pgcolumnar.parallel_export_parquet('events', '/data/events_out', 8);
+SELECT pgcolumnar.parallel_export_parquet('events', '/data/events_out', 4);
 ```
 
 Expose a Parquet file, directory, or Hive layout as a foreign table.
@@ -907,7 +907,10 @@ CREATE FOREIGN TABLE events_parquet (id bigint, ts timestamptz, region text)
 
 `parallel_export_parquet` writes one `part-NNNN.parquet` file per worker into the
 directory, and `read_parquet` or the foreign table reads the directory back as one
-relation.
+relation. Each worker takes one background worker slot, so the worker count must
+fit `max_worker_processes`. See
+[the SQL reference](sql-reference.md#pgcolumnarparallel_export_parquettarget-regclass-path-text-workers-int-default-null-returns-bigint)
+for how many fit.
 
 **Tuning.** Project only the columns you need, because the reader reads only those
 columns. A predicate on a `partition_columns` column removes whole files before
