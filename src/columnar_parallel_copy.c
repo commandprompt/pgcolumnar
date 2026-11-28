@@ -90,6 +90,7 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
+#include "storage/lmgr.h"
 #include "storage/shm_toc.h"
 #include "storage/shmem.h"
 #include "utils/syscache.h"
@@ -722,6 +723,7 @@ typedef struct PcopyWorkerSlot
 	char		errhint[256];	/* passed on to the caller (#2187) */
 	char		gid[GIDSIZE];	/* 2PC gid the coordinator assigned this loader */
 	pg_atomic_uint32 armed;		/* 1 once the loader holds its open lock (#2187) */
+	pg_atomic_uint32 running;	/* 1 once the loader holds its run lock (#2229) */
 } PcopyWorkerSlot;
 
 typedef struct PcopyHeader
@@ -749,8 +751,13 @@ typedef struct PcopyHeader
 	char		coord_errdetail[512];
 	char		coord_errhint[256];
 
-	/* names this load's open locks (#2187), see "Opening the target together" */
+	/*
+	 * names this load's open locks (#2187), see "Opening the target together",
+	 * and its run locks (#2229), see "The caller waits in the lock manager"
+	 */
 	uint32		open_lock_key;
+	pg_atomic_uint32 coord_running;	/* 1 once the coordinator holds its run
+									 * lock (#2229) */
 
 	/*
 	 * Set once every COMMIT PREPARED is done (#2219, third review). No prepared
@@ -880,10 +887,10 @@ hex_digit_value(char c)
  *		Read one field of a COPY text-format line at p, as core COPY's text
  *		attribute reader does with the delimiter and NULL marker the loaders use
  *		(TAB and \N, the defaults) (#2202). The field ends at an unescaped TAB, at
- *		a CR or LF, or at a NUL byte: the end of the buffer, or a raw NUL in the
- *		line, which core refuses before it reads any field (22021), so a row
- *		that holds one is refused here with a different SQLSTATE than COPY's
- *		(jdatcmd's review of #2220). A backslash escapes the byte after
+ *		a CR or LF, or at a NUL byte: the end of the buffer. A raw NUL in the
+ *		line never gets here: core refuses it before it reads any field
+ *		(22021), and so pcopy_copy_refuses_record leaves such a row for the
+ *		loader (#2222). A backslash escapes the byte after
  *		it, whatever that byte is: a backslash and a raw TAB are a TAB inside the
  *		value, not the end of the field. \NNN (1-3 octal digits), \xH and \xHH
  *		(hex), and \b \f \n \r \t \v decode; any other escaped byte, a second
@@ -1003,6 +1010,61 @@ pcopy_text_field(const PcopyScan *scan, char *p, StringInfo out, bool *isnull)
 }
 
 /*
+ * pcopy_copy_refuses_record
+ *		Whether core COPY FROM refuses the record at p (len bytes, read in
+ *		`encoding`, with a NUL after them) before it reads any column's value, so
+ *		before the input function of the partition key could run (#2222). Core
+ *		checks three things first, and this checks the same three:
+ *
+ *		- the bytes are valid in the file's encoding. Core verifies (or converts)
+ *		  the raw input before it looks for a line end, and a NUL byte is never
+ *		  valid (22021).
+ *		- no unescaped \. that core refuses. PG 18 refuses \. anywhere but alone
+ *		  on its line. PG 15 to 17 refuse it unless a CR or LF follows; with one,
+ *		  they end the line there, and with the wrong one for the file they refuse
+ *		  it too, which this leaves to the key (22P04).
+ *		- the line has as many fields as the default column list has columns
+ *		  (22P04: extra data, or missing data). A record's one unescaped LF is its
+ *		  last byte, so every unescaped TAB in it ends a field of this line. On PG
+ *		  15 to 17 nothing but a line end follows a \. that ends the line.
+ *
+ *		So a record this says yes to never loads: the caller leaves it in the
+ *		current range, and that range's loader raises core's own error. A file
+ *		with CR line ends is one record here, and lands in one range either way.
+ */
+static bool
+pcopy_copy_refuses_record(int encoding, const char *p, int len, int ncols)
+{
+	PcopyScan	scan;
+	int			nfields = 1;
+	int			i;
+
+	if (pg_encoding_verifymbstr(encoding, p, len) != len)
+		return true;
+
+	pcopy_scan_init(&scan, encoding);
+	for (i = 0; i < len; i++)
+	{
+		bool		after_backslash = scan.escaped && scan.mb_left == 0;
+		char		c = pcopy_scan_byte(&scan, p[i]);
+
+		if (after_backslash && p[i] == '.')
+		{
+#if PG_VERSION_NUM >= 180000
+			return true;
+#else
+			/* p[len] is a NUL, so this reads no further than the record */
+			if (p[i + 1] != '\n' && p[i + 1] != '\r')
+				return true;
+#endif
+		}
+		if (c == '\t')
+			nfields++;
+	}
+	return nfields != ncols;
+}
+
+/*
  * pcopy_partition_aligned_offsets
  *		Split a COPY text-format file into *workers_io byte ranges ALIGNED to the
  *		range-partition boundaries of `parent`, so each worker's range routes to a
@@ -1030,6 +1092,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	TupleDesc	td = RelationGetDescr(parent);
 	AttrNumber	keyattno;
 	int			keyfield = 0;
+	int			ncols = 0;
 	Oid			keytype,
 				ioparam,
 				infnoid,
@@ -1090,6 +1153,15 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 
 		if (!att->attisdropped && att->attgenerated == '\0')
 			keyfield++;
+	}
+
+	/* the number of fields a row of the default column list has (#2222) */
+	for (a = 1; a <= td->natts; a++)
+	{
+		Form_pg_attribute att = TupleDescAttr(td, a - 1);
+
+		if (!att->attisdropped && att->attgenerated == '\0')
+			ncols++;
 	}
 
 	keytype = pkey->parttypid[0];
@@ -1258,6 +1330,18 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 				p = line;
 
 			/*
+			 * A record core COPY refuses before it reads a value: leave it in
+			 * the current range, and that range's loader raises core's error,
+			 * with core's SQLSTATE and message, rather than the key's (#2222).
+			 */
+			if (pcopy_copy_refuses_record(encoding, p,
+										  rec.len > 0 ? rec.len : (int) len, ncols))
+			{
+				bucket = prev_bucket;
+				goto place_row;
+			}
+
+			/*
 			 * Advance to the key field. Fields end at an unescaped TAB only: a
 			 * backslash and a TAB are data, as COPY reads them (#2202).
 			 */
@@ -1298,6 +1382,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 				if (!pkey->parttypbyval[0])
 					pfree(DatumGetPointer(kd));
 			}
+	place_row:
 			if (bucket < prev_bucket)
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_EXCEPTION),
@@ -1484,6 +1569,134 @@ pcopy_wait_for_siblings_to_open(PcopyHeader *hdr, PcopyWorkerSlot *slots, int wi
 }
 
 /*
+ * The caller waits in the lock manager (#2229).
+ *
+ * The calling backend takes the workers' ROW EXCLUSIVE on the target and on
+ * each partition before it starts the coordinator, so a conflicting lock of
+ * another session -- LOCK TABLE ... IN SHARE MODE, CREATE INDEX -- is waited
+ * for there, in the lock manager, where the deadlock detector and the caller's
+ * lock_timeout see it. Before, the coordinator or a loader waited for it in its
+ * own transaction while the caller waited for them on a latch. If the other
+ * session then waited for a lock the caller held, nothing saw the cycle, and
+ * both waited until statement_timeout.
+ *
+ * Holding that lock has a cost of its own: a SHARE request that arrives after
+ * it waits for the caller, and a worker that asks for its ROW EXCLUSIVE later
+ * queues behind that request (the lock manager queues a request behind a
+ * waiting one it conflicts with). Measured on a partitioned target, a plain
+ * CREATE INDEX on a partition the loaders had not reached yet hung the load,
+ * where main's code just ran the index first.
+ *
+ * So the caller does not wait for its workers on a latch either. The
+ * coordinator, and each loader, takes an exclusive lock of class
+ * PGCOLUMNAR_LOCKCLASS_PCOPY_RUN on (load, its index) as soon as it has
+ * connected, before it asks for any lock on a relation, and says so in shared
+ * memory. The calling backend waits for each of those in SHARE mode in turn:
+ * the coordinator until it has created a single table's storage row, each
+ * loader until it exits. The wait-for graph then has an edge from the caller
+ * to the worker it is waiting for. A worker queued behind a SHARE request that
+ * waits for the caller closes a cycle with one soft edge, and the deadlock
+ * detector moves the worker ahead of the request, since its ROW EXCLUSIVE does
+ * not conflict with the caller's. A worker that waits for a lock the caller
+ * holds closes a cycle of hard edges, and one side gets 40P01 -- which is also
+ * what a lock the caller holds on a table the loaders reach through a foreign
+ * key, a trigger or a sequence now gives, instead of a hang (#2216).
+ *
+ * The run lock is a session lock, so a loader's PREPARE TRANSACTION does not
+ * carry it into the prepared transaction, and it goes with the process if the
+ * process dies. The caller's waits on it are waits for the load, not lock
+ * contention, so lock_timeout does not apply to them and log_lock_waits does
+ * not report them. A wait for a worker that has not taken its lock yet is a
+ * latch wait, but a worker takes it before it asks for anything a lock cycle
+ * could hold up.
+ */
+#define PCOPY_RUN_COORDINATOR	PCOPY_MAX_WORKERS	/* the coordinator's run lock index */
+
+static void
+pcopy_run_locktag(LOCKTAG *tag, const PcopyHeader *hdr, int idx)
+{
+	SET_LOCKTAG_ADVISORY(*tag, hdr->dbid, hdr->open_lock_key, (uint32) idx,
+						 PGCOLUMNAR_LOCKCLASS_PCOPY_RUN);
+}
+
+/* a worker takes its run lock, then says so; see above */
+static void
+pcopy_take_run_lock(const PcopyHeader *hdr, int idx, pg_atomic_uint32 *flag)
+{
+	LOCKTAG		tag;
+
+	pcopy_run_locktag(&tag, hdr, idx);
+	(void) LockAcquire(&tag, ExclusiveLock, true, false);
+	pg_atomic_write_u32(flag, 1);
+}
+
+static void
+pcopy_release_run_lock(const PcopyHeader *hdr, int idx)
+{
+	LOCKTAG		tag;
+
+	pcopy_run_locktag(&tag, hdr, idx);
+	LockRelease(&tag, ExclusiveLock, true);
+}
+
+/*
+ * pcopy_caller_wait_run_lock
+ *		The calling backend: wait until the worker behind *flag has taken its run
+ *		lock, or will not, then wait in the lock manager until it releases it.
+ *		*state is the worker's PENDING state, NULL for the coordinator.
+ */
+static void
+pcopy_caller_wait_run_lock(PcopyHeader *hdr, int idx, pg_atomic_uint32 *flag,
+						   pg_atomic_uint32 *state,
+						   BackgroundWorkerHandle *coord_handle)
+{
+	LOCKTAG		tag;
+
+	while (pg_atomic_read_u32(flag) == 0)
+	{
+		pid_t		cpid;
+
+		if (state != NULL && pg_atomic_read_u32(state) != PCOPY_PENDING)
+			return;
+		if (pg_atomic_read_u32(&hdr->coord_state) != PCOPY_COORD_PENDING ||
+			GetBackgroundWorkerPid(coord_handle, &cpid) == BGWH_STOPPED)
+			return;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+	pcopy_run_locktag(&tag, hdr, idx);
+	(void) LockAcquire(&tag, ShareLock, false, false);
+	LockRelease(&tag, ShareLock, false);
+}
+
+/*
+ * pcopy_caller_wait_for_workers
+ *		The calling backend: wait for the coordinator's and then each loader's run
+ *		lock (see above). Returns once every loader has exited or never started;
+ *		the caller then waits for the coordinator to finish.
+ */
+static void
+pcopy_caller_wait_for_workers(PcopyHeader *hdr, PcopyWorkerSlot *slots,
+							  BackgroundWorkerHandle *coord_handle)
+{
+	int			nest = NewGUCNestLevel();
+	int			i;
+
+	(void) set_config_option("lock_timeout", "0", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	(void) set_config_option("log_lock_waits", "off", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	pcopy_caller_wait_run_lock(hdr, PCOPY_RUN_COORDINATOR, &hdr->coord_running,
+							   NULL, coord_handle);
+	for (i = 0; i < hdr->nworkers; i++)
+		pcopy_caller_wait_run_lock(hdr, i, &slots[i].running, &slots[i].state,
+								   coord_handle);
+	AtEOXact_GUC(true, nest);
+}
+
+/*
  * pgcolumnar_parallel_copy_worker (loader)
  *		Background-worker entry: attach the DSM, connect, run core COPY over this
  *		worker's byte range into the target, then PREPARE TRANSACTION 'gid' rather
@@ -1521,6 +1734,8 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
+	/* before any lock on a relation (#2229), see "The caller waits..." */
+	pcopy_take_run_lock(hdr, widx, &me->running);
 
 	/*
 	 * Single-table load: this loader writes the one shared storage concurrently
@@ -1748,6 +1963,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 	}
 	PG_END_TRY();
 
+	pcopy_release_run_lock(hdr, widx);
 	dsm_detach(seg);
 	proc_exit(0);
 }
@@ -1943,37 +2159,8 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
-
-	/*
-	 * Single-table load: pre-create and COMMIT the storage catalog row before any
-	 * loader starts, in the coordinator's own top-level session (the SQL function
-	 * cannot commit). With the row committed, each loader -- which sets
-	 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
-	 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
-	 * coordinator itself leaves the flag off, so this uses the normal create path.
-	 */
-	if (hdr->single_table)
-	{
-		Relation	rel;
-
-		StartTransactionCommand();
-		/*
-		 * StartTransactionCommand does not push an active snapshot, but
-		 * PgColumnarEnsureStorageRow reads pgcolumnar.options/storage via
-		 * systable scans, and those visibility checks require a registered or
-		 * active snapshot. A normal backend has one from the executor; this
-		 * bgworker does not, so push one explicitly. Without it the scan runs
-		 * on an unregistered GetTransactionSnapshot() and aborts an assert
-		 * build the moment the options relation has a matching row (i.e. when
-		 * the target has custom options set).
-		 */
-		PushActiveSnapshot(GetTransactionSnapshot());
-		rel = table_open(hdr->relid, RowExclusiveLock);
-		PgColumnarEnsureStorageRow(rel);
-		table_close(rel, NoLock);
-		PopActiveSnapshot();
-		CommitTransactionCommand();
-	}
+	/* held while it locks the target, below (#2229) */
+	pcopy_take_run_lock(hdr, PCOPY_RUN_COORDINATOR, &hdr->coord_running);
 
 	handles = (BackgroundWorkerHandle **)
 		palloc0(sizeof(BackgroundWorkerHandle *) * nworkers);
@@ -1996,6 +2183,46 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		int			failed = -1;
 		int64		total = 0;
 		int			ncommit = nworkers;	/* ranges that hold data */
+
+		/*
+		 * Inside the PG_TRY (#2229, review of #2244): this step waits for a
+		 * lock on the target's storage, and the deadlock detector can pick the
+		 * coordinator as the victim of a cycle through it. Before, its error
+		 * ended the process before anything was recorded, and the caller
+		 * reported XX000 "coordinator exited without reporting a result"
+		 * instead of the 40P01. The PG_CATCH below records it for the caller.
+		 *
+		 * Single-table load: pre-create and COMMIT the storage catalog row before any
+		 * loader starts, in the coordinator's own top-level session (the SQL function
+		 * cannot commit). With the row committed, each loader -- which sets
+		 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
+		 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
+		 * coordinator itself leaves the flag off, so this uses the normal create path.
+		 */
+		if (hdr->single_table)
+		{
+			Relation	rel;
+
+			StartTransactionCommand();
+			/*
+			 * StartTransactionCommand does not push an active snapshot, but
+			 * PgColumnarEnsureStorageRow reads pgcolumnar.options/storage via
+			 * systable scans, and those visibility checks require a registered or
+			 * active snapshot. A normal backend has one from the executor; this
+			 * bgworker does not, so push one explicitly. Without it the scan runs
+			 * on an unregistered GetTransactionSnapshot() and aborts an assert
+			 * build the moment the options relation has a matching row (i.e. when
+			 * the target has custom options set).
+			 */
+			PushActiveSnapshot(GetTransactionSnapshot());
+			rel = table_open(hdr->relid, RowExclusiveLock);
+			PgColumnarEnsureStorageRow(rel);
+			table_close(rel, NoLock);
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+		}
+		/* the caller waits for the loaders' run locks from here (#2229) */
+		pcopy_release_run_lock(hdr, PCOPY_RUN_COORDINATOR);
 
 		for (i = 0; i < nworkers && !pcopy_coord_got_sigterm; i++)
 		{
@@ -2256,6 +2483,10 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		strlcpy(hdr->coord_errmsg,
 				edata->message ? edata->message : "coordinator error",
 				sizeof(hdr->coord_errmsg));
+		strlcpy(hdr->coord_errdetail, edata->detail ? edata->detail : "",
+				sizeof(hdr->coord_errdetail));
+		strlcpy(hdr->coord_errhint, edata->hint ? edata->hint : "",
+				sizeof(hdr->coord_errhint));
 		MemoryContextSwitchTo(ecxt);
 		FlushErrorState();
 		AbortOutOfAnyTransaction();
@@ -2308,6 +2539,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	int			max_prepared;
 	bool		dedup;
 	bool		single_table = false;
+	List	   *lockrels = NIL;	/* the target and its partitions (#2229) */
 	int64	   *offs;
 	int			eol_type;
 	int			file_encoding = pg_get_client_encoding();
@@ -2448,6 +2680,8 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 									   get_rel_name(partid)),
 							 errhint("Commit the write first, or load the file with COPY in this transaction.")));
 			}
+
+			lockrels = rels;
 		}
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
@@ -2514,6 +2748,23 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	/* the newline style every range is held to, read before any worker starts */
 	eol_type = pcopy_file_eol_type(path, file_encoding);
 
+	/*
+	 * Take the workers' lock first (#2229): ROW EXCLUSIVE on the target and on
+	 * each partition, the list the refusals above walked, held to the end of
+	 * the transaction as a writer's is. A conflicting lock of another session
+	 * is then waited for here, in the lock manager, where the deadlock detector
+	 * and this backend's lock_timeout see it, and not by the coordinator or a
+	 * loader in a transaction of its own; see "The caller waits in the lock
+	 * manager". After every refusal, so that none of them waits for another
+	 * session first, and before anything is created or started.
+	 */
+	{
+		ListCell   *lc;
+
+		foreach(lc, lockrels)
+			LockRelationOid(lfirst_oid(lc), RowExclusiveLock);
+	}
+
 	/* lay out one DSM segment: control header + per-worker slot array */
 	shm_toc_initialize_estimator(&est);
 	shm_toc_estimate_chunk(&est, sizeof(PcopyHeader));
@@ -2552,6 +2803,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	memset(hdr->fingerprint, 0, sizeof(hdr->fingerprint));
 	pg_atomic_init_u32(&hdr->coord_state, PCOPY_COORD_PENDING);
 	pg_atomic_init_u32(&hdr->committed, 0);
+	pg_atomic_init_u32(&hdr->coord_running, 0);
 
 	for (i = 0; i < workers; i++)
 	{
@@ -2565,6 +2817,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		slots[i].errhint[0] = '\0';
 		pg_atomic_init_u32(&slots[i].state, PCOPY_PENDING);
 		pg_atomic_init_u32(&slots[i].armed, 0);
+		pg_atomic_init_u32(&slots[i].running, 0);
 		/* gid unique among concurrently-prepared xacts: our pid + segment + index */
 		snprintf(slots[i].gid, GIDSIZE, "pgcolumnar/%d/%u/%d",
 				 (int) MyProcPid, (unsigned) dsmh, i);
@@ -2604,6 +2857,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
 					 errmsg("could not register pgcolumnar parallel_copy coordinator"),
 					 errhint("Increase max_worker_processes.")));
+		pcopy_caller_wait_for_workers(hdr, slots, coord_handle);
 		WaitForBackgroundWorkerShutdown(coord_handle);
 	}
 	PG_CATCH();
@@ -2681,7 +2935,9 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		else
 			ereport(ERROR,
 					(errcode(code ? code : ERRCODE_INTERNAL_ERROR),
-					 errmsg("pgcolumnar.parallel_copy failed: %s", msg)));
+					 errmsg("pgcolumnar.parallel_copy failed: %s", msg),
+					 detail[0] ? errdetail_internal("%s", detail) : 0,
+					 hint[0] ? errhint("%s", hint) : 0));
 	}
 
 	PG_RETURN_INT64(0);			/* unreachable */
