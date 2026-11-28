@@ -11,8 +11,12 @@ scan, rows committed after it, even after a VACUUM.
 A VACUUM that runs while a DELETE or UPDATE is still inside its statement does not
 leave the changed block all-visible after the writer commits (#2059), nor does one
 whose set comes after a DELETE that committed during its pause
-(pgcolumnar.vm_set_hold_ms). That VACUUM's second pass clears only the bits it
-flipped itself, so clean blocks an earlier VACUUM set keep theirs (#2170).
+(pgcolumnar.vm_set_hold_ms). That VACUUM clears no bit, so clean blocks an earlier
+VACUUM set keep theirs (#2170). It judges each row group again under the group's
+chunk-group lock before it sets the group's blocks, so even while it runs an
+index-only scan counts no row whose delete committed, a second deleter of the group
+waits for it, it does not wait for an open writer, and it holds at most the groups
+covering one block (#2268, pgcolumnar.vm_set_release_hold_ms).
 And an AFTER trigger of a DELETE or UPDATE, reading
 through an index-only scan after such a VACUUM, counts what heap counts (#2169). A DELETE that fails after such a nested read leaves
 every row live in the next transaction, and a second deleter of the same rows waits for
@@ -174,8 +178,8 @@ def _vm_mid(dsn, r, tag, tbl, rows, dml, before, after, ios, clean=None, setup=N
     """#2059: a DELETE commits between VACUUM's first computation and its set.
 
     pgcolumnar.vm_set_hold_ms pauses the VACUUM in that window. The writer's own
-    clears then run before the set, so only VACUUM's second computation can clear
-    the bits. `before`, `after`, `ios` and the optional `clean` are queries run
+    clears then run before the set, so VACUUM must see the delete when it judges
+    the group again under its lock (#2268). `before`, `after`, `ios` and the optional `clean` are queries run
     before the hold and after the VACUUM; the optional `setup` runs after the
     load's VACUUM, before `before`.
     """
@@ -436,6 +440,210 @@ def _cd_race(dsn, r, tag, tbl, am):
     r[f"{tag} left"] = _value(dsn, f"SELECT count(*) FROM {tbl}", ("SET enable_seqscan = on",))
 
 
+# #2268: VACUUM judges each row group again under its chunk-group lock (class 101)
+# and sets a block only while it holds every group covering it.
+# pgcolumnar.vm_set_hold_ms pauses before the set (wait event Extension), and
+# pgcolumnar.vm_set_release_hold_ms before each locked group is given back
+# (Timeout/PgSleep), which is where the reads run.
+RL_LOCKS = ("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+            "WHERE a.query = 'VACUUM {}' AND l.locktype = 'advisory' AND l.objsubid = 101 AND l.granted")
+
+
+def _rl_vacuum(dsn, tbl, hold, release, out):
+    """Start VACUUM `tbl` on its own connection in a thread, with the two pauses."""
+    def vacuum():
+        try:
+            with psycopg.connect(dsn, autocommit=True) as vac:
+                vac.execute(f"SET pgcolumnar.vm_set_hold_ms = {hold}")
+                vac.execute(f"SET pgcolumnar.vm_set_release_hold_ms = {release}")
+                vac.execute("SET statement_timeout = '120s'")
+                vac.execute(f"VACUUM {tbl}")
+                out["vacuum"] = "VACUUM"
+        except psycopg.Error as exc:
+            out["vacuum"] = f"ERROR:  {exc.sqlstate}"
+
+    t = threading.Thread(target=vacuum)
+    t.start()
+    return t
+
+
+def _rl_event(dsn, tbl, event):
+    """'yes' once VACUUM `tbl` waits on `event`, within 15 s."""
+    for _ in range(150):
+        if _value(dsn, "SELECT count(*) FROM pg_stat_activity "
+                       f"WHERE query = 'VACUUM {tbl}' AND wait_event = '{event}'") == "1":
+            return "yes"
+        time.sleep(0.1)
+    return "no"
+
+
+def _rl_wait_event(dsn, tbl):
+    return _value(dsn, f"SELECT wait_event FROM pg_stat_activity WHERE query = 'VACUUM {tbl}'")
+
+
+def _rl_delete_count(dsn, sql):
+    return _value(dsn, f"WITH d AS ({sql} RETURNING 1) SELECT count(*) FROM d")
+
+
+def _rl_rel(dsn, r):
+    """11a: one 20,000-row group; a DELETE of ids 300..400 commits during the first
+    pause. During the second pause read block 1 and the index-only count, and try a
+    second DELETE of the group with a 1 s lock_timeout."""
+    _load(dsn, "vr_rel", 20000)
+    r["rl before"] = _value(dsn, _vis("vr_rel", 1))
+    out = {}
+    t = _rl_vacuum(dsn, "vr_rel", 5000, 10000, out)
+    r["rl held"] = _rl_event(dsn, "vr_rel", "Extension")
+    r["rl del"] = _rl_delete_count(dsn, "DELETE FROM vr_rel WHERE id BETWEEN 300 AND 400")
+    r["rl still"] = _rl_wait_event(dsn, "vr_rel")
+    r["rl rel"] = _rl_event(dsn, "vr_rel", "PgSleep")
+    r["rl bit"] = _value(dsn, _vis("vr_rel", 1))
+    r["rl ios"] = _ios(dsn, "SELECT count(*) FROM vr_rel WHERE id BETWEEN 300 AND 400")
+    try:
+        with psycopg.connect(dsn, autocommit=True) as w2:
+            w2.execute("SET lock_timeout = 1000")
+            cur = w2.execute("DELETE FROM vr_rel WHERE id = 5000")
+            r["rl w2"] = f"DELETE {cur.rowcount}"
+    except psycopg.Error as exc:
+        r["rl w2"] = f"ERROR:  {exc.sqlstate}"
+        r["rl w2 msg"] = exc.diag.message_primary
+    r["rl w2still"] = _rl_wait_event(dsn, "vr_rel")
+    t.join(120)
+    r["rl vout"] = out.get("vacuum", "vacuum did not finish")
+    r["rl after"] = _value(dsn, _vis("vr_rel", 1))
+    r["rl ios2"] = _ios(dsn, "SELECT count(*) FROM vr_rel WHERE id BETWEEN 300 AND 400 OR id = 5000")
+
+
+def _rl_open(dsn, r):
+    """11b: a writer's DELETE flushes during the first pause and its transaction
+    stays open, holding the group's lock. VACUUM must finish meanwhile."""
+    _load(dsn, "vr_open", 20000)
+    r["op before"] = _value(dsn, _vis("vr_open", 1))
+    out = {}
+    t = _rl_vacuum(dsn, "vr_open", 5000, 0, out)
+    r["op held"] = _rl_event(dsn, "vr_open", "Extension")
+    try:
+        with psycopg.connect(dsn, autocommit=True) as h:
+            h.execute("BEGIN")
+            h.execute("DELETE FROM vr_open WHERE id BETWEEN 300 AND 400")
+            r["op still"] = _rl_wait_event(dsn, "vr_open")
+            t.join(30)
+            r["op done"] = "no" if t.is_alive() else "yes"
+            r["op bit"] = _value(dsn, _vis("vr_open", 1))
+            h.execute("COMMIT")
+    except psycopg.Error as exc:
+        r["op still"] = query_error(_message(exc))
+    t.join(120)
+    r["op after"] = _value(dsn, _vis("vr_open", 1))
+    r["op ios"] = _ios(dsn, "SELECT count(*) FROM vr_open WHERE id BETWEEN 300 AND 400")
+
+
+def _rl_strad(dsn, r):
+    """11c: six contiguous 1000-row groups; block 3 straddles groups 1 and 2. The
+    first three are loaded and vacuumed (blocks 1..9 set) before the other three, so
+    blocks 10..19 are unset and lie in the same run, after group 2. A DELETE of id
+    1100 (group 2) commits during the first pause. At the first release
+    pause read block 3 and the index-only count; then record the most class-101
+    locks VACUUM holds at once until it ends."""
+    _run(dsn, "CREATE TABLE vr_strad (id int, pad int) USING pgcolumnar; "
+              "SELECT pgcolumnar.set_options('vr_strad', stripe_row_limit => 1000); "
+              "INSERT INTO vr_strad SELECT g, g FROM generate_series(1, 3000) g; "
+              "CREATE INDEX vr_strad_id ON vr_strad (id);")
+    _run(dsn, "VACUUM vr_strad")
+    _run(dsn, "INSERT INTO vr_strad SELECT g, g FROM generate_series(3001, 6000) g")
+    sd_set = ("SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_strad', b)) "
+              "FROM generate_series(1, 19) b")
+    r["sd blocks"] = _value(dsn, "SELECT string_agg((ctid::text::point)[0]::int::text, '|' ORDER BY id) "
+                                 "FROM vr_strad WHERE id IN (1000, 1001, 1100, 3000, 3001)")
+    r["sd before"] = _value(dsn, sd_set)
+    out = {}
+    t = _rl_vacuum(dsn, "vr_strad", 5000, 1500, out)
+    held = _rl_event(dsn, "vr_strad", "Extension")
+    deleted = _rl_delete_count(dsn, "DELETE FROM vr_strad WHERE id = 1100")
+    r["sd held"] = f"{held}|{deleted}|{_rl_wait_event(dsn, 'vr_strad')}"
+    r["sd rel"] = _rl_event(dsn, "vr_strad", "PgSleep")
+    r["sd b3"] = _value(dsn, _vis("vr_strad", 3))
+    r["sd ios"] = _ios(dsn, "SELECT count(*) FROM vr_strad WHERE id = 1100")
+    most = 0
+    deadline = time.monotonic() + 120
+    while t.is_alive() and time.monotonic() < deadline:
+        n = _value(dsn, RL_LOCKS.format("vr_strad"))
+        if n.isdigit():
+            most = max(most, int(n))
+        time.sleep(0.1)
+    t.join(10)
+    r["sd max"] = str(most)
+    r["sd after"] = _value(dsn, sd_set)
+
+
+def _rl_order(dsn, r):
+    """11d: three contiguous 1000-row groups, never vacuumed. At the first release
+    pause, before group 1 is given back, read blocks 1..4 and the locks held."""
+    _run(dsn, "CREATE TABLE vr_order (id int, pad int) USING pgcolumnar; "
+              "SELECT pgcolumnar.set_options('vr_order', stripe_row_limit => 1000); "
+              "INSERT INTO vr_order SELECT g, g FROM generate_series(1, 3000) g; "
+              "CREATE INDEX vr_order_id ON vr_order (id);")
+    bits = ("SELECT string_agg(pgcolumnar.vm_is_visible('vr_order', b)::text, '|' ORDER BY b) "
+            "FROM generate_series(1, 4) b")
+    r["od before"] = _value(dsn, bits)
+    out = {}
+    t = _rl_vacuum(dsn, "vr_order", 0, 3000, out)
+    r["od rel"] = _rl_event(dsn, "vr_order", "PgSleep")
+    r["od bits"] = _value(dsn, bits)
+    r["od locks"] = _value(dsn, RL_LOCKS.format("vr_order"))
+    t.join(120)
+    r["od after"] = _value(dsn, bits)
+    stats = "SELECT relpages || '|' || relallvisible FROM pg_class WHERE relname = 'vr_order'"
+    _run(dsn, "ANALYZE vr_order")
+    r["od analyzed"] = _value(dsn, stats)
+    _run(dsn, "VACUUM vr_order")
+    r["od stats"] = _value(dsn, stats)
+
+
+def _rl_busy(dsn, r):
+    """11f: a writer's flush pauses after the group's lock and before its
+    delete_vector row (pgcolumnar.delete_flush_hold_ms); a plain VACUUM runs
+    during the pause and must leave block 1 unset without waiting."""
+    _load(dsn, "vr_busy", 20000)
+    r["bz before"] = _value(dsn, _vis("vr_busy", 1))
+    wait = "SELECT wait_event FROM pg_stat_activity WHERE query LIKE 'WITH d AS (DELETE FROM vr_busy%'"
+    out = {}
+
+    def write():
+        try:
+            with psycopg.connect(dsn, autocommit=True) as w:
+                w.execute("SET pgcolumnar.delete_flush_hold_ms = 8000")
+                w.execute("SET statement_timeout = '60s'")
+                out["written"] = str(w.execute(
+                    "WITH d AS (DELETE FROM vr_busy WHERE id BETWEEN 300 AND 400 RETURNING 1) "
+                    "SELECT count(*) FROM d").fetchone()[0])
+        except psycopg.Error as exc:
+            out["written"] = f"ERROR:  {exc.sqlstate}"
+
+    t = threading.Thread(target=write)
+    t.start()
+    paused = "no"
+    for _ in range(150):
+        if _value(dsn, wait) == "Extension":
+            paused = "yes"
+            break
+        time.sleep(0.1)
+    r["bz paused"] = f"{paused}|{_value(dsn, _vis('vr_busy', 1))}"
+    try:
+        with psycopg.connect(dsn, autocommit=True) as v:
+            v.execute("SET statement_timeout = 5000")
+            v.execute("VACUUM vr_busy")
+            r["bz vac"] = "VACUUM"
+    except psycopg.Error as exc:
+        r["bz vac"] = f"ERROR:  {exc.sqlstate}"
+    r["bz still"] = _value(dsn, wait)
+    r["bz bit"] = _value(dsn, _vis("vr_busy", 1))
+    t.join(90)
+    r["bz written"] = out.get("written", "writer did not finish")
+    r["bz after"] = _value(dsn, _vis("vr_busy", 1))
+    r["bz ios"] = _ios(dsn, "SELECT count(*) FROM vr_busy WHERE id BETWEEN 300 AND 400")
+
+
 @pytest.fixture(scope="module")
 def io(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -533,8 +741,8 @@ def io(pgc_cluster):
                 _tgt_all("vr_midm"), _tgt_stale("vr_midm"), _tgt_ios("vr_midm"))
         # #2170: group 1 (rows 1..20000, blocks 1..67) is set by the load's VACUUM;
         # a second INSERT starts group 2 at row 150001, blocks 516..583, not yet set.
-        # The DELETE takes blocks 1 and 5 of group 1 during the hold. Only the bits
-        # this VACUUM flipped and that left the second computation are cleared.
+        # The DELETE takes blocks 1 and 5 of group 1 during the hold. VACUUM judges
+        # the groups again under their locks and leaves those two unset.
         keep = "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_keep', b)) FROM ({}) t"
         g1 = "SELECT b FROM generate_series(1, 67) b"
         g2 = "SELECT b FROM generate_series(516, 583) b"
@@ -548,7 +756,7 @@ def io(pgc_cluster):
         r["keep fresh"] = _value(dsn, keep.format(g2))
         r["keep all"] = _ios(dsn, "SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000")
         # #2257 review, B1: ids 19500..19510 lie in block 67, the last block of row
-        # group 1's run (blocks 1..67); the second pass must reach it.
+        # group 1's run (blocks 1..67); the judgement must reach it.
         _vm_mid(dsn, r, "last", "vr_last", 20000, "DELETE FROM vr_last WHERE id BETWEEN 19500 AND 19510",
                 _vis("vr_last", 67), _vis("vr_last", 67), rng.format("vr_last", 19500, 19510))
         # B2: three contiguous 1000-row groups; block 3 straddles groups 1 and 2, and
@@ -580,10 +788,31 @@ def io(pgc_cluster):
         _run(dsn, CD_GATE)
         _cd_race(dsn, r, "cd heap", "cd_h", "heap")
         _cd_race(dsn, r, "cd", "cd", "pgcolumnar")
+        _rl_rel(dsn, r)
+        _rl_open(dsn, r)
+        _rl_strad(dsn, r)
+        _rl_order(dsn, r)
+        _rl_busy(dsn, r)
+        _run(dsn, "CREATE ROLE rl_plain LOGIN")
+        try:
+            with psycopg.connect(dsn.replace("user=postgres", "user=rl_plain"), autocommit=True) as plain:
+                plain.execute("SET pgcolumnar.vm_set_release_hold_ms = 1000")
+                r["rl suset"] = "SET"
+        except psycopg.Error as exc:
+            r["rl suset"] = f"ERROR:  {exc.sqlstate}"
+            r["rl suset msg"] = exc.diag.message_primary
+        try:
+            with psycopg.connect(dsn.replace("user=postgres", "user=rl_plain"), autocommit=True) as plain:
+                plain.execute("SET pgcolumnar.delete_flush_hold_ms = 1000")
+                r["rl suset2"] = "SET"
+        except psycopg.Error as exc:
+            r["rl suset2"] = f"ERROR:  {exc.sqlstate}"
+            r["rl suset2 msg"] = exc.diag.message_primary
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute("DROP ROLE IF EXISTS rl_plain")
 
 
 def test_rows_loaded(io, expect):
@@ -1136,3 +1365,195 @@ def test_second_deleter_during_nested_read_second_fails_40001(io, expect):
 def test_second_deleter_during_nested_read_rows_left(io, expect):
     expect.text(f"{io['cd left']}|{io['cd heap left']}", "19000|18500",
                 "a second deleter during the first's nested read: 19000 rows remain, where heap leaves 18500")
+
+
+def test_2268_premise_delete_during_pause_block_1_all_visible_before(io, expect):
+    expect.text(io["rl before"], "t",
+                "#2268 premise: a delete during vacuum's pause: block 1 all-visible before the writer starts")
+
+
+def test_2268_premise_delete_during_pause_vacuum_paused_before_set(io, expect):
+    expect.text(io["rl held"], "yes", "#2268 premise: a delete during vacuum's pause: vacuum paused before its set")
+
+
+def test_2268_premise_delete_during_pause_delete_committed_while_paused(io, expect):
+    expect.text(f"{io['rl del']}|{io['rl still']}", "101|Extension",
+                "#2268 premise: a delete during vacuum's pause: the delete of 101 rows committed while vacuum was paused")
+
+
+def test_2268_premise_delete_during_pause_vacuum_paused_again_holding_group(io, expect):
+    expect.text(io["rl rel"], "yes", "#2268 premise: a delete during vacuum's pause: vacuum paused again holding the row group")
+
+
+def test_2268_delete_during_pause_block_1_not_all_visible_while_held(io, expect):
+    expect.text(io["rl bit"], "f",
+                "#2268 a delete during vacuum's pause: block 1 not all-visible while vacuum holds the group")
+
+
+def test_2268_delete_during_pause_ios_counts_no_deleted_row_while_held(io, expect):
+    expect.text(io["rl ios"], "0",
+                "#2268 a delete during vacuum's pause: index-only scan counts no deleted row while vacuum holds the group")
+
+
+def test_2268_delete_during_pause_second_delete_waits_and_times_out(io, expect):
+    expect.text(f"{io['rl w2']}: {io.get('rl w2 msg', '')}", "ERROR:  55P03: canceling statement due to lock timeout",
+                "#2268 a delete during vacuum's pause: a second delete of the group waits for vacuum's lock and times out")
+
+
+def test_2268_premise_delete_during_pause_vacuum_still_paused_when_second_gave_up(io, expect):
+    expect.text(io["rl w2still"], "PgSleep",
+                "#2268 premise: a delete during vacuum's pause: vacuum was still paused when the second delete gave up")
+
+
+def test_2268_delete_during_pause_vacuum_finished_cleanly(io, expect):
+    expect.text(io["rl vout"], "VACUUM", "#2268 a delete during vacuum's pause: vacuum finished cleanly")
+
+
+def test_2268_delete_during_pause_after_vacuum(io, expect):
+    expect.text(f"{io['rl after']}|{io['rl ios2']}", "f|1",
+                "#2268 a delete during vacuum's pause: after vacuum block 1 is not all-visible and the index-only scan counts only id 5000")
+
+
+def test_2268_premise_writer_holding_group_block_1_all_visible_before(io, expect):
+    expect.text(io["op before"], "t", "#2268 premise: a writer holding the group: block 1 all-visible before the writer starts")
+
+
+def test_2268_premise_writer_holding_group_delete_flushed_while_paused(io, expect):
+    expect.text(f"{io['op held']}|{io['op still']}", "yes|Extension",
+                "#2268 premise: a writer holding the group: its delete flushed while vacuum was paused before its set")
+
+
+def test_2268_writer_holding_group_vacuum_finished_while_open(io, expect):
+    expect.text(io.get("op done", "not reached"), "yes",
+                "#2268 a writer holding the group: vacuum finished while the writer's transaction was open")
+
+
+def test_2268_writer_holding_group_block_1_not_all_visible_while_open(io, expect):
+    expect.text(io.get("op bit", "not reached"), "f",
+                "#2268 a writer holding the group: block 1 not all-visible while the writer is open")
+
+
+def test_2268_writer_holding_group_after_commit(io, expect):
+    expect.text(f"{io['op after']}|{io['op ios']}", "f|0",
+                "#2268 a writer holding the group: after the writer commits block 1 is not all-visible and the index-only scan counts no deleted row")
+
+
+def test_2268_premise_shared_block_ids_lie_in_block_3(io, expect):
+    expect.text(io["sd blocks"], "3|3|3|10|10",
+                "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: ids 1000, 1001 and 1100 lie in block 3, and 3000 and 3001 in block 10")
+
+
+def test_2268_premise_shared_block_blocks_all_visible_before(io, expect):
+    expect.text(io["sd before"], "9",
+                "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: blocks 1..9 all-visible and 10..19 not before the writer starts")
+
+
+def test_2268_premise_shared_block_delete_committed_while_paused(io, expect):
+    expect.text(io["sd held"], "yes|1|Extension",
+                "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: the delete committed while vacuum was paused")
+
+
+def test_2268_premise_shared_block_vacuum_paused_again_holding_groups(io, expect):
+    expect.text(io["sd rel"], "yes",
+                "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: vacuum paused again holding row groups")
+
+
+def test_2268_shared_block_block_3_not_all_visible_while_held(io, expect):
+    expect.text(io["sd b3"], "f",
+                "#2268 a delete in a block shared by two row groups during vacuum's pause: block 3 not all-visible while vacuum holds the groups")
+
+
+def test_2268_shared_block_ios_counts_no_row_for_1100(io, expect):
+    expect.text(io["sd ios"], "0",
+                "#2268 a delete in a block shared by two row groups during vacuum's pause: index-only scan counts no row for id 1100")
+
+
+def test_2268_shared_block_vacuum_held_at_most_2_groups(io, expect):
+    expect.text(io["sd max"], "2",
+                "#2268 a delete in a block shared by two row groups during vacuum's pause: vacuum held at most the 2 groups covering one block")
+
+
+def test_2268_shared_block_only_block_3_lost_its_bit(io, expect):
+    expect.text(io["sd after"], "18",
+                "#2268 a delete in a block shared by two row groups during vacuum's pause: after vacuum 18 of blocks 1..19, all but block 3, are all-visible")
+
+
+def test_2268_premise_clean_shared_block_nothing_set_before(io, expect):
+    expect.text(io["od before"], "false|false|false|false",
+                "#2268 premise: a block shared by two clean row groups: blocks 1..4 not all-visible before vacuum")
+
+
+def test_2268_premise_clean_shared_block_vacuum_paused_before_giving_back_group_1(io, expect):
+    expect.text(io["od rel"], "yes",
+                "#2268 premise: a block shared by two clean row groups: vacuum paused before giving back group 1")
+
+
+def test_2268_clean_shared_block_set_while_group_1_held(io, expect):
+    expect.text(io["od bits"], "true|true|true|false",
+                "#2268 a block shared by two clean row groups: at that pause blocks 1..3 are set and block 4 not yet")
+
+
+def test_2268_clean_shared_block_vacuum_holds_groups_1_and_2(io, expect):
+    expect.text(io["od locks"], "2",
+                "#2268 a block shared by two clean row groups: at that pause vacuum holds groups 1 and 2")
+
+
+def test_2268_clean_shared_block_all_set_after(io, expect):
+    expect.text(io["od after"], "true|true|true|true",
+                "#2268 a block shared by two clean row groups: after vacuum blocks 1..4 are all-visible")
+
+
+def test_2268_premise_clean_shared_block_analyze_records_vm_blocks(io, expect):
+    expect.text(io["od analyzed"], "5|9",
+                "#2268 premise: a block shared by two clean row groups: ANALYZE records 5 pages and the VM's 9 all-visible blocks")
+
+
+def test_2268_clean_shared_block_second_vacuum_records_all_visible_pages(io, expect):
+    expect.text(io["od stats"], "5|4",
+                "#2268 a block shared by two clean row groups: a second vacuum that sets no bit records 4 of the 5 pages all-visible")
+
+
+def test_2268_release_hold_is_superuser_only(io, expect):
+    expect.text(f"{io['rl suset']}: {io.get('rl suset msg', '')}",
+                'ERROR:  42501: permission denied to set parameter "pgcolumnar.vm_set_release_hold_ms"',
+                "#2268 a role without superuser cannot set pgcolumnar.vm_set_release_hold_ms")
+
+
+def test_2268_premise_busy_flush_block_1_all_visible_before(io, expect):
+    expect.text(io["bz before"], "t",
+                "#2268 premise: a writer paused inside its flush: block 1 all-visible before the writer starts")
+
+
+def test_2268_premise_busy_flush_paused_holding_lock_mark_cleared(io, expect):
+    expect.text(io["bz paused"], "yes|f",
+                "#2268 premise: a writer paused inside its flush: it paused holding the group's lock, and its mark cleared block 1")
+
+
+def test_2268_busy_flush_vacuum_did_not_wait(io, expect):
+    expect.text(io["bz vac"], "VACUUM",
+                "#2268 a writer paused inside its flush: vacuum finished without waiting for the writer")
+
+
+def test_2268_premise_busy_flush_writer_still_paused(io, expect):
+    expect.text(io["bz still"], "Extension",
+                "#2268 premise: a writer paused inside its flush: the writer was still paused after vacuum")
+
+
+def test_2268_busy_flush_block_1_not_all_visible(io, expect):
+    expect.text(io["bz bit"], "f",
+                "#2268 a writer paused inside its flush: block 1 not all-visible after vacuum while the writer holds the lock")
+
+
+def test_2268_premise_busy_flush_writer_deleted_101(io, expect):
+    expect.text(io["bz written"], "101", "#2268 premise: a writer paused inside its flush: the writer deleted 101 rows")
+
+
+def test_2268_busy_flush_after_commit(io, expect):
+    expect.text(f"{io['bz after']}|{io['bz ios']}", "f|0",
+                "#2268 a writer paused inside its flush: after the writer commits block 1 is not all-visible and the index-only scan counts no deleted row")
+
+
+def test_2268_delete_flush_hold_is_superuser_only(io, expect):
+    expect.text(f"{io['rl suset2']}: {io.get('rl suset2 msg', '')}",
+                'ERROR:  42501: permission denied to set parameter "pgcolumnar.delete_flush_hold_ms"',
+                "#2268 a role without superuser cannot set pgcolumnar.delete_flush_hold_ms")

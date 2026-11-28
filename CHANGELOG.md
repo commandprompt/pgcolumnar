@@ -644,6 +644,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- An index-only scan no longer counts rows a DELETE or UPDATE already
+  committed, while a lazy VACUUM of the table runs (#2268). VACUUM judged the
+  row groups from the catalog and set their blocks' visibility-map bits after,
+  in a separate step. A delete that committed between the two had cleared its
+  bits already, so VACUUM set them again, and until VACUUM's second pass
+  cleared them an index-only scan returned the deleted rows. It was transient,
+  and it showed under concurrent writers about once in four 180 s stress runs.
+  VACUUM now takes each row group's chunk-group lock, the one every flush of
+  delete marks takes and holds to commit, judges the group again under it,
+  and sets a block only while it holds every group covering the block. That
+  makes the judgement and the set one step for writers, as heap's buffer lock
+  does, and the second pass of #2059 and #2170 is gone. VACUUM does not wait
+  for a busy lock: it leaves that group's blocks unset. A DELETE whose flush
+  needs a group VACUUM holds waits for it, for as long as VACUUM takes to set
+  that block's bits. Two new superuser-only test settings:
+  `pgcolumnar.vm_set_release_hold_ms` pauses VACUUM before it gives back each
+  group, and `pgcolumnar.delete_flush_hold_ms` pauses a delete flush after it
+  takes its groups' locks and before it writes their rows.
+  docs/administration.md and docs/configuration.md. `test/index_only.sh` and
+  `test_index_only.py`.
+
 - `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
   reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
   ends the line at the `\.` and loads the row, so `a<TAB>1200\.` then LF has

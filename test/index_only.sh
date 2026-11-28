@@ -356,9 +356,10 @@ wait "$H_PID" 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # Phase 7 (#2059): the writer's delete_vector row lands between VACUUM's first
 # computation of the all-visible blocks and its set. The writer's own clears
-# run before the set, so only VACUUM's second computation can clear the bit.
-# pgcolumnar.vm_set_hold_ms pauses VACUUM in that window; the DELETE runs and
-# commits during the pause.
+# run before the set, so VACUUM must see the delete when it judges the group
+# again under the group's lock, and not set the bit (#2268; before it, a second
+# computation cleared it after the set). pgcolumnar.vm_set_hold_ms pauses
+# VACUUM in that window; the DELETE runs and commits during the pause.
 # ---------------------------------------------------------------------------
 echo "-- phase 7: a delete commits between vacuum's computation and its set (#2059)"
 # vm_mid TABLE ROWS DML BEFORE AFTER IOS [CLEAN [SETUP]]: load ROWS rows into
@@ -412,8 +413,8 @@ check "delete between vacuum's two steps: index-only scan returns no deleted row
 
 # 300,000 rows in one INSERT: row group 2 starts at row 150001, inside block
 # 515 (rows 149865..150155). The delete of 150001..150100 makes block 515 stale
-# while the second pass's walk must step past the first group's run, which
-# ends before 515. Block 514 lies wholly in the clean first group and keeps its
+# while the walk must step past the first group's run, which ends before
+# 515. Block 514 lies wholly in the clean first group and keeps its
 # bit. Block 516 is in the group that holds the delete, so it is cleared too and
 # is not checked.
 vm_mid vr_mid2 300000 "DELETE FROM vr_mid2 WHERE id BETWEEN 150001 AND 150100;" \
@@ -435,16 +436,17 @@ check "delete over three row groups between vacuum's two steps: the delete commi
 check "delete over three row groups between vacuum's two steps: no target block all-visible after vacuum" "$vm_after" "0"
 check "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
 
-# #2170: the second pass clears only the bits this VACUUM flipped from 0 to 1.
+# #2170: VACUUM clears no bit it finds set, so clean blocks keep theirs. (Up to
+# #2268 its second pass cleared the bits it had flipped from 0 to 1.)
 # vr_keep's first 20,000 rows are row group 1, blocks 1..67, all set by the
 # load's VACUUM. A second INSERT of 20,000 rows after it starts row group 2 at
 # row 150001, and its blocks 516..583 are not set yet. During the hold a DELETE
 # takes ids 300..400 (block 1) and 1500..1600 (block 5), so group 1 leaves the
-# second computation while group 2 stays in it. The writer's clears run before
-# the set, so the set flips blocks 1 and 5 back, and only the second pass can
-# clear them. The other 65 blocks of group 1 hold no deleted row and were set
-# before the hold: they keep their bits. Blocks 516..583 are flipped by this
-# VACUUM and stay all-visible at the second computation: they keep theirs too.
+# all-visible groups when VACUUM judges them again under their locks, while
+# group 2 stays in. The writer's clears run before the set, so the set must
+# leave blocks 1 and 5 unset. The other 65 blocks of group 1 hold no deleted
+# row and were set before the hold: they keep their bits. Blocks 516..583 are flipped by this
+# VACUUM and stay all-visible under the lock: they keep theirs too.
 KEEP_G1="SELECT b FROM generate_series(1, 67) b"
 KEEP_DEL="SELECT b FROM (VALUES (1), (5)) v(b)"
 KEEP_CLEAN="SELECT b FROM generate_series(1, 67) b WHERE b NOT IN (1, 5)"
@@ -473,7 +475,7 @@ check "#2170 delete between vacuum's two steps: the 68 blocks this vacuum set in
 check "#2170 delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
 check "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows" "$vm_all" "39798"
 
-# #2257 review, B1: the second pass must reach the LAST block of a run. In
+# #2257 review, B1: the judgement must reach the LAST block of a run. In
 # vr_last's 20,000 rows, row group 1's run is blocks 1..67, and ids
 # 19500..19510 lie in block 67 (rows 19497..19787), its last block. The DELETE
 # commits during the hold, so the set flips block 67 back and only the second
@@ -772,6 +774,242 @@ check "a second deleter during the first's nested read: the second deleter waits
 check "a second deleter during the first's nested read: the first deleter deletes its 1000 rows, as on heap" "$cd_a|$hc_a" "DELETE 1000|DELETE 1000"
 check "a second deleter during the first's nested read: the second then fails with serialization_failure, where heap deletes the other 500" "$cd_b|$hc_b" "ERROR:  40001|DELETE 500"
 check "a second deleter during the first's nested read: 19000 rows remain, where heap leaves 18500" "$cd_left|$hc_left" "19000|18500"
+
+# ---------------------------------------------------------------------------
+# Phase 11 (#2268): VACUUM judges each row group again under the group's
+# chunk-group lock (class 101), the lock every flush of delete marks takes and
+# holds to commit, and sets a block's bit only while it holds every group that
+# covers the block. Without that, a DELETE that committed after VACUUM's first
+# computation got its block set anyway, and an index-only scan counted the
+# deleted rows until VACUUM's later pass cleared the bit.
+# pgcolumnar.vm_set_hold_ms pauses VACUUM before the set (wait event Extension);
+# pgcolumnar.vm_set_release_hold_ms pauses it before it gives back each group
+# it locked (wait event Timeout/PgSleep), which is where the reads below run.
+# ---------------------------------------------------------------------------
+echo "-- phase 11: vacuum judges a row group again under its lock before it sets the group's blocks (#2268)"
+# rl_vacuum TABLE HOLD RELEASE_HOLD: start VACUUM TABLE in the background with
+# the two pauses, and set rl_vpid.
+rl_vacuum() {
+	env PATH="$PGC_BINDIR:$PATH" \
+		PGOPTIONS="-c pgcolumnar.vm_set_hold_ms=$2 -c pgcolumnar.vm_set_release_hold_ms=$3 -c statement_timeout=120s" \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate -c "VACUUM $1;" \
+		> "$PGC_WORKDIR/$1.vacuum.out" 2>&1 &
+	rl_vpid=$!
+}
+# rl_event TABLE EVENT: "yes" once VACUUM TABLE waits on EVENT, within 15 s
+rl_event() {
+	local i
+	for i in $(seq 1 150); do
+		if [ "$(q "SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM $1;' AND wait_event = '$2';")" = "1" ]; then
+			echo yes; return
+		fi
+		sleep 0.1
+	done
+	echo no
+}
+# rl_ios SQL: SQL's value read through an index-only scan, or why not
+rl_ios() {
+	local plan
+	plan="$(q "EXPLAIN (COSTS OFF) $1")"
+	case "$plan" in
+	*'Index Only Scan'*) q "$1" ;;
+	*) echo "no index-only scan was planned: $plan" ;;
+	esac
+}
+RL_LOCKS="SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.query = 'VACUUM %s;' AND l.locktype = 'advisory' AND l.objsubid = 101 AND l.granted;"
+
+# 11a. One 20,000-row group, set by the load's VACUUM. A DELETE of ids 300..400
+# (block 1) commits during the first pause; its own clears run before the set.
+# During the second pause, VACUUM holds the group: block 1 must not be set and
+# the index-only scan must count none of the deleted rows. A second DELETE of
+# the same group, with a 1 s lock_timeout, must wait for VACUUM's lock.
+psql_run "CREATE TABLE vr_rel (id int, pad int) USING pgcolumnar;"
+psql_run "INSERT INTO vr_rel SELECT g, g FROM generate_series(1, 20000) g;"
+psql_run "CREATE INDEX vr_rel_id ON vr_rel (id);"
+psql_run "VACUUM vr_rel;"
+rl_before="$(q "SELECT pgcolumnar.vm_is_visible('vr_rel', 1);")"
+rl_vacuum vr_rel 5000 10000
+rl_held="$(rl_event vr_rel Extension)"
+rl_del="$(q "WITH d AS (DELETE FROM vr_rel WHERE id BETWEEN 300 AND 400 RETURNING 1) SELECT count(*) FROM d;")"
+rl_still="$(q "SELECT wait_event FROM pg_stat_activity WHERE query = 'VACUUM vr_rel;';")"
+rl_rel="$(rl_event vr_rel PgSleep)"
+rl_bit="$(q "SELECT pgcolumnar.vm_is_visible('vr_rel', 1);")"
+rl_ios="$(rl_ios "SELECT count(*) FROM vr_rel WHERE id BETWEEN 300 AND 400;")"
+rl_w2="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c lock_timeout=1000' \
+	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=verbose \
+	-c "DELETE FROM vr_rel WHERE id = 5000;" 2>&1 | head -1)"
+rl_w2still="$(q "SELECT wait_event FROM pg_stat_activity WHERE query = 'VACUUM vr_rel;';")"
+wait "$rl_vpid" 2>/dev/null || true
+rl_vout="$(cat "$PGC_WORKDIR/vr_rel.vacuum.out")"
+rl_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_rel', 1);")"
+rl_ios2="$(rl_ios "SELECT count(*) FROM vr_rel WHERE id BETWEEN 300 AND 400 OR id = 5000;")"
+check "#2268 premise: a delete during vacuum's pause: block 1 all-visible before the writer starts" "$rl_before" "t"
+check "#2268 premise: a delete during vacuum's pause: vacuum paused before its set" "$rl_held" "yes"
+check "#2268 premise: a delete during vacuum's pause: the delete of 101 rows committed while vacuum was paused" "$rl_del|$rl_still" "101|Extension"
+check "#2268 premise: a delete during vacuum's pause: vacuum paused again holding the row group" "$rl_rel" "yes"
+check "#2268 a delete during vacuum's pause: block 1 not all-visible while vacuum holds the group" "$rl_bit" "f"
+check "#2268 a delete during vacuum's pause: index-only scan counts no deleted row while vacuum holds the group" "$rl_ios" "0"
+check "#2268 a delete during vacuum's pause: a second delete of the group waits for vacuum's lock and times out" "$rl_w2" "ERROR:  55P03: canceling statement due to lock timeout"
+check "#2268 premise: a delete during vacuum's pause: vacuum was still paused when the second delete gave up" "$rl_w2still" "PgSleep"
+check "#2268 a delete during vacuum's pause: vacuum finished cleanly" "$rl_vout" "VACUUM"
+check "#2268 a delete during vacuum's pause: after vacuum block 1 is not all-visible and the index-only scan counts only id 5000" "$rl_after|$rl_ios2" "f|1"
+
+# 11b. A writer holds the group's lock: its DELETE flushed during the first
+# pause and its transaction stays open (session H). VACUUM must not wait for
+# it, must leave block 1 unset, and after the writer commits an index-only scan
+# must count none of the deleted rows.
+psql_run "CREATE TABLE vr_open (id int, pad int) USING pgcolumnar;"
+psql_run "INSERT INTO vr_open SELECT g, g FROM generate_series(1, 20000) g;"
+psql_run "CREATE INDEX vr_open_id ON vr_open (id);"
+psql_run "VACUUM vr_open;"
+op_before="$(q "SELECT pgcolumnar.vm_is_visible('vr_open', 1);")"
+rl_vacuum vr_open 5000 0
+op_held="$(rl_event vr_open Extension)"
+h_send "BEGIN; DELETE FROM vr_open WHERE id BETWEEN 300 AND 400; SELECT 'H_DELETED_vr_open';"
+h_wait "H_DELETED_vr_open" || true
+op_still="$(q "SELECT wait_event FROM pg_stat_activity WHERE query = 'VACUUM vr_open;';")"
+op_done="no"
+for i in $(seq 1 300); do
+	if ! kill -0 "$rl_vpid" 2>/dev/null; then op_done="yes"; break; fi
+	sleep 0.1
+done
+op_bit="$(q "SELECT pgcolumnar.vm_is_visible('vr_open', 1);")"
+h_send "COMMIT; SELECT 'H_COMMITTED_vr_open';"
+h_wait "H_COMMITTED_vr_open" || true
+wait "$rl_vpid" 2>/dev/null || true
+op_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_open', 1);")"
+op_ios="$(rl_ios "SELECT count(*) FROM vr_open WHERE id BETWEEN 300 AND 400;")"
+check "#2268 premise: a writer holding the group: block 1 all-visible before the writer starts" "$op_before" "t"
+check "#2268 premise: a writer holding the group: its delete flushed while vacuum was paused before its set" "$op_held|$op_still" "yes|Extension"
+check "#2268 a writer holding the group: vacuum finished while the writer's transaction was open" "$op_done" "yes"
+check "#2268 a writer holding the group: block 1 not all-visible while the writer is open" "$op_bit" "f"
+check "#2268 a writer holding the group: after the writer commits block 1 is not all-visible and the index-only scan counts no deleted row" "$op_after|$op_ios" "f|0"
+
+# 11c. Six contiguous 1000-row groups (stripe_row_limit 1000): rows 1..1000,
+# 1001..2000, ... Block 3 (rows 873..1163) straddles groups 1 and 2. The first
+# three groups are loaded and vacuumed (blocks 1..9 set), then the other three
+# are loaded, so blocks 10..19 are not set yet and lie in the same run, after
+# group 2. A DELETE of id 1100 (group 2) commits during the first pause. At the first release
+# pause VACUUM has decided block 3, which it may set only if group 2 is clean:
+# block 3 must not be set and the index-only scan must count no row for id
+# 1100. VACUUM holds the locks of the groups covering one block at a time, so
+# never more than 2 at once here. After VACUUM, every block of 1..19 but block 3
+# is all-visible: 4..6 kept the bits of the first VACUUM, and 10..19 were set
+# past the unclean group 2.
+psql_run "CREATE TABLE vr_strad (id int, pad int) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('vr_strad', stripe_row_limit => 1000);"
+psql_run "INSERT INTO vr_strad SELECT g, g FROM generate_series(1, 3000) g;"
+psql_run "CREATE INDEX vr_strad_id ON vr_strad (id);"
+psql_run "VACUUM vr_strad;"
+psql_run "INSERT INTO vr_strad SELECT g, g FROM generate_series(3001, 6000) g;"
+SD_SET="SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_strad', b)) FROM generate_series(1, 19) b;"
+sd_blocks="$(q "SELECT string_agg((ctid::text::point)[0]::int::text, '|' ORDER BY id) FROM vr_strad WHERE id IN (1000, 1001, 1100, 3000, 3001);")"
+sd_before="$(q "$SD_SET")"
+rl_vacuum vr_strad 5000 1500
+sd_held="$(rl_event vr_strad Extension)"
+sd_del="$(q "WITH d AS (DELETE FROM vr_strad WHERE id = 1100 RETURNING 1) SELECT count(*) FROM d;")"
+sd_still="$(q "SELECT wait_event FROM pg_stat_activity WHERE query = 'VACUUM vr_strad;';")"
+sd_rel="$(rl_event vr_strad PgSleep)"
+sd_b3="$(q "SELECT pgcolumnar.vm_is_visible('vr_strad', 3);")"
+sd_ios="$(rl_ios "SELECT count(*) FROM vr_strad WHERE id = 1100;")"
+sd_max=0
+while kill -0 "$rl_vpid" 2>/dev/null; do
+	n="$(q "$(printf "$RL_LOCKS" vr_strad)")"
+	[ -n "$n" ] && [ "$n" -gt "$sd_max" ] && sd_max="$n"
+	sleep 0.1
+done
+wait "$rl_vpid" 2>/dev/null || true
+sd_after="$(q "$SD_SET")"
+check "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: ids 1000, 1001 and 1100 lie in block 3, and 3000 and 3001 in block 10" "$sd_blocks" "3|3|3|10|10"
+check "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: blocks 1..9 all-visible and 10..19 not before the writer starts" "$sd_before" "9"
+check "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: the delete committed while vacuum was paused" "$sd_held|$sd_del|$sd_still" "yes|1|Extension"
+check "#2268 premise: a delete in a block shared by two row groups during vacuum's pause: vacuum paused again holding row groups" "$sd_rel" "yes"
+check "#2268 a delete in a block shared by two row groups during vacuum's pause: block 3 not all-visible while vacuum holds the groups" "$sd_b3" "f"
+check "#2268 a delete in a block shared by two row groups during vacuum's pause: index-only scan counts no row for id 1100" "$sd_ios" "0"
+check "#2268 a delete in a block shared by two row groups during vacuum's pause: vacuum held at most the 2 groups covering one block" "$sd_max" "2"
+check "#2268 a delete in a block shared by two row groups during vacuum's pause: after vacuum 18 of blocks 1..19, all but block 3, are all-visible" "$sd_after" "18"
+
+# 11d. Three contiguous 1000-row groups, never vacuumed, so no bit is set. Block
+# 3 straddles groups 1 and 2. VACUUM must still hold group 1 when it sets block
+# 3: at the first release pause, the one before group 1 is given back, blocks
+# 1..3 are set and block 4 is not yet, and VACUUM holds groups 1 and 2.
+psql_run "CREATE TABLE vr_order (id int, pad int) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('vr_order', stripe_row_limit => 1000);"
+psql_run "INSERT INTO vr_order SELECT g, g FROM generate_series(1, 3000) g;"
+psql_run "CREATE INDEX vr_order_id ON vr_order (id);"
+OD_BITS="SELECT string_agg(pgcolumnar.vm_is_visible('vr_order', b)::text, '|' ORDER BY b) FROM generate_series(1, 4) b;"
+od_before="$(q "$OD_BITS")"
+rl_vacuum vr_order 0 3000
+od_rel="$(rl_event vr_order PgSleep)"
+od_bits="$(q "$OD_BITS")"
+od_locks="$(q "$(printf "$RL_LOCKS" vr_order)")"
+wait "$rl_vpid" 2>/dev/null || true
+od_after="$(q "$OD_BITS")"
+check "#2268 premise: a block shared by two clean row groups: blocks 1..4 not all-visible before vacuum" "$od_before" "false|false|false|false"
+check "#2268 premise: a block shared by two clean row groups: vacuum paused before giving back group 1" "$od_rel" "yes"
+check "#2268 a block shared by two clean row groups: at that pause blocks 1..3 are set and block 4 not yet" "$od_bits" "true|true|true|false"
+check "#2268 a block shared by two clean row groups: at that pause vacuum holds groups 1 and 2" "$od_locks" "2"
+check "#2268 a block shared by two clean row groups: after vacuum blocks 1..4 are all-visible" "$od_after" "true|true|true|true"
+# A second VACUUM after ANALYZE flips no bit, and still records what it found
+# all-visible: 9 blocks of 291 rows, 2619 of 3000, so relallvisible is
+# relpages * 2619 / 3000 truncated, where ANALYZE wrote the VM's raw 9.
+psql_run "ANALYZE vr_order;"
+od_analyzed="$(q "SELECT relpages || '|' || relallvisible FROM pg_class WHERE relname = 'vr_order';")"
+psql_run "VACUUM vr_order;"
+od_stats="$(q "SELECT relpages || '|' || relallvisible FROM pg_class WHERE relname = 'vr_order';")"
+check "#2268 premise: a block shared by two clean row groups: ANALYZE records 5 pages and the VM's 9 all-visible blocks" "$od_analyzed" "5|9"
+check "#2268 a block shared by two clean row groups: a second vacuum that sets no bit records 4 of the 5 pages all-visible" "$od_stats" "5|4"
+
+# 11f. A writer holds the group's lock and its delete is not in the catalog
+# yet: pgcolumnar.delete_flush_hold_ms pauses its flush after the chunk-group
+# lock and before the delete_vector row. Its mark has already cleared block 1.
+# A plain VACUUM runs during that pause. It finds the group clean in the
+# catalog, but the lock is busy, so it must leave block 1 unset and must not
+# wait for the writer. After the writer commits, the index-only scan counts
+# none of the deleted rows.
+psql_run "CREATE TABLE vr_busy (id int, pad int) USING pgcolumnar;"
+psql_run "INSERT INTO vr_busy SELECT g, g FROM generate_series(1, 20000) g;"
+psql_run "CREATE INDEX vr_busy_id ON vr_busy (id);"
+psql_run "VACUUM vr_busy;"
+bz_before="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.delete_flush_hold_ms=8000 -c statement_timeout=60s' \
+	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "WITH d AS (DELETE FROM vr_busy WHERE id BETWEEN 300 AND 400 RETURNING 1) SELECT count(*) FROM d;" \
+	> "$PGC_WORKDIR/vr_busy.writer.out" 2>&1 &
+bz_wpid=$!
+BZ_WAIT="SELECT wait_event FROM pg_stat_activity WHERE query LIKE 'WITH d AS (DELETE FROM vr_busy%';"
+bz_paused="no"
+for i in $(seq 1 150); do
+	if [ "$(q "$BZ_WAIT")" = "Extension" ]; then bz_paused="yes"; break; fi
+	sleep 0.1
+done
+bz_mark="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+bz_vac="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=5000' \
+	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate -c "VACUUM vr_busy;" 2>&1)"
+bz_still="$(q "$BZ_WAIT")"
+bz_bit="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+wait "$bz_wpid" 2>/dev/null || true
+bz_written="$(cat "$PGC_WORKDIR/vr_busy.writer.out")"
+bz_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_busy', 1);")"
+bz_ios="$(rl_ios "SELECT count(*) FROM vr_busy WHERE id BETWEEN 300 AND 400;")"
+check "#2268 premise: a writer paused inside its flush: block 1 all-visible before the writer starts" "$bz_before" "t"
+check "#2268 premise: a writer paused inside its flush: it paused holding the group's lock, and its mark cleared block 1" "$bz_paused|$bz_mark" "yes|f"
+check "#2268 a writer paused inside its flush: vacuum finished without waiting for the writer" "$bz_vac" "VACUUM"
+check "#2268 premise: a writer paused inside its flush: the writer was still paused after vacuum" "$bz_still" "Extension"
+check "#2268 a writer paused inside its flush: block 1 not all-visible after vacuum while the writer holds the lock" "$bz_bit" "f"
+check "#2268 premise: a writer paused inside its flush: the writer deleted 101 rows" "$bz_written" "101"
+check "#2268 a writer paused inside its flush: after the writer commits block 1 is not all-visible and the index-only scan counts no deleted row" "$bz_after|$bz_ios" "f|0"
+
+# 11e. The new pauses are superuser settings, as vm_set_hold_ms is.
+psql_run "CREATE ROLE rl_plain LOGIN;"
+rl_suset="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U rl_plain -d "$PGC_DB" -At -v VERBOSITY=verbose \
+	-c "SET pgcolumnar.vm_set_release_hold_ms = 1000;" 2>&1 | head -1)"
+check "#2268 a role without superuser cannot set pgcolumnar.vm_set_release_hold_ms" "$rl_suset" \
+	'ERROR:  42501: permission denied to set parameter "pgcolumnar.vm_set_release_hold_ms"'
+rl_suset2="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U rl_plain -d "$PGC_DB" -At -v VERBOSITY=verbose \
+	-c "SET pgcolumnar.delete_flush_hold_ms = 1000;" 2>&1 | head -1)"
+check "#2268 a role without superuser cannot set pgcolumnar.delete_flush_hold_ms" "$rl_suset2" \
+	'ERROR:  42501: permission denied to set parameter "pgcolumnar.delete_flush_hold_ms"'
 
 exec 9>&-
 wait "$H_PID" 2>/dev/null || true
