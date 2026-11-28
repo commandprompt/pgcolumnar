@@ -612,6 +612,14 @@ transaction is refused with `55000`.
 SELECT pgcolumnar.drop_projection('events', 'events_by_customer');
 ```
 
+A column a projection stores cannot be dropped with `ALTER TABLE ... DROP
+COLUMN`, with or without `CASCADE`. It is refused with `2BP01`; drop the
+projection first. A column dropped by a cascade from another object takes the
+projection with it, declaration and storage, with a NOTICE `drop cascades to
+projection "<name>" on table "<table>"` (#2240). That covers `ALTER TYPE ... DROP
+ATTRIBUTE ... CASCADE` on a typed table and `DROP DOMAIN ... CASCADE`. Neither
+runs without `CASCADE`.
+
 ### pgcolumnar.rebuild_projections(rel regclass DEFAULT NULL)
 
 Builds each declared projection that has no storage, and returns the number that

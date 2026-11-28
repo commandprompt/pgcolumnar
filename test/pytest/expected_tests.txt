@@ -2725,4 +2725,7 @@ guard_tests 910
 # statement of its transaction, beside a compact_rewrite that takes its locks commits, and its row is gone), by
 # collection of that file (139 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6617
+# cluster_tests 6617 -> 6618 for #2240: one test in test_projection_drop_column.py, a column dropped by ALTER
+# TYPE ... DROP ATTRIBUTE ... CASCADE or DROP DOMAIN ... CASCADE takes its projections with it, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6618
