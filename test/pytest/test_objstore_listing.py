@@ -574,6 +574,15 @@ def osl(pgc_cluster):
         status.write_text("500\n")
         r["http500"] = _refusal(dsn, stmt, "returned HTTP 500", " by the HTTP status check")
         status.unlink()
+        # #2198 review: a close-delimited listing, whole and cut by a reset
+        close, reset = work / "__listing_close__", work / "__listing_reset__"
+        close.write_text("")
+        r["close whole"] = _row(dsn, f"SELECT count(*), sum(id) FROM {rp}")
+        reset.write_text("")
+        r["close reset"] = _refusal(dsn, f"SELECT count(*), sum(id) FROM {rp}",
+                                    "Connection reset by peer", " by the reset")
+        reset.unlink()
+        close.unlink()
 
         # #1902: the object that does not match the declared columns is named
         r["mix good"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
@@ -783,6 +792,19 @@ def test_a_list_that_fails_is_refused_not_read_as_empty(request, expect):
     if r is not None:
         expect.text(r["http500"], "08006 by the HTTP status check",
                     "a LIST that returns HTTP 500 is refused, not read as an empty prefix")
+
+
+def test_a_close_delimited_listing_reads_every_object(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["close whole"], "12 192", "a listing whose answer ends at connection close reads every object")
+
+
+def test_a_close_delimited_listing_cut_by_a_reset_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["close reset"], "08006 by the reset",
+                    "a listing whose close-delimited answer is reset mid-body is refused, with no partial result")
 
 
 @pytest.mark.parametrize("key, want, name", [

@@ -881,3 +881,190 @@ def test_the_control_a_drop_in_its_own_transaction(pgc_conn, expect):
         cur.execute("INSERT INTO dt2 SELECT g, g FROM generate_series(200,300) g")
         expect.num(_orphan_storage(cur, "dt2"), 0,
                    "control: a drop in its own transaction never left one")
+
+
+# ==================== LIFECYCLE: projection DDL holds its lock to commit (#2215)
+#
+# add_projection opened the table with SHARE and released it at the end of the
+# function, before its transaction committed, so a writer in another session went
+# ahead at once, could not see the uncommitted projection, and its rows never reached
+# it. drop_projection took SHARE UPDATE EXCLUSIVE, which no writer waits for, so a
+# writer during an open drop wrote row groups into the storage being dropped. A
+# metadata-only ALTER TABLE that materializes a declared projection released its SHARE
+# the same way. Each now keeps its lock until its transaction ends.
+#
+# The holder is a second connection with its transaction open, which is simpler than
+# the shell's background psql and needs no release poll: the holder commits when the
+# test says so. The other session's statement runs under a 1 s lock_timeout, so 55P03
+# means it waited on a lock and "ok N" means it went ahead.
+
+_DDL_INS = "INSERT INTO {t} SELECT g, 'n'||g FROM generate_series(1001, 1100) g"
+
+
+def _ddl_table(cur, t):
+    """Ids 1..1000 stored out of id order (389 is prime to 1000), so a projection
+    sorted on id is what plans for an id range that spans them."""
+    cur.execute(f"CREATE TABLE {t} (id int, txt text) USING pgcolumnar")
+    cur.execute(f"SELECT pgcolumnar.set_options('{t}', stripe_row_limit => 1000, "
+                "chunk_group_row_limit => 500)")
+    cur.execute(f"INSERT INTO {t} SELECT (g * 389) % 1000 + 1, 'r'||g "
+                "FROM generate_series(0, 999) g")
+
+
+def _ddl_session(dsn, schema):
+    import psycopg
+    c = psycopg.connect(dsn, autocommit=False)
+    c.execute(f'SET search_path TO "{schema}", public')
+    c.execute("SET statement_timeout = '30s'")
+    c.commit()
+    return c
+
+
+def _ddl_try(dsn, schema, sql):
+    """-> the SQLSTATE `sql` failed with under a 1 s lock_timeout, or "ok N" with
+    the first column of its result (N empty when it returns no rows)."""
+    import psycopg
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f'SET search_path TO "{schema}", public')
+            c.execute("SET lock_timeout = '1s'")
+            cur = c.execute(sql)
+            row = cur.fetchone() if cur.description else None
+    except psycopg.Error as exc:
+        return exc.sqlstate or f"no server answer: {exc}"
+    return f"ok {row[0] if row else ''}".rstrip() if row else "ok"
+
+
+def _ddl_open(cur, holder):
+    """-> "yes" when the holder's backend is in a transaction with an xid. Not the lock
+    it holds: that is what the arms measure, and a premise reading it would go red
+    with them."""
+    n = _one(cur, "SELECT count(*) FROM pg_stat_activity WHERE pid = %s AND backend_xid IS NOT NULL",
+             (holder.info.backend_pid,))
+    return "yes" if n == 1 else "no"
+
+
+def _ddl_hold(pgc_conn, ddl, probes):
+    """Run `ddl` in a second connection with its transaction left open, then each
+    (key, sql) probe from a third under a 1 s lock_timeout, then commit the holder.
+    -> {key: reading, "open": "yes yes" when the holder was open before and after}."""
+    with pgc_conn.cursor() as cur:
+        schema = _one(cur, "SELECT current_schema()")
+        dsn = pgc_conn.info.dsn
+        h = _ddl_session(dsn, schema)
+        try:
+            h.execute(ddl)
+            got = {"open": _ddl_open(cur, h)}
+            for key, sql in probes:
+                got[key] = _ddl_try(dsn, schema, sql)
+            got["open"] += " " + _ddl_open(cur, h)
+            h.commit()
+        finally:
+            h.close()
+    return got
+
+
+def _ddl_answers(cur, t):
+    """-> "table N|projection N|plan P|on N|off N" for ids 951..1100."""
+    import re
+    cur.execute(f"ANALYZE {t}")
+    qy = f"SELECT count(*) FROM {t} WHERE id BETWEEN 951 AND 1100"
+    cur.execute("SET pgcolumnar.enable_projection_scan = on")
+    plan = [r[0] for r in _rows(cur, f"EXPLAIN (COSTS OFF) {qy}")]
+    on = _one(cur, qy)
+    cur.execute("SET pgcolumnar.enable_projection_scan = off")
+    off = _one(cur, qy)
+    cur.execute("RESET pgcolumnar.enable_projection_scan")
+    return (f"table {_one(cur, f'SELECT count(*) FROM {t}')}"
+            f"|projection {_one(cur, f'SELECT count(*) FROM pgcolumnar.read_projection(%s, %s)', (t, 'p'))}"
+            f"|plan {sum(1 for ln in plan if re.search(r'Columnar Projection: p$', ln))}"
+            f"|on {on}|off {off}")
+
+
+def test_add_projection_holds_its_lock_until_its_transaction_ends(pgc_conn, expect):
+    """#2215: while add_projection's transaction is open, another session's SELECT runs
+    and its INSERT waits; after the commit the projection holds every row. Before, the
+    INSERT went in and missed the projection: table 1200 rows, projection 1100, and the
+    projection scan answered 150 where the table holds 250."""
+    with pgc_conn.cursor() as cur:
+        _ddl_table(cur, "pjl_a")
+    got = _ddl_hold(pgc_conn,
+                    "SELECT pgcolumnar.add_projection('pjl_a', 'p', columns => ARRAY['id'], sort_key => ARRAY['id'])",
+                    (("sel", "SELECT count(*) FROM pjl_a"), ("ins", _DDL_INS.format(t="pjl_a"))))
+    with pgc_conn.cursor() as cur:
+        cur.execute(_DDL_INS.format(t="pjl_a"))
+        expect.text(got["open"], "yes yes",
+                    "#2215 premise: add_projection's session had its transaction open before and after the other"
+                    " session's statements")
+        expect.text(got["sel"], "ok 1000",
+                    "a SELECT from another session still runs while add_projection's transaction is open (#2215)")
+        expect.text(got["ins"], "55P03",
+                    "an INSERT from another session waits for add_projection's transaction to end, not written"
+                    " past the uncommitted projection (#2215)")
+        expect.text(_ddl_answers(cur, "pjl_a"), "table 1100|projection 1100|plan 1|on 150|off 150",
+                    "after add_projection commits, the projection holds every row and answers as the table does"
+                    " with projection scans on and off (#2215)")
+
+
+def test_drop_projection_holds_its_lock_until_its_transaction_ends(pgc_conn, expect):
+    """#2215: while drop_projection's transaction is open, another session's INSERT
+    waits, so none of its rows lands in the storage being dropped. Before, it went in
+    and left a row group nothing named."""
+    with pgc_conn.cursor() as cur:
+        _ddl_table(cur, "pjl_d")
+        cur.execute("SELECT pgcolumnar.add_projection('pjl_d', 'p', columns => ARRAY['id'], "
+                    "sort_key => ARRAY['id'])")
+        d_ps = _one(cur, "SELECT proj_storage_id FROM pgcolumnar.projection WHERE storage_id = "
+                         "pgcolumnar.get_storage_id('pjl_d') AND name = 'p'")
+    got = _ddl_hold(pgc_conn, "SELECT pgcolumnar.drop_projection('pjl_d', 'p')",
+                    (("ins", _DDL_INS.format(t="pjl_d")),))
+    with pgc_conn.cursor() as cur:
+        expect.text(got["open"], "yes yes",
+                    "#2215 premise: drop_projection's session had its transaction open before and after the other"
+                    " session's INSERT")
+        expect.text(got["ins"], "55P03",
+                    "an INSERT from another session waits for drop_projection's transaction to end, not written"
+                    " into the storage being dropped (#2215)")
+        expect.text(f"{_one(cur, 'SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = %s', (d_ps,))}"
+                    f" row groups, {_one(cur, 'SELECT count(*) FROM pjl_d')} rows",
+                    "0 row groups, 1000 rows",
+                    "after drop_projection commits, no row group is left in the dropped projection's storage"
+                    " (#2215)")
+
+
+def test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends(pgc_conn, expect):
+    """#2215: ALTER TABLE ... SET STATISTICS takes SHARE UPDATE EXCLUSIVE, which a writer
+    does not wait for, and on a table whose declared projection has no storage it
+    materializes the projection under SHARE. That SHARE is now held to transaction
+    end, so another session's INSERT waits and reaches the projection."""
+    with pgc_conn.cursor() as cur:
+        _ddl_table(cur, "pjl_r")
+        cur.execute("INSERT INTO pgcolumnar.projection_declaration VALUES "
+                    "('pjl_r'::regclass, 'p', ARRAY['id'], ARRAY['id'])")
+    got = _ddl_hold(pgc_conn, "ALTER TABLE pjl_r ALTER COLUMN id SET STATISTICS 200",
+                    (("ins", _DDL_INS.format(t="pjl_r")),))
+    with pgc_conn.cursor() as cur:
+        cur.execute(_DDL_INS.format(t="pjl_r"))
+        expect.text(got["open"], "yes yes",
+                    "#2215 premise: the ALTER TABLE's session had its transaction open before and after the other"
+                    " session's INSERT")
+        expect.text(got["ins"], "55P03",
+                    "an INSERT from another session waits for an ALTER TABLE that materialized a declared"
+                    " projection, until its transaction ends (#2215)")
+        expect.text(_ddl_answers(cur, "pjl_r"), "table 1100|projection 1100|plan 1|on 150|off 150",
+                    "after that ALTER TABLE commits, the projection holds every row and answers as the table"
+                    " does with projection scans on and off (#2215)")
+
+
+def test_add_projection_waits_for_a_writers_open_transaction(pgc_conn, expect):
+    """#2215, the other direction, which was already right: a writer's open transaction
+    makes add_projection wait."""
+    with pgc_conn.cursor() as cur:
+        _ddl_table(cur, "pjl_w")
+    got = _ddl_hold(pgc_conn, _DDL_INS.format(t="pjl_w"),
+                    (("add", "SELECT pgcolumnar.add_projection('pjl_w', 'p', columns => ARRAY['id'], "
+                             "sort_key => ARRAY['id'])"),))
+    expect.text(got["open"], "yes yes",
+                "#2215 premise: the writer's session had its transaction open before and after add_projection")
+    expect.text(got["add"], "55P03",
+                "add_projection waits for a writer's open transaction in another session (#2215)")

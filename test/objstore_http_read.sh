@@ -14,7 +14,13 @@
 #      the URL and produce no rows; a Range-ignoring server is an error, never a
 #      silent whole-object read; a short 206 body and EOF mid-body are refused;
 #      a keep-alive connection the server dropped is retried once, and a fresh
-#      connection the server hangs up on is not; an object overwritten
+#      connection the server hangs up on is not; a reset before any byte of an
+#      answer on a kept-alive connection is retried once too, a reset after
+#      part of an answer is refused, and a server that resets every GET is
+#      refused after one retry (#2198); a close after a whole 103 interim
+#      head on a kept-alive connection is refused and not retried, while
+#      after reads answered 103 first a close before any answer still is
+#      retried (#2258); an object overwritten
 #      mid-read is refused, a weak ETag or one longer than 79 characters is not
 #      used as a pin, and a server whose ETag changes per request is refused
 #      (#1805). With pgcolumnar.objstore_pin_reads off, that server is read
@@ -397,6 +403,71 @@ check "C: a server that hangs up on a fresh connection is refused" \
 	"$(refusal_of "SELECT count(*) FROM fhangup" "failed before a response")" "08006: failed before a response"
 check_num "C: and that fresh connection is not retried (one request logged)" \
 	"$(wc -l < "$HTTP_LOG" | tr -d ' ')" "1"
+# A reset on a kept-alive connection (#2198). The server closed the
+# connection, and the client's next request on it met a reset (RST) before any
+# byte of an answer. That is the keep-alive race as much as a clean EOF is, and
+# is retried once on a new connection. pgc_reads reads the object n times, each
+# in its own subtransaction, and counts the reads that returned every row
+# with the right column sums.
+# count(*), sum(c3) and sum(c7) of the fixture: c3 = 4v and c7 = 8v for row v.
+READS_WANT="$((G * ROWS_PER_GROUP)) $(( 4 * (G * ROWS_PER_GROUP) * (G * ROWS_PER_GROUP - 1) / 2 )) $(( 8 * (G * ROWS_PER_GROUP) * (G * ROWS_PER_GROUP - 1) / 2 ))"
+psql_run "CREATE FUNCTION pgc_reads(url text, n int) RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE ok int := 0; bad int := 0; c text; last text := '';
+BEGIN
+  FOR i IN 1..n LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) || '' '' || sum(c3) || '' '' || sum(c7) FROM pgcolumnar.read_parquet(%L) AS t($COLDEFS)', url) INTO c;
+      IF c = '$READS_WANT' THEN ok := ok + 1; ELSE bad := bad + 1; last := 'rows sum(c3) sum(c7)=' || c; END IF;
+    EXCEPTION WHEN others THEN bad := bad + 1; last := SQLSTATE || ': ' || SQLERRM;
+    END;
+  END LOOP;
+  RETURN 'ok=' || ok || ' failed=' || bad || CASE WHEN bad > 0 THEN ' last=' || last ELSE '' END;
+END \$f\$;"
+# /rstka/ resets the second request on every connection after the client has
+# sent it, so each read meets the reset: no timing decides it.
+check "C: 30 reads from a server that resets each kept-alive connection all succeed" \
+	"$(refusal_of "SET statement_timeout = '60s'; SELECT pgc_reads('$BASE/rstka/fixture.parquet', 30)" "@@")" \
+	"no error: ok=30 failed=0"
+# /closeka/ closes at once after each answer, with no half-close, as the issue
+# reports a server doing: the next request meets a FIN or a reset by timing.
+check "C: 30 reads from a server that closes at once after each answer all succeed" \
+	"$(refusal_of "SET statement_timeout = '60s'; SELECT pgc_reads('$BASE/closeka/fixture.parquet', 30)" "@@")" \
+	"no error: ok=30 failed=0"
+# A reset after part of an answer has arrived is not the race: the request may
+# have been served, so it is an error, never a retry.
+check "C: a reset after part of a status line is refused" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/rsthead/fixture.parquet') AS t($COLDEFS)" "Connection reset by peer")" \
+	"08006: Connection reset by peer"
+check "C: a reset after part of a body is refused" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/rstbody/fixture.parquet') AS t($COLDEFS)" "Connection reset by peer")" \
+	"08006: Connection reset by peer"
+# /rstall/ resets every GET, so the retry is reset too. One retry, then the
+# error: the GET is sent twice, on the kept-alive connection and on a new one.
+: > "$HTTP_LOG"
+check "C: a server that resets every GET is refused after one retry" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/rstall/fixture.parquet') AS t($COLDEFS)" "failed before a response")" \
+	"08006: failed before a response"
+check_num "C: and that GET was sent twice" \
+	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "2"
+# An EOF after a whole interim head (#2258). /fin103/ answers the HEAD, then
+# answers the GET on the kept-alive connection with a complete 103 Early Hints
+# head and closes with a FIN. The server had begun to answer, so the close is
+# not the keep-alive race: the read fails, and the GET is not sent again.
+: > "$HTTP_LOG"
+check "C: an EOF after a 103 interim head on a kept-alive connection is refused" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/fin103/fixture.parquet') AS t($COLDEFS)" "@@")" \
+	"08006: columnar: connection to \"$BASE/fin103/fixture.parquet\" closed mid-response"
+check_num "C: and that GET after a 103 interim head was sent once" \
+	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "1"
+# Control: one response's interim head does not carry over to the next. After
+# reads whose every answer follows a 103 head (/hint103/), a kept-alive
+# connection closed with no answer (/finka/) is still the race, retried once.
+: > "$HTTP_LOG"
+check "C: after reads answered 103 Early Hints first, reads from a server that closes each kept-alive connection unanswered all succeed" \
+	"$(refusal_of "SET statement_timeout = '60s'; SELECT pgc_reads('$BASE/hint103/fixture.parquet', 3) || ' then ' || pgc_reads('$BASE/finka/fixture.parquet', 3)" "@@")" \
+	"no error: ok=3 failed=0 then ok=3 failed=0"
+check "C: the server closed a kept-alive connection unanswered on each of those 3 reads" \
+	"$(n="$(grep -c '^FINKA' "$HTTP_LOG")"; [ "$n" -ge 3 ] 2>/dev/null && echo yes || echo "no ($n closes)")" "yes"
 
 # An object overwritten between two ranged GETs of one read (#1805). Without a
 # pin the footer comes from the old object and later chunks from the new one,
@@ -654,6 +725,27 @@ HSWAPDET_LEN="$(stat -c %s "$PGC_WORKDIR/hswapdet.parquet" 2>&1)"
 check "C: the refusal of an overwrite between two reads names the earlier read of the statement in its DETAIL" \
 	"$(detail_of "$(printf "$TWO_READS" fhswapdet fhswapdet)")" \
 	"An earlier read of the object in this statement saw ETag \"E\" and $HSWAPDET_LEN bytes; this read sees ETag \"E\" and $HSWAPDET_LEN bytes."
+
+# The errno of a connection that failed before a response (#2231). The error
+# names the errno of the last attempt in its DETAIL; a clean EOF has none.
+# /rstall/ resets the GET on the kept-alive connection and again on the new one.
+RST_ONE="SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('%s') AS t($COLDEFS)"
+check "C: the refusal after a reset on the retry names the errno in its DETAIL" \
+	"$(detail_of "$(printf "$RST_ONE" "$BASE/rstall/fixture.parquet")")" \
+	"The connection failed: Connection reset by peer."
+check "C: a server that hangs up on a fresh connection gives no errno in the DETAIL" \
+	"$(detail_of "SELECT count(*) FROM fhangup")" "no DETAIL"
+# /rstfin/ resets the GET on the kept-alive connection, then closes the retry's
+# new connection with a FIN and no answer: the reset belongs to the first
+# attempt, so the error of the last one names no errno.
+: > "$HTTP_LOG"
+check "C: a reset and then a clean close on the retry are refused" \
+	"$(refusal_of "$(printf "$RST_ONE" "$BASE/rstfin/fixture.parquet")" "failed before a response")" \
+	"08006: failed before a response"
+check_num "C: and that GET after the reset was sent twice" \
+	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "2"
+check "C: a reset and then a clean close on the retry name no errno of the earlier attempt" \
+	"$(detail_of "$(printf "$RST_ONE" "$BASE/rstfin/fixture.parquet")")" "no DETAIL"
 
 # A versioned overwrite that changes the length (#1907 second review): the
 # second read asks for the first read's version, so it must also take that

@@ -25,8 +25,12 @@
  *     the loaders skip its creation lock, each writing via pgcolumnar_bulk_parallel_writer.
  *   - a standalone byte splitter (pgcolumnar_file_split_offsets) exposed to SQL: N+1
  *     line-aligned offsets, a diagnostic the parallel load itself no longer calls.
- * Text format only for now, numeric/date-time partition keys only (their text form
- * is escape-free); CSV and other key types are later phases (see the plan).
+ * Text format only for now, numeric/date-time partition keys only; the splitter
+ * reads the fields up to the key with core COPY's text escapes (#2202). CSV and
+ * other key types are later phases (see the plan). The file is read in the
+ * caller's client_encoding, as COPY FROM reads it, and the byte scans, the key
+ * field reader included, step over whole characters where that encoding lets a
+ * character's second byte be a backslash (#2188, PcopyScan).
  *
  * Independent MIT implementation. References only the public PostgreSQL API
  * (server-file access, the COPY BeginCopyFrom interface, the background-worker and
@@ -39,6 +43,7 @@
  */
 #include "postgres.h"
 
+#include <ctype.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -69,6 +74,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "libpq/pqsignal.h"
+#include "mb/pg_wchar.h"
 #include "access/sysattr.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -84,6 +90,7 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
+#include "storage/lmgr.h"
 #include "storage/shm_toc.h"
 #include "storage/shmem.h"
 #include "utils/syscache.h"
@@ -180,6 +187,109 @@ pcopy_open_regular_file(const char *path, off_t *size_out)
 }
 
 /*
+ * PcopyScan
+ *		Where a forward byte scan of a COPY text file stands: the state that every
+ *		scan here shares (pcopy_line_offsets, pcopy_file_eol_type, and the
+ *		partition splitter's record reader), so they all read backslashes and
+ *		line ends alike (#2188).
+ *
+ *		A backslash escapes the character after it, whatever it is, so a newline
+ *		after an odd run of backslashes is data (#2084). Which bytes are characters
+ *		depends on the file's encoding, the caller's client_encoding, which the
+ *		loaders read the file in too. COPY FROM converts the file to the database
+ *		encoding before it looks for a backslash or a line end, unless the file is
+ *		already in that encoding or one of the two is SQL_ASCII (BeginCopyFrom's
+ *		need_transcoding, the same on PG15 to 19). Every database encoding is
+ *		ASCII-safe: a byte below 0x80 is always a whole character. The client-only
+ *		encodings (SJIS, SHIFT_JIS_2004, BIG5, GBK, GB18030, UHC, JOHAB) are not:
+ *		the second byte of a character can be below 0x80, so in SJIS 83 5c is one
+ *		character (U+30BD) and not a byte and a backslash. For those, when the
+ *		database is not SQL_ASCII, the scan steps over each character's trailing
+ *		bytes with pg_encoding_mblen, as core's COPY TO does (encoding_embeds_ascii,
+ *		PG_ENCODING_IS_CLIENT_ONLY). A client-only encoding is never the database
+ *		encoding, so the file is always converted then. In a SQL_ASCII database
+ *		core reads the bytes unconverted, every 0x5c a backslash, and so does this.
+ *
+ *		The length comes from the lead byte alone. GB18030's four-byte characters
+ *		are the one case where pg_encoding_mblen looks at the second byte (0x30 to
+ *		0x39 there), and a four-byte character read as two two-byte ones covers the
+ *		same bytes, with both its ASCII-range bytes inside a character, so no byte
+ *		below 0x80 is classed differently. Invalid input (a lead byte with no valid
+ *		trailing byte) is refused by core COPY in the loader whose range holds it;
+ *		the scan only has to keep every cut on a byte that ends a record.
+ */
+typedef struct PcopyScan
+{
+	int			encoding;		/* the file's encoding: the caller's client_encoding */
+	bool		embeds_ascii;	/* a trailing byte can be below 0x80, and core converts */
+	int			mb_left;		/* trailing bytes of the current character still to pass */
+	bool		escaped;		/* the previous character is a backslash that no
+								 * backslash escapes */
+} PcopyScan;
+
+static void
+pcopy_scan_init(PcopyScan *scan, int encoding)
+{
+	scan->encoding = encoding;
+	scan->embeds_ascii = PG_ENCODING_IS_CLIENT_ONLY(encoding) &&
+		GetDatabaseEncoding() != PG_SQL_ASCII;
+	scan->mb_left = 0;
+	scan->escaped = false;
+}
+
+/*
+ * pcopy_char_trail
+ *		How many bytes follow c in its character: 0 for a byte below 0x80, and for
+ *		every byte when the scan need not step over characters.
+ */
+static int
+pcopy_char_trail(const PcopyScan *scan, char c)
+{
+	char		lead[2];
+
+	if (!scan->embeds_ascii || !IS_HIGHBIT_SET(c))
+		return 0;
+	lead[0] = c;
+	lead[1] = '\0';
+	return pg_encoding_mblen(scan->encoding, lead) - 1;
+}
+
+/*
+ * pcopy_scan_byte
+ *		Feed the next byte of the file to the scan. Returns the byte when it is a
+ *		whole character that no backslash escapes and is not itself a backslash,
+ *		and '\0' otherwise: a trailing byte of a character, an escaped character
+ *		(a multibyte one escaped as a whole), or a backslash that escapes the next.
+ */
+static char
+pcopy_scan_byte(PcopyScan *scan, char c)
+{
+	if (scan->mb_left > 0)
+	{
+		scan->mb_left--;
+		return '\0';
+	}
+	if (scan->embeds_ascii && IS_HIGHBIT_SET(c))
+	{
+		/* the lead byte of a character: data, escaped or not */
+		scan->mb_left = pcopy_char_trail(scan, c);
+		scan->escaped = false;
+		return '\0';
+	}
+	if (scan->escaped)
+	{
+		scan->escaped = false;
+		return '\0';
+	}
+	if (c == '\\')
+	{
+		scan->escaped = true;
+		return '\0';
+	}
+	return c;
+}
+
+/*
  * pcopy_line_offsets
  *		Compute nranges+1 record-aligned byte offsets partitioning an open file of
  *		`size` bytes into that many ranges, in ONE forward pass (O(filesize),
@@ -192,17 +302,19 @@ pcopy_open_regular_file(const char *path, off_t *size_out)
  *		right before it. In COPY text format a backslash followed by a raw newline
  *		is data inside the field (#2084), so a cut there would split one record in
  *		two. The scan starts at byte 0, so the backslash-run parity is exact, and
- *		it carries across chunk reads.
+ *		it carries across chunk reads, as does a character that a chunk read ends
+ *		inside. `encoding` is the file's (PcopyScan, #2188).
  */
 static int64 *
-pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
+pcopy_line_offsets(int fd, off_t size, int nranges, const char *path, int encoding)
 {
 	int64	   *offs = (int64 *) palloc(sizeof(int64) * (nranges + 1));
 	char	   *buf = (char *) palloc(COLUMNAR_SPLIT_SCAN_CHUNK);
 	int64		bufbase = 0;		/* absolute file offset of buf[0] */
 	int			next = 1;
-	bool		escaped = false;	/* the previous byte ends an odd backslash run */
+	PcopyScan	scan;
 
+	pcopy_scan_init(&scan, encoding);
 	offs[0] = 0;
 	offs[nranges] = (int64) size;
 
@@ -224,18 +336,8 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 			break;
 		for (j = 0; j < got && next < nranges; j++)
 		{
-			if (buf[j] == '\\')
-			{
-				escaped = !escaped;
-				continue;
-			}
-			if (escaped)
-			{
-				/* this byte is escaped: data, even when it is a newline */
-				escaped = false;
-				continue;
-			}
-			if (buf[j] == '\n')
+			/* an escaped newline, or a byte inside a character, is data */
+			if (pcopy_scan_byte(&scan, buf[j]) == '\n')
 			{
 				int64		boundary = bufbase + j + 1;
 
@@ -274,17 +376,20 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
  *		does not start the file took the style from its own first line, and a
  *		change of style at its range start loaded. The loaders now start core
  *		COPY with this style instead, and core refuses such a file with its own
- *		SQLSTATE and message. A backslash escapes the byte after it whatever it
- *		is, as in core's CopyReadLineText and in pcopy_line_offsets.
+ *		SQLSTATE and message. A backslash escapes the character after it whatever
+ *		it is, as in core's CopyReadLineText and in pcopy_line_offsets, and the
+ *		file is read as characters of `encoding` (PcopyScan, #2188).
  */
 static int
-pcopy_file_eol_type(const char *path)
+pcopy_file_eol_type(const char *path, int encoding)
 {
 	char	   *buf = (char *) palloc(COLUMNAR_SPLIT_SCAN_CHUNK);
 	int			fd = pcopy_open_regular_file(path, NULL);
 	int			eol = EOL_UNKNOWN;
-	bool		escaped = false;
+	PcopyScan	scan;
 	bool		after_cr = false;	/* the previous byte was an unescaped \r */
+
+	pcopy_scan_init(&scan, encoding);
 
 	while (eol == EOL_UNKNOWN)
 	{
@@ -306,14 +411,15 @@ pcopy_file_eol_type(const char *path)
 		{
 			if (after_cr)
 				eol = (buf[j] == '\n') ? EOL_CRNL : EOL_CR;
-			else if (buf[j] == '\\')
-				escaped = !escaped;
-			else if (escaped)
-				escaped = false;	/* this byte is escaped: data */
-			else if (buf[j] == '\n')
-				eol = EOL_NL;
-			else if (buf[j] == '\r')
-				after_cr = true;
+			else
+			{
+				char		c = pcopy_scan_byte(&scan, buf[j]);
+
+				if (c == '\n')
+					eol = EOL_NL;
+				else if (c == '\r')
+					after_cr = true;
+			}
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -460,17 +566,18 @@ pcopy_refuse_more_workers(Relation rel, LOCKMODE close_lockmode)
  *		Line-aligned byte offsets partitioning `path` into `workers` even ranges,
  *		for the single-table load where every worker writes the one storage and any
  *		record-aligned split is correct (no partition key, so no ordering
- *		requirement). Returns a palloc'd int64[workers+1].
+ *		requirement). `encoding` is the file's (#2188). Returns a palloc'd
+ *		int64[workers+1].
  */
 static int64 *
-pcopy_naive_offsets(const char *path, int workers)
+pcopy_naive_offsets(const char *path, int workers, int encoding)
 {
 	int			fd;
 	off_t		size;
 	int64	   *offs;
 
 	fd = pcopy_open_regular_file(path, &size);
-	offs = pcopy_line_offsets(fd, size, workers, path);
+	offs = pcopy_line_offsets(fd, size, workers, path, encoding);
 	CloseTransientFile(fd);
 	return offs;
 }
@@ -489,7 +596,8 @@ PG_FUNCTION_INFO_V1(pgcolumnar_file_split_offsets);
  * before it: a backslash followed by a raw newline is data (#2084). It is NOT
  * safe for CSV, whose quoted fields may contain literal newlines -- quote-aware
  * splitting is a later phase; callers holding a CSV must not use these
- * offsets. Ranges may be empty (equal consecutive offsets) when the file has
+ * offsets. The file is read in the session's client_encoding, as COPY FROM
+ * reads it (#2188). Ranges may be empty (equal consecutive offsets) when the file has
  * fewer records than workers -- that worker then loads nothing, which is
  * harmless. `workers` is capped at PCOPY_MAX_WORKERS.
  */
@@ -536,8 +644,9 @@ pgcolumnar_file_split_offsets(PG_FUNCTION_ARGS)
 	/* a local file only (#1886): refuse a URL rather than fail it as ENOENT */
 	PgColumnarRefuseRemotePath("file_split_offsets", path);
 
+	/* read the file as COPY FROM in this session would: in its client_encoding */
 	fd = pcopy_open_regular_file(path, &size);
-	offs = pcopy_line_offsets(fd, size, workers, path);
+	offs = pcopy_line_offsets(fd, size, workers, path, pg_get_client_encoding());
 	CloseTransientFile(fd);
 
 	elems = (Datum *) palloc(sizeof(Datum) * (workers + 1));
@@ -614,6 +723,7 @@ typedef struct PcopyWorkerSlot
 	char		errhint[256];	/* passed on to the caller (#2187) */
 	char		gid[GIDSIZE];	/* 2PC gid the coordinator assigned this loader */
 	pg_atomic_uint32 armed;		/* 1 once the loader holds its open lock (#2187) */
+	pg_atomic_uint32 running;	/* 1 once the loader holds its run lock (#2229) */
 } PcopyWorkerSlot;
 
 typedef struct PcopyHeader
@@ -630,6 +740,8 @@ typedef struct PcopyHeader
 								 * set pgcolumnar_bulk_parallel_writer */
 	char		filename[MAXPGPATH];
 	int			eol_type;		/* EolType of the file's first line (#2189) */
+	int			file_encoding;	/* the caller's client_encoding, which the loaders
+								 * read the file in, as COPY FROM does (#2188) */
 	/* coordinator -> function result channel */
 	pg_atomic_uint32 coord_state;	/* PcopyCoordState */
 	int64		total_rows;		/* valid when coord_state == PCOPY_COORD_DONE */
@@ -639,8 +751,13 @@ typedef struct PcopyHeader
 	char		coord_errdetail[512];
 	char		coord_errhint[256];
 
-	/* names this load's open locks (#2187), see "Opening the target together" */
+	/*
+	 * names this load's open locks (#2187), see "Opening the target together",
+	 * and its run locks (#2229), see "The caller waits in the lock manager"
+	 */
 	uint32		open_lock_key;
+	pg_atomic_uint32 coord_running;	/* 1 once the coordinator holds its run
+									 * lock (#2229) */
 
 	/*
 	 * Set once every COMMIT PREPARED is done (#2219, third review). No prepared
@@ -754,6 +871,199 @@ pcopy_partition_bucket(Datum kd, PartitionBoundInfo bi, FmgrInfo *cmpfn, Oid col
 	return lo;
 }
 
+/* the value of one hex digit, which the caller has checked with isxdigit() */
+static int
+hex_digit_value(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	return c - 'A' + 10;
+}
+
+/*
+ * pcopy_text_field
+ *		Read one field of a COPY text-format line at p, as core COPY's text
+ *		attribute reader does with the delimiter and NULL marker the loaders use
+ *		(TAB and \N, the defaults) (#2202). The field ends at an unescaped TAB, at
+ *		a CR or LF, or at a NUL byte: the end of the buffer. A raw NUL in the
+ *		line never gets here: core refuses it before it reads any field
+ *		(22021), and so pcopy_copy_refuses_record leaves such a row for the
+ *		loader (#2222). A backslash escapes the byte after
+ *		it, whatever that byte is: a backslash and a raw TAB are a TAB inside the
+ *		value, not the end of the field. \NNN (1-3 octal digits), \xH and \xHH
+ *		(hex), and \b \f \n \r \t \v decode; any other escaped byte, a second
+ *		backslash included, is itself. A trailing lone backslash is dropped, as
+ *		core drops it.
+ *
+ *		The line is read as characters of the scan's encoding (#2188): where a
+ *		character's trailing bytes can be below 0x80 (pcopy_char_trail), a lead
+ *		byte takes its trailing bytes with it as data, escaped or not, so a
+ *		trailing 0x5C is never a backslash and a trailing byte never a TAB, CR or
+ *		LF. Core converts such a file to the database encoding before it looks
+ *		at any of those, so it never sees them either. A byte an octal or hex
+ *		escape decodes to is a value, not a lead byte, and takes nothing with it.
+ *
+ *		When out is not NULL the decoded value goes there, and the field is
+ *		checked as core checks it: a decoded NUL or high-bit byte makes core
+ *		verify the value's encoding, and so does this. Returns a pointer just past
+ *		the field. *isnull is set when the raw field is exactly the NULL marker
+ *		\N, which core compares before decoding.
+ */
+static char *
+pcopy_text_field(const PcopyScan *scan, char *p, StringInfo out, bool *isnull)
+{
+	char	   *start = p;
+	bool		saw_non_ascii = false;
+
+	if (out)
+		resetStringInfo(out);
+	for (;;)
+	{
+		char		c = *p;
+		bool		raw = true; /* c is a byte of the file, not a decoded value */
+		int			trail;
+
+		if (c == '\0' || c == '\t' || c == '\n' || c == '\r')
+			break;
+		p++;
+		if (c == '\\')
+		{
+			if (*p == '\0')
+				break;			/* a lone backslash at the end: core drops it */
+			c = *p++;
+			switch (c)
+			{
+				case '0':
+				case '1':
+				case '2':
+				case '3':
+				case '4':
+				case '5':
+				case '6':
+				case '7':
+					{
+						int			val = c - '0';
+
+						if (*p >= '0' && *p <= '7')
+						{
+							val = (val << 3) + (*p++ - '0');
+							if (*p >= '0' && *p <= '7')
+								val = (val << 3) + (*p++ - '0');
+						}
+						c = (char) (val & 0377);
+						if (c == '\0' || IS_HIGHBIT_SET(c))
+							saw_non_ascii = true;
+						raw = false;
+					}
+					break;
+				case 'x':
+					if (isxdigit((unsigned char) *p))
+					{
+						int			val = hex_digit_value(*p++);
+
+						if (isxdigit((unsigned char) *p))
+							val = (val << 4) + hex_digit_value(*p++);
+						c = (char) (val & 0xff);
+						if (c == '\0' || IS_HIGHBIT_SET(c))
+							saw_non_ascii = true;
+						raw = false;
+					}
+					break;
+				case 'b':
+					c = '\b';
+					break;
+				case 'f':
+					c = '\f';
+					break;
+				case 'n':
+					c = '\n';
+					break;
+				case 'r':
+					c = '\r';
+					break;
+				case 't':
+					c = '\t';
+					break;
+				case 'v':
+					c = '\v';
+					break;
+				default:
+					break;		/* any other byte, a TAB or a backslash too, is itself */
+			}
+		}
+		if (out)
+			appendStringInfoChar(out, c);
+		/* a multibyte character's trailing bytes are data (#2188) */
+		for (trail = raw ? pcopy_char_trail(scan, c) : 0; trail > 0 && *p != '\0'; trail--)
+		{
+			if (out)
+				appendStringInfoChar(out, *p);
+			p++;
+		}
+	}
+	*isnull = (p - start == 2 && start[0] == '\\' && start[1] == 'N');
+	if (out && saw_non_ascii && !*isnull)
+		pg_verifymbstr(out->data, out->len, false);
+	return p;
+}
+
+/*
+ * pcopy_copy_refuses_record
+ *		Whether core COPY FROM refuses the record at p (len bytes, read in
+ *		`encoding`, with a NUL after them) before it reads any column's value, so
+ *		before the input function of the partition key could run (#2222). Core
+ *		checks three things first, and this checks the same three:
+ *
+ *		- the bytes are valid in the file's encoding. Core verifies (or converts)
+ *		  the raw input before it looks for a line end, and a NUL byte is never
+ *		  valid (22021).
+ *		- no unescaped \. that core refuses. PG 18 refuses \. anywhere but alone
+ *		  on its line. PG 15 to 17 refuse it unless a CR or LF follows; with one,
+ *		  they end the line there, and with the wrong one for the file they refuse
+ *		  it too, which this leaves to the key (22P04).
+ *		- the line has as many fields as the default column list has columns
+ *		  (22P04: extra data, or missing data). A record's one unescaped LF is its
+ *		  last byte, so every unescaped TAB in it ends a field of this line. On PG
+ *		  15 to 17 nothing but a line end follows a \. that ends the line.
+ *
+ *		So a record this says yes to never loads: the caller leaves it in the
+ *		current range, and that range's loader raises core's own error. A file
+ *		with CR line ends is one record here, and lands in one range either way.
+ */
+static bool
+pcopy_copy_refuses_record(int encoding, const char *p, int len, int ncols)
+{
+	PcopyScan	scan;
+	int			nfields = 1;
+	int			i;
+
+	if (pg_encoding_verifymbstr(encoding, p, len) != len)
+		return true;
+
+	pcopy_scan_init(&scan, encoding);
+	for (i = 0; i < len; i++)
+	{
+		bool		after_backslash = scan.escaped && scan.mb_left == 0;
+		char		c = pcopy_scan_byte(&scan, p[i]);
+
+		if (after_backslash && p[i] == '.')
+		{
+#if PG_VERSION_NUM >= 180000
+			return true;
+#else
+			/* p[len] is a NUL, so this reads no further than the record */
+			if (p[i + 1] != '\n' && p[i + 1] != '\r')
+				return true;
+#endif
+		}
+		if (c == '\t')
+			nfields++;
+	}
+	return nfields != ncols;
+}
+
 /*
  * pcopy_partition_aligned_offsets
  *		Split a COPY text-format file into *workers_io byte ranges ALIGNED to the
@@ -764,13 +1074,17 @@ pcopy_partition_bucket(Datum kd, PartitionBoundInfo bi, FmgrInfo *cmpfn, Oid col
  *		(verified as we scan). Returns a palloc'd int64[*workers_io + 1]; may lower
  *		*workers_io to the number of partition segments.
  *
+ * The file is read as characters of `encoding`, the caller's client_encoding
+ * (PcopyScan, #2188).
+ *
  * v1 restrictions (all checked): single-column RANGE partitioning, no DEFAULT
- * partition, non-expression key, COPY text format with default (whole-table,
- * table-order) column list, and a key field free of COPY escapes (true for the
- * numeric/temporal keys people range-partition on).
+ * partition, non-expression key, and COPY text format with the default
+ * (whole-table, table-order) column list, delimiter and NULL marker. The fields
+ * up to the key are read with core COPY's text escapes (pcopy_text_field, #2202).
  */
 static int64 *
-pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_io)
+pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_io,
+								int encoding)
 {
 	PartitionKey pkey = RelationGetPartitionKey(parent);
 	PartitionDesc pdesc = RelationGetPartitionDesc(parent, false);
@@ -778,6 +1092,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	TupleDesc	td = RelationGetDescr(parent);
 	AttrNumber	keyattno;
 	int			keyfield = 0;
+	int			ncols = 0;
 	Oid			keytype,
 				ioparam,
 				infnoid,
@@ -796,6 +1111,8 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	ssize_t		len;
 	int64		off = 0;
 	StringInfoData rec;			/* a record that spans physical lines (#2084) */
+	StringInfoData keybuf;		/* the decoded key field (#2202) */
+	PcopyScan	scan;			/* where the record reader stands (#2188) */
 	int64		rec_start = 0;
 	int			cur = 0;
 	int			prev_bucket = 0;
@@ -838,16 +1155,24 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			keyfield++;
 	}
 
+	/* the number of fields a row of the default column list has (#2222) */
+	for (a = 1; a <= td->natts; a++)
+	{
+		Form_pg_attribute att = TupleDescAttr(td, a - 1);
+
+		if (!att->attisdropped && att->attgenerated == '\0')
+			ncols++;
+	}
+
 	keytype = pkey->parttypid[0];
 	keytypmod = pkey->parttypmod[0];
 	keycoll = pkey->partcollation[0];
 
 	/*
-	 * Restrict the key to numeric/date-time types. Their COPY text representation
-	 * never contains a delimiter, newline or backslash, so reading the raw field
-	 * without COPY de-escaping is exact. Other types (text, etc.) can carry escapes
-	 * that would mis-parse and mis-bucket a row -- de-escaping them is a planned
-	 * enhancement, and until then we reject rather than silently misroute.
+	 * Restrict the key to numeric/date-time types. The key field is decoded as
+	 * COPY decodes it (#2202), but other types (text, etc.) are compared by
+	 * collation and have not been tested here -- supporting them is a planned
+	 * enhancement, and until then we reject rather than risk a misroute.
 	 */
 	{
 		char		cat;
@@ -858,7 +1183,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("pgcolumnar.parallel_copy supports only numeric or date/time partition keys"),
-					 errhint("The partition key is read from the text file without COPY de-escaping; support for other key types is a planned enhancement.")));
+					 errhint("Support for other partition key types is a planned enhancement.")));
 	}
 
 	getTypeInputInfo(keytype, &infnoid, &ioparam);
@@ -937,6 +1262,8 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	 * reclaimed by memory-context reset) and the AllocateFile handle.
 	 */
 	initStringInfo(&rec);
+	initStringInfo(&keybuf);
+	pcopy_scan_init(&scan, encoding);
 	PG_TRY();
 	{
 		for (;;)
@@ -944,8 +1271,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			int64		line_start = off;
 			char	   *p;
 			int			f = 0;
-			int			flen;
-			char	   *fld;
+			bool		isnull;
 			Datum		kd;
 			int			bucket;
 			bool		at_eof = false;
@@ -960,7 +1286,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			}
 			else
 			{
-				int			nbs = 0;
+				char		last = '\0';
 				ssize_t		e;
 
 				off += len;
@@ -968,11 +1294,13 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 				/*
 				 * COPY text syntax (#2084): a newline after an odd run of
 				 * backslashes is data, so the record goes on in the next line.
+				 * Read forward with the shared scan, which carries from line to
+				 * line, so a backslash that is the second byte of a character
+				 * escapes nothing (#2188).
 				 */
-				if (len > 0 && line[len - 1] == '\n')
-					for (e = len - 2; e >= 0 && line[e] == '\\'; e--)
-						nbs++;
-				if (nbs % 2 == 1)
+				for (e = 0; e < len; e++)
+					last = pcopy_scan_byte(&scan, line[e]);
+				if (len > 0 && line[len - 1] == '\n' && last != '\n')
 				{
 					if (rec.len == 0)
 						rec_start = line_start;
@@ -1001,31 +1329,60 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			else
 				p = line;
 
-			/* advance to the key field */
+			/*
+			 * A record core COPY refuses before it reads a value: leave it in
+			 * the current range, and that range's loader raises core's error,
+			 * with core's SQLSTATE and message, rather than the key's (#2222).
+			 */
+			if (pcopy_copy_refuses_record(encoding, p,
+										  rec.len > 0 ? rec.len : (int) len, ncols))
+			{
+				bucket = prev_bucket;
+				goto place_row;
+			}
+
+			/*
+			 * Advance to the key field. Fields end at an unescaped TAB only: a
+			 * backslash and a TAB are data, as COPY reads them (#2202).
+			 */
 			for (f = 0; f < keyfield; f++)
 			{
-				p = strchr(p, '\t');
-				if (p == NULL)
+				p = pcopy_text_field(&scan, p, NULL, &isnull);
+				if (*p != '\t')
 					break;
 				p++;
 			}
-			if (p == NULL)
+			if (f < keyfield)
 				ereport(ERROR,
 						(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 						 errmsg("row at byte %ld has too few columns for the partition key",
 								(long) line_start)));
-			/* field ends at a tab, or a bare/CRLF line ending -- stopping at \r
-			 * too keeps a trailing \r out of the key value */
-			flen = (int) strcspn(p, "\t\r\n");
-			fld = pnstrdup(p, flen);
-			kd = InputFunctionCall(&infn, fld, ioparam, keytypmod);
-			pfree(fld);
-
-			bucket = pcopy_partition_bucket(kd, bi, cmpfn, keycoll);
-			/* free the parsed key: numeric and other by-reference key types would
-			 * otherwise leak one Datum per row across the whole pre-scan */
-			if (!pkey->parttypbyval[0])
-				pfree(DatumGetPointer(kd));
+			/*
+			 * Decode the key as COPY does (#2202). It ends at a TAB, or at a
+			 * bare/CRLF line ending -- stopping at \r too keeps a trailing \r
+			 * out of the key value.
+			 */
+			(void) pcopy_text_field(&scan, p, &keybuf, &isnull);
+			if (isnull)
+			{
+				/*
+				 * A NULL key. No RANGE partition takes NULL and a DEFAULT
+				 * partition is refused above, so core COPY refuses the row
+				 * (23514). Leave it in the current range: its loader's COPY
+				 * raises that error, and the load rolls back as a whole.
+				 */
+				bucket = prev_bucket;
+			}
+			else
+			{
+				kd = InputFunctionCall(&infn, keybuf.data, ioparam, keytypmod);
+				bucket = pcopy_partition_bucket(kd, bi, cmpfn, keycoll);
+				/* free the parsed key: numeric and other by-reference key types
+				 * would otherwise leak one Datum per row across the whole pre-scan */
+				if (!pkey->parttypbyval[0])
+					pfree(DatumGetPointer(kd));
+			}
+	place_row:
 			if (bucket < prev_bucket)
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_EXCEPTION),
@@ -1056,6 +1413,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 		free(line);				/* getline() uses malloc, not palloc */
 	fclose(fp);
 	pfree(rec.data);
+	pfree(keybuf.data);
 
 	while (cur < nseg - 1)
 		seg_start[++cur] = size;
@@ -1211,6 +1569,134 @@ pcopy_wait_for_siblings_to_open(PcopyHeader *hdr, PcopyWorkerSlot *slots, int wi
 }
 
 /*
+ * The caller waits in the lock manager (#2229).
+ *
+ * The calling backend takes the workers' ROW EXCLUSIVE on the target and on
+ * each partition before it starts the coordinator, so a conflicting lock of
+ * another session -- LOCK TABLE ... IN SHARE MODE, CREATE INDEX -- is waited
+ * for there, in the lock manager, where the deadlock detector and the caller's
+ * lock_timeout see it. Before, the coordinator or a loader waited for it in its
+ * own transaction while the caller waited for them on a latch. If the other
+ * session then waited for a lock the caller held, nothing saw the cycle, and
+ * both waited until statement_timeout.
+ *
+ * Holding that lock has a cost of its own: a SHARE request that arrives after
+ * it waits for the caller, and a worker that asks for its ROW EXCLUSIVE later
+ * queues behind that request (the lock manager queues a request behind a
+ * waiting one it conflicts with). Measured on a partitioned target, a plain
+ * CREATE INDEX on a partition the loaders had not reached yet hung the load,
+ * where main's code just ran the index first.
+ *
+ * So the caller does not wait for its workers on a latch either. The
+ * coordinator, and each loader, takes an exclusive lock of class
+ * PGCOLUMNAR_LOCKCLASS_PCOPY_RUN on (load, its index) as soon as it has
+ * connected, before it asks for any lock on a relation, and says so in shared
+ * memory. The calling backend waits for each of those in SHARE mode in turn:
+ * the coordinator until it has created a single table's storage row, each
+ * loader until it exits. The wait-for graph then has an edge from the caller
+ * to the worker it is waiting for. A worker queued behind a SHARE request that
+ * waits for the caller closes a cycle with one soft edge, and the deadlock
+ * detector moves the worker ahead of the request, since its ROW EXCLUSIVE does
+ * not conflict with the caller's. A worker that waits for a lock the caller
+ * holds closes a cycle of hard edges, and one side gets 40P01 -- which is also
+ * what a lock the caller holds on a table the loaders reach through a foreign
+ * key, a trigger or a sequence now gives, instead of a hang (#2216).
+ *
+ * The run lock is a session lock, so a loader's PREPARE TRANSACTION does not
+ * carry it into the prepared transaction, and it goes with the process if the
+ * process dies. The caller's waits on it are waits for the load, not lock
+ * contention, so lock_timeout does not apply to them and log_lock_waits does
+ * not report them. A wait for a worker that has not taken its lock yet is a
+ * latch wait, but a worker takes it before it asks for anything a lock cycle
+ * could hold up.
+ */
+#define PCOPY_RUN_COORDINATOR	PCOPY_MAX_WORKERS	/* the coordinator's run lock index */
+
+static void
+pcopy_run_locktag(LOCKTAG *tag, const PcopyHeader *hdr, int idx)
+{
+	SET_LOCKTAG_ADVISORY(*tag, hdr->dbid, hdr->open_lock_key, (uint32) idx,
+						 PGCOLUMNAR_LOCKCLASS_PCOPY_RUN);
+}
+
+/* a worker takes its run lock, then says so; see above */
+static void
+pcopy_take_run_lock(const PcopyHeader *hdr, int idx, pg_atomic_uint32 *flag)
+{
+	LOCKTAG		tag;
+
+	pcopy_run_locktag(&tag, hdr, idx);
+	(void) LockAcquire(&tag, ExclusiveLock, true, false);
+	pg_atomic_write_u32(flag, 1);
+}
+
+static void
+pcopy_release_run_lock(const PcopyHeader *hdr, int idx)
+{
+	LOCKTAG		tag;
+
+	pcopy_run_locktag(&tag, hdr, idx);
+	LockRelease(&tag, ExclusiveLock, true);
+}
+
+/*
+ * pcopy_caller_wait_run_lock
+ *		The calling backend: wait until the worker behind *flag has taken its run
+ *		lock, or will not, then wait in the lock manager until it releases it.
+ *		*state is the worker's PENDING state, NULL for the coordinator.
+ */
+static void
+pcopy_caller_wait_run_lock(PcopyHeader *hdr, int idx, pg_atomic_uint32 *flag,
+						   pg_atomic_uint32 *state,
+						   BackgroundWorkerHandle *coord_handle)
+{
+	LOCKTAG		tag;
+
+	while (pg_atomic_read_u32(flag) == 0)
+	{
+		pid_t		cpid;
+
+		if (state != NULL && pg_atomic_read_u32(state) != PCOPY_PENDING)
+			return;
+		if (pg_atomic_read_u32(&hdr->coord_state) != PCOPY_COORD_PENDING ||
+			GetBackgroundWorkerPid(coord_handle, &cpid) == BGWH_STOPPED)
+			return;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+	pcopy_run_locktag(&tag, hdr, idx);
+	(void) LockAcquire(&tag, ShareLock, false, false);
+	LockRelease(&tag, ShareLock, false);
+}
+
+/*
+ * pcopy_caller_wait_for_workers
+ *		The calling backend: wait for the coordinator's and then each loader's run
+ *		lock (see above). Returns once every loader has exited or never started;
+ *		the caller then waits for the coordinator to finish.
+ */
+static void
+pcopy_caller_wait_for_workers(PcopyHeader *hdr, PcopyWorkerSlot *slots,
+							  BackgroundWorkerHandle *coord_handle)
+{
+	int			nest = NewGUCNestLevel();
+	int			i;
+
+	(void) set_config_option("lock_timeout", "0", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	(void) set_config_option("log_lock_waits", "off", PGC_SUSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	pcopy_caller_wait_run_lock(hdr, PCOPY_RUN_COORDINATOR, &hdr->coord_running,
+							   NULL, coord_handle);
+	for (i = 0; i < hdr->nworkers; i++)
+		pcopy_caller_wait_run_lock(hdr, i, &slots[i].running, &slots[i].state,
+								   coord_handle);
+	AtEOXact_GUC(true, nest);
+}
+
+/*
  * pgcolumnar_parallel_copy_worker (loader)
  *		Background-worker entry: attach the DSM, connect, run core COPY over this
  *		worker's byte range into the target, then PREPARE TRANSACTION 'gid' rather
@@ -1248,6 +1734,8 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
+	/* before any lock on a relation (#2229), see "The caller waits..." */
+	pcopy_take_run_lock(hdr, widx, &me->running);
 
 	/*
 	 * Single-table load: this loader writes the one shared storage concurrently
@@ -1358,8 +1846,17 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 #endif
 		}
 
-		options = list_make1(makeDefElem("format",
-										 (Node *) makeString("text"), -1));
+		/*
+		 * Read the file in the caller's client_encoding, as the caller's COPY
+		 * FROM would (#2188). A loader's own client_encoding is the database's
+		 * or the role's default, which is not the caller's, so the loaders
+		 * converted the same bytes to other text, or refused them.
+		 */
+		options = list_make2(makeDefElem("format",
+										 (Node *) makeString("text"), -1),
+							 makeDefElem("encoding",
+										 (Node *) makeString(pstrdup(pg_encoding_to_char(hdr->file_encoding))),
+										 -1));
 		/*
 		 * Core runs COPY FROM inside a portal that pushes an active snapshot
 		 * (PortalRunUtility) before CopyFrom. We call CopyFrom directly, so we
@@ -1466,6 +1963,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 	}
 	PG_END_TRY();
 
+	pcopy_release_run_lock(hdr, widx);
 	dsm_detach(seg);
 	proc_exit(0);
 }
@@ -1661,37 +2159,8 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
-
-	/*
-	 * Single-table load: pre-create and COMMIT the storage catalog row before any
-	 * loader starts, in the coordinator's own top-level session (the SQL function
-	 * cannot commit). With the row committed, each loader -- which sets
-	 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
-	 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
-	 * coordinator itself leaves the flag off, so this uses the normal create path.
-	 */
-	if (hdr->single_table)
-	{
-		Relation	rel;
-
-		StartTransactionCommand();
-		/*
-		 * StartTransactionCommand does not push an active snapshot, but
-		 * PgColumnarEnsureStorageRow reads pgcolumnar.options/storage via
-		 * systable scans, and those visibility checks require a registered or
-		 * active snapshot. A normal backend has one from the executor; this
-		 * bgworker does not, so push one explicitly. Without it the scan runs
-		 * on an unregistered GetTransactionSnapshot() and aborts an assert
-		 * build the moment the options relation has a matching row (i.e. when
-		 * the target has custom options set).
-		 */
-		PushActiveSnapshot(GetTransactionSnapshot());
-		rel = table_open(hdr->relid, RowExclusiveLock);
-		PgColumnarEnsureStorageRow(rel);
-		table_close(rel, NoLock);
-		PopActiveSnapshot();
-		CommitTransactionCommand();
-	}
+	/* held while it locks the target, below (#2229) */
+	pcopy_take_run_lock(hdr, PCOPY_RUN_COORDINATOR, &hdr->coord_running);
 
 	handles = (BackgroundWorkerHandle **)
 		palloc0(sizeof(BackgroundWorkerHandle *) * nworkers);
@@ -1714,6 +2183,46 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		int			failed = -1;
 		int64		total = 0;
 		int			ncommit = nworkers;	/* ranges that hold data */
+
+		/*
+		 * Inside the PG_TRY (#2229, review of #2244): this step waits for a
+		 * lock on the target's storage, and the deadlock detector can pick the
+		 * coordinator as the victim of a cycle through it. Before, its error
+		 * ended the process before anything was recorded, and the caller
+		 * reported XX000 "coordinator exited without reporting a result"
+		 * instead of the 40P01. The PG_CATCH below records it for the caller.
+		 *
+		 * Single-table load: pre-create and COMMIT the storage catalog row before any
+		 * loader starts, in the coordinator's own top-level session (the SQL function
+		 * cannot commit). With the row committed, each loader -- which sets
+		 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
+		 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
+		 * coordinator itself leaves the flag off, so this uses the normal create path.
+		 */
+		if (hdr->single_table)
+		{
+			Relation	rel;
+
+			StartTransactionCommand();
+			/*
+			 * StartTransactionCommand does not push an active snapshot, but
+			 * PgColumnarEnsureStorageRow reads pgcolumnar.options/storage via
+			 * systable scans, and those visibility checks require a registered or
+			 * active snapshot. A normal backend has one from the executor; this
+			 * bgworker does not, so push one explicitly. Without it the scan runs
+			 * on an unregistered GetTransactionSnapshot() and aborts an assert
+			 * build the moment the options relation has a matching row (i.e. when
+			 * the target has custom options set).
+			 */
+			PushActiveSnapshot(GetTransactionSnapshot());
+			rel = table_open(hdr->relid, RowExclusiveLock);
+			PgColumnarEnsureStorageRow(rel);
+			table_close(rel, NoLock);
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+		}
+		/* the caller waits for the loaders' run locks from here (#2229) */
+		pcopy_release_run_lock(hdr, PCOPY_RUN_COORDINATOR);
 
 		for (i = 0; i < nworkers && !pcopy_coord_got_sigterm; i++)
 		{
@@ -1974,6 +2483,10 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		strlcpy(hdr->coord_errmsg,
 				edata->message ? edata->message : "coordinator error",
 				sizeof(hdr->coord_errmsg));
+		strlcpy(hdr->coord_errdetail, edata->detail ? edata->detail : "",
+				sizeof(hdr->coord_errdetail));
+		strlcpy(hdr->coord_errhint, edata->hint ? edata->hint : "",
+				sizeof(hdr->coord_errhint));
 		MemoryContextSwitchTo(ecxt);
 		FlushErrorState();
 		AbortOutOfAnyTransaction();
@@ -2026,8 +2539,10 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	int			max_prepared;
 	bool		dedup;
 	bool		single_table = false;
+	List	   *lockrels = NIL;	/* the target and its partitions (#2229) */
 	int64	   *offs;
 	int			eol_type;
+	int			file_encoding = pg_get_client_encoding();
 	shm_toc_estimator est;
 	Size		segsize;
 	dsm_segment *seg;
@@ -2165,12 +2680,15 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 									   get_rel_name(partid)),
 							 errhint("Commit the write first, or load the file with COPY in this transaction.")));
 			}
+
+			lockrels = rels;
 		}
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{
 			/* each worker loads a DISTINCT partition (distinct storage) */
-			offs = pcopy_partition_aligned_offsets(target, path, &workers);
+			offs = pcopy_partition_aligned_offsets(target, path, &workers,
+													   file_encoding);
 			single_table = false;
 		}
 		else if (PgColumnarIsColumnarRelation(relid))
@@ -2191,7 +2709,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 			 */
 			if (workers > 1)
 				pcopy_refuse_more_workers(target, AccessShareLock);
-			offs = pcopy_naive_offsets(path, workers);
+			offs = pcopy_naive_offsets(path, workers, file_encoding);
 			single_table = true;
 		}
 		else
@@ -2228,7 +2746,24 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 				 errhint("Atomic parallel_copy prepares one transaction per worker; raise max_prepared_transactions (requires a restart) or reduce workers.")));
 
 	/* the newline style every range is held to, read before any worker starts */
-	eol_type = pcopy_file_eol_type(path);
+	eol_type = pcopy_file_eol_type(path, file_encoding);
+
+	/*
+	 * Take the workers' lock first (#2229): ROW EXCLUSIVE on the target and on
+	 * each partition, the list the refusals above walked, held to the end of
+	 * the transaction as a writer's is. A conflicting lock of another session
+	 * is then waited for here, in the lock manager, where the deadlock detector
+	 * and this backend's lock_timeout see it, and not by the coordinator or a
+	 * loader in a transaction of its own; see "The caller waits in the lock
+	 * manager". After every refusal, so that none of them waits for another
+	 * session first, and before anything is created or started.
+	 */
+	{
+		ListCell   *lc;
+
+		foreach(lc, lockrels)
+			LockRelationOid(lfirst_oid(lc), RowExclusiveLock);
+	}
 
 	/* lay out one DSM segment: control header + per-worker slot array */
 	shm_toc_initialize_estimator(&est);
@@ -2256,6 +2791,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	hdr->single_table = single_table;
 	strlcpy(hdr->filename, path, sizeof(hdr->filename));
 	hdr->eol_type = eol_type;
+	hdr->file_encoding = file_encoding;
 	hdr->total_rows = 0;
 	hdr->failed_worker = -1;
 	hdr->coord_sqlerrcode = 0;
@@ -2267,6 +2803,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	memset(hdr->fingerprint, 0, sizeof(hdr->fingerprint));
 	pg_atomic_init_u32(&hdr->coord_state, PCOPY_COORD_PENDING);
 	pg_atomic_init_u32(&hdr->committed, 0);
+	pg_atomic_init_u32(&hdr->coord_running, 0);
 
 	for (i = 0; i < workers; i++)
 	{
@@ -2280,6 +2817,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		slots[i].errhint[0] = '\0';
 		pg_atomic_init_u32(&slots[i].state, PCOPY_PENDING);
 		pg_atomic_init_u32(&slots[i].armed, 0);
+		pg_atomic_init_u32(&slots[i].running, 0);
 		/* gid unique among concurrently-prepared xacts: our pid + segment + index */
 		snprintf(slots[i].gid, GIDSIZE, "pgcolumnar/%d/%u/%d",
 				 (int) MyProcPid, (unsigned) dsmh, i);
@@ -2319,6 +2857,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
 					 errmsg("could not register pgcolumnar parallel_copy coordinator"),
 					 errhint("Increase max_worker_processes.")));
+		pcopy_caller_wait_for_workers(hdr, slots, coord_handle);
 		WaitForBackgroundWorkerShutdown(coord_handle);
 	}
 	PG_CATCH();
@@ -2396,7 +2935,9 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		else
 			ereport(ERROR,
 					(errcode(code ? code : ERRCODE_INTERNAL_ERROR),
-					 errmsg("pgcolumnar.parallel_copy failed: %s", msg)));
+					 errmsg("pgcolumnar.parallel_copy failed: %s", msg),
+					 detail[0] ? errdetail_internal("%s", detail) : 0,
+					 hint[0] ? errhint("%s", hint) : 0));
 	}
 
 	PG_RETURN_INT64(0);			/* unreachable */

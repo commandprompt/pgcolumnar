@@ -361,21 +361,23 @@ wait "$H_PID" 2>/dev/null || true
 # commits during the pause.
 # ---------------------------------------------------------------------------
 echo "-- phase 7: a delete commits between vacuum's computation and its set (#2059)"
-# vm_mid TABLE ROWS DML BEFORE AFTER IOS [CLEAN]: load ROWS rows into TABLE and
-# vacuum it; then start a VACUUM held by vm_set_hold_ms, run and commit DML
-# during the hold, and let the VACUUM finish. BEFORE, AFTER, IOS and the
-# optional CLEAN are queries run before the hold, and after the VACUUM. Sets
-# vm_before, vm_held, vm_still, vm_after, vm_ios and vm_clean.
+# vm_mid TABLE ROWS DML BEFORE AFTER IOS [CLEAN [SETUP]]: load ROWS rows into
+# TABLE and vacuum it, then run the optional SETUP; then start a VACUUM held by
+# vm_set_hold_ms, run and commit DML during the hold, and let the VACUUM
+# finish. BEFORE, AFTER, IOS and the optional CLEAN are queries run before the
+# hold, and after the VACUUM. Sets vm_before, vm_held, vm_still, vm_after,
+# vm_ios and vm_clean.
 vm_mid() {
-	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" clean="${7:-}" i vpid plan held
+	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" clean="${7:-}" setup="${8:-}" i vpid plan held
 	psql_run "CREATE TABLE $tbl (id int, pad int) USING pgcolumnar;"
 	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, $rows) g;"
 	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
 	psql_run "VACUUM $tbl;"
+	[ -n "$setup" ] && psql_run "$setup"
 	vm_before="$(q "$before")"
 	held="SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM $tbl;' AND wait_event_type = 'Extension';"
 
-	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=5000' \
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=15000' \
 		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "VACUUM $tbl;" \
 		> "$PGC_WORKDIR/$tbl.vacuum.out" 2>&1 &
 	vpid=$!
@@ -432,5 +434,346 @@ check "delete over three row groups between vacuum's two steps: vacuum paused be
 check "delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
 check "delete over three row groups between vacuum's two steps: no target block all-visible after vacuum" "$vm_after" "0"
 check "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
+# #2170: the second pass clears only the bits this VACUUM flipped from 0 to 1.
+# vr_keep's first 20,000 rows are row group 1, blocks 1..67, all set by the
+# load's VACUUM. A second INSERT of 20,000 rows after it starts row group 2 at
+# row 150001, and its blocks 516..583 are not set yet. During the hold a DELETE
+# takes ids 300..400 (block 1) and 1500..1600 (block 5), so group 1 leaves the
+# second computation while group 2 stays in it. The writer's clears run before
+# the set, so the set flips blocks 1 and 5 back, and only the second pass can
+# clear them. The other 65 blocks of group 1 hold no deleted row and were set
+# before the hold: they keep their bits. Blocks 516..583 are flipped by this
+# VACUUM and stay all-visible at the second computation: they keep theirs too.
+KEEP_G1="SELECT b FROM generate_series(1, 67) b"
+KEEP_DEL="SELECT b FROM (VALUES (1), (5)) v(b)"
+KEEP_CLEAN="SELECT b FROM generate_series(1, 67) b WHERE b NOT IN (1, 5)"
+KEEP_G2="SELECT b FROM generate_series(516, 583) b"
+keep_vis() { echo "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_keep', b)) FROM ($1) t"; }
+vm_mid vr_keep 20000 "DELETE FROM vr_keep WHERE id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600;" \
+	"SELECT ($(keep_vis "$KEEP_G1")) || '|' || ($(keep_vis "$KEEP_G2"));" \
+	"$(keep_vis "$KEEP_DEL");" \
+	"SELECT count(*) FROM vr_keep WHERE id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600;" \
+	"$(keep_vis "$KEEP_CLEAN");" \
+	"INSERT INTO vr_keep SELECT g, g FROM generate_series(20001, 40000) g;"
+vm_fresh="$(q "$(keep_vis "$KEEP_G2");")"
+plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000;")"
+case "$plan" in
+*'Index Only Scan'*)
+	vm_all="$(q "SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000;")" ;;
+*)
+	vm_all="no index-only scan was planned: $plan" ;;
+esac
+check "#2170 premise: delete between vacuum's two steps: group 1 set and group 2 not yet set before the hold" "$vm_before" "67|0"
+check "#2170 premise: delete between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "#2170 premise: delete between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "#2170 delete between vacuum's two steps: blocks 1 and 5 not all-visible after vacuum" "$vm_after" "0"
+check "#2170 delete between vacuum's two steps: the 65 clean blocks set before the hold keep their bits" "$vm_clean" "65"
+check "#2170 delete between vacuum's two steps: the 68 blocks this vacuum set in the clean group keep their bits" "$vm_fresh" "68"
+check "#2170 delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows" "$vm_all" "39798"
+
+# #2257 review, B1: the second pass must reach the LAST block of a run. In
+# vr_last's 20,000 rows, row group 1's run is blocks 1..67, and ids
+# 19500..19510 lie in block 67 (rows 19497..19787), its last block. The DELETE
+# commits during the hold, so the set flips block 67 back and only the second
+# pass can clear it.
+vm_mid vr_last 20000 "DELETE FROM vr_last WHERE id BETWEEN 19500 AND 19510;" \
+	"SELECT pgcolumnar.vm_is_visible('vr_last', 67);" "SELECT pgcolumnar.vm_is_visible('vr_last', 67);" \
+	"SELECT count(*) FROM vr_last WHERE id BETWEEN 19500 AND 19510;"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: block 67 all-visible before the writer starts" "$vm_before" "t"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "#2170 delete in the last block of a run between vacuum's two steps: block 67 not all-visible after vacuum" "$vm_after" "f"
+check "#2170 delete in the last block of a run between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
+# #2257 review, B2: the set must stop at the end of a run. vr_edge holds three
+# contiguous 1000-row groups (stripe_row_limit 1000): rows 1..1000, 1001..2000
+# and 2001..3000. Block 3 (rows 873..1163) straddles groups 1 and 2. A committed
+# DELETE of id 1100 (group 2, block 3), then a plain VACUUM: groups 1 and 3 are
+# all-visible, their runs are blocks 1..2 and 7..9, and block 3, one past the
+# first run, must stay unset.
+psql_run "CREATE TABLE vr_edge (id int, pad int) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('vr_edge', stripe_row_limit => 1000);"
+psql_run "INSERT INTO vr_edge SELECT g, g FROM generate_series(1, 3000) g;"
+psql_run "CREATE INDEX vr_edge_id ON vr_edge (id);"
+psql_run "DELETE FROM vr_edge WHERE id = 1100;"
+psql_run "VACUUM vr_edge;"
+edge_blocks="$(q "SELECT string_agg((ctid::text::point)[0]::int::text, '|' ORDER BY id) FROM vr_edge WHERE id IN (1000, 1001, 1099, 1101);")"
+edge_set="$(q "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_edge', b)) FROM (VALUES (1), (2), (7), (8), (9)) v(b);")"
+edge_b3="$(q "SELECT pgcolumnar.vm_is_visible('vr_edge', 3);")"
+plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_edge WHERE id = 1100;")"
+case "$plan" in
+*'Index Only Scan'*)
+	edge_ios="$(q "SELECT count(*) FROM vr_edge WHERE id = 1100;")" ;;
+*)
+	edge_ios="no index-only scan was planned: $plan" ;;
+esac
+check "#2170 premise: a delete in a block shared by two row groups: ids 1000, 1001, 1099 and 1101 all lie in block 3" "$edge_blocks" "3|3|3|3"
+check "#2170 premise: a delete in a block shared by two row groups: vacuum set the five blocks of the clean groups' runs" "$edge_set" "5"
+check "#2170 a delete in a block shared by two row groups: block 3 not all-visible after vacuum" "$edge_b3" "f"
+check "#2170 a delete in a block shared by two row groups: index-only scan returns no deleted row" "$edge_ios" "0"
+
+# ---------------------------------------------------------------------------
+# Phase 8 (#2169): an AFTER STATEMENT trigger of a DELETE or UPDATE reads the
+# table through an index-only scan after a VACUUM ran inside the statement.
+# The writer's delete marks are still only in its memory, so the VACUUM sets
+# the blocks all-visible again, and the trigger fires before the writer's
+# ExecutorEnd writes the marks. The trigger must still not count the rows its
+# statement deleted. Heap is the answer: each scenario runs on a heap table too.
+#
+# 20,000 rows are one row group. The targets are ids 500, 1000, ..., 19500, 39
+# rows in 39 blocks (id g is in block g / 291). The writer pauses on its last
+# target, 19500, on advisory lock 2169, which session H holds: a CASE, so the
+# pause comes after the 38 earlier marks. The trigger joins a heap list of the
+# target ids, so the table is not the first entry of its query's range table.
+# The "exc" variant reads inside an EXCEPTION block, a subtransaction that does
+# not own the writer's marks, and then fails, so the block rolls back: the
+# marks written under it must still reach the catalog at the writer's end.
+# ---------------------------------------------------------------------------
+echo "-- phase 8: an AFTER trigger reads through an index-only scan after a vacuum inside its statement (#2169)"
+psql_run "CREATE TABLE tr_ids (id int); INSERT INTO tr_ids SELECT g FROM generate_series(500, 19500, 500) g;"
+psql_run "CREATE TABLE tr_log (tbl text, n bigint, ios bool);"
+psql_run "CREATE FUNCTION tr_count() RETURNS trigger LANGUAGE plpgsql AS \$\$
+DECLARE
+	sql text := format('SELECT count(*) FROM tr_ids k JOIN %I t ON t.id = k.id', TG_TABLE_NAME);
+	n bigint;
+	pl text;
+	ios bool := false;
+BEGIN
+	IF TG_ARGV[0] = 'exc' THEN
+		BEGIN
+			EXECUTE sql INTO n;
+			PERFORM 1 / 0;
+		EXCEPTION WHEN division_by_zero THEN
+			NULL;
+		END;
+	ELSE
+		EXECUTE sql INTO n;
+	END IF;
+	FOR pl IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		ios := ios OR pl LIKE '%Index Only Scan%';
+	END LOOP;
+	INSERT INTO tr_log VALUES (TG_TABLE_NAME, n, ios);
+	RETURN NULL;
+END \$\$;"
+
+H_IN="$PGC_WORKDIR/sessH8.in"; H_OUT="$PGC_WORKDIR/sessH8.out"
+mkfifo "$H_IN"; : > "$H_OUT"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -At -f "$H_IN" >> "$H_OUT" 2>&1 &
+H_PID=$!
+exec 9> "$H_IN"
+
+# tr_race TABLE AM VARIANT DML: load TABLE with access method AM, index and
+# vacuum it, add the trigger (VARIANT is its argument), run DML paused on its
+# last target, vacuum TABLE meanwhile, then let DML finish and commit. Sets
+# tr_before, tr_paused, tr_set, tr_written, tr_n, tr_ios and tr_after. A
+# writer that times out prints its error, which then shows in tr_written.
+tr_race() {
+	local tbl="$1" am="$2" variant="$3" dml="$4" i wpid tgt
+	tgt="SELECT DISTINCT id / 291 AS b FROM tr_ids"
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING $am;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	psql_run "CREATE TRIGGER ${tbl}_tr AFTER DELETE OR UPDATE ON $tbl FOR EACH STATEMENT EXECUTE FUNCTION tr_count('$variant');"
+	tr_before="$(q "SELECT bool_and(pgcolumnar.vm_is_visible('$tbl', b)) FROM ($tgt) s;")"
+
+	h_send "SELECT 'H_LOCKED_$tbl' FROM pg_advisory_lock(2169);"
+	h_wait "H_LOCKED_$tbl" || true
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "$dml" \
+		> "$PGC_WORKDIR/$tbl.writer.out" 2>&1 &
+	wpid=$!
+	tr_paused="no"
+	for i in $(seq 1 200); do
+		if [ "$(q "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 2169 AND NOT granted;")" = "1" ]; then
+			tr_paused="yes"; break
+		fi
+		sleep 0.1
+	done
+	psql_run "VACUUM $tbl;"
+	tr_set="$(q "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('$tbl', b)) FROM ($tgt) s;")"
+	h_send "SELECT 'H_UNLOCKED_$tbl' FROM pg_advisory_unlock(2169);"
+	h_wait "H_UNLOCKED_$tbl" || true
+	wait "$wpid" 2>/dev/null || true
+	tr_written="$(cat "$PGC_WORKDIR/$tbl.writer.out")"
+	tr_n="$(q "SELECT n FROM tr_log WHERE tbl = '$tbl';")"
+	tr_ios="$(q "SELECT ios FROM tr_log WHERE tbl = '$tbl';")"
+	tr_after="$(q "SELECT count(*) FROM tr_ids k JOIN $tbl t ON t.id = k.id;")"
+}
+
+# the DML: every 500th id below 20000, pausing on the last before marking it
+pause_on_last="CASE WHEN id % 500 <> 0 OR id >= 20000 THEN false
+	WHEN id = 19500 THEN pg_advisory_lock_shared(2169)::text = '' ELSE true END"
+
+tr_race trd_h heap plain "DELETE FROM trd_h WHERE $pause_on_last"
+hd_written="$tr_written" hd_n="$tr_n" hd_ios="$tr_ios" hd_after="$tr_after"
+tr_race trd pgcolumnar plain "DELETE FROM trd WHERE $pause_on_last"
+check "an AFTER trigger of a delete during vacuum: every target block all-visible before the writer starts" "$tr_before" "t"
+check "an AFTER trigger of a delete during vacuum: vacuum ran while the writer was paused" "$tr_paused" "yes"
+check "an AFTER trigger of a delete during vacuum: the vacuum set all 39 target blocks again" "$tr_set" "39"
+check "an AFTER trigger of a delete during vacuum: the writer deleted 39 rows, as heap did" "$tr_written|$hd_written" "DELETE 39|DELETE 39"
+check "an AFTER trigger of a delete during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$hd_ios" "t|t"
+check "an AFTER trigger of a delete during vacuum: the trigger counts none of the deleted rows, as heap does" "$tr_n|$hd_n" "0|0"
+check "an AFTER trigger of a delete during vacuum: after commit none of them is counted, as on heap" "$tr_after|$hd_after" "0|0"
+
+tr_race tru_h heap plain "UPDATE tru_h SET pad = -pad WHERE $pause_on_last"
+hu_written="$tr_written" hu_n="$tr_n" hu_ios="$tr_ios" hu_after="$tr_after"
+tr_race tru pgcolumnar plain "UPDATE tru SET pad = -pad WHERE $pause_on_last"
+check "an AFTER trigger of an update during vacuum: every target block all-visible before the writer starts" "$tr_before" "t"
+check "an AFTER trigger of an update during vacuum: vacuum ran while the writer was paused" "$tr_paused" "yes"
+check "an AFTER trigger of an update during vacuum: the vacuum set all 39 target blocks again" "$tr_set" "39"
+check "an AFTER trigger of an update during vacuum: the writer updated 39 rows, as heap did" "$tr_written|$hu_written" "UPDATE 39|UPDATE 39"
+check "an AFTER trigger of an update during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$hu_ios" "t|t"
+check "an AFTER trigger of an update during vacuum: the trigger counts each updated row once, as heap does" "$tr_n|$hu_n" "39|39"
+check "an AFTER trigger of an update during vacuum: after commit each is counted once, as on heap" "$tr_after|$hu_after" "39|39"
+
+tr_race tre_h heap exc "DELETE FROM tre_h WHERE $pause_on_last"
+he_written="$tr_written" he_n="$tr_n" he_ios="$tr_ios" he_after="$tr_after"
+tr_race tre pgcolumnar exc "DELETE FROM tre WHERE $pause_on_last"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: every target block all-visible before the writer starts" "$tr_before" "t"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: vacuum ran while the writer was paused" "$tr_paused" "yes"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the vacuum set all 39 target blocks again" "$tr_set" "39"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the writer deleted 39 rows, as heap did" "$tr_written|$he_written" "DELETE 39|DELETE 39"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$he_ios" "t|t"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger counts none of the deleted rows, as heap does" "$tr_n|$he_n" "0|0"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: after commit none of them is counted, as on heap" "$tr_after|$he_after" "0|0"
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 (#2169, review of #2241): a DELETE whose nested statement wrote its
+# marks early, at that statement's start, then fails. Its marks must die with
+# it. The DELETE reads the table through an index-only scan on row 999 (a
+# plpgsql function, so a nested statement) and fails with division by zero on
+# row 1000. The writer's session then runs one more transaction, which is where
+# marks kept past the abort would be written. A fresh session counts the rows
+# through a sequential scan, an index scan and an index-only scan, before and
+# after a VACUUM: all 20,000 rows are live, as on heap.
+# ---------------------------------------------------------------------------
+echo "-- phase 9: a DELETE that fails after a nested statement wrote its marks (#2169)"
+psql_run "CREATE FUNCTION ab_peek(t text, i int) RETURNS bool LANGUAGE plpgsql AS \$\$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %I WHERE id = \$1', t) INTO n USING i;
+	RAISE NOTICE 'peeked';
+	RETURN true;
+END \$\$;"
+
+# q_last SQL: q's last line, the value after any SET tags
+q_last() { local v; v="$(q "$1")"; printf '%s\n' "${v##*$'\n'}"; }
+# ab_counts TABLE: seq/index/index-only counts of TABLE from a fresh session each
+ab_counts() {
+	local seq="SET enable_seqscan = on; SET enable_indexscan = off; SET enable_indexonlyscan = off;"
+	echo "$(q_last "$seq SELECT count(*) FROM $1;")/$(q_last "SET enable_indexonlyscan = off; SELECT count(pad) FROM $1 WHERE id > 0;")/$(q_last "SELECT count(*) FROM $1 WHERE id > 0;")"
+}
+# ab_abort TABLE AM: load, run the failing DELETE and one more transaction in
+# the writer's session, then count. Sets ab_writer, ab_plans, ab_after, ab_vac.
+ab_abort() {
+	local tbl="$1" am="$2" seq plan
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING $am;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	# one psql, three -c: each its own transaction, and an error does not stop the next
+	ab_writer="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate \
+		-c "DELETE FROM $tbl WHERE CASE WHEN id > 1000 THEN false WHEN id = 999 THEN ab_peek('$tbl', id)
+		    WHEN id = 1000 THEN id / (id - 1000) = 1 ELSE true END" \
+		-c "SELECT 'W_END'" 2>&1 | paste -sd '|')"
+	seq="SET enable_seqscan = on; SET enable_indexscan = off; SET enable_indexonlyscan = off;"
+	plan="$(q "$seq EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl;")"
+	ab_plans="$(grep -o 'Seq Scan' <<<"$plan" | head -1)"
+	plan="$(q "SET enable_indexonlyscan = off; EXPLAIN (COSTS OFF) SELECT count(pad) FROM $tbl WHERE id > 0;")"
+	ab_plans="$ab_plans|$(grep -oE 'Index (Only )?Scan' <<<"$plan" | head -1)"
+	plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl WHERE id > 0;")"
+	ab_plans="$ab_plans|$(grep -oE 'Index (Only )?Scan' <<<"$plan" | head -1)"
+	ab_after="$(ab_counts "$tbl")"
+	psql_run "VACUUM $tbl;"
+	ab_vac="$(ab_counts "$tbl")"
+}
+
+ab_abort ab_h heap
+hb_writer="$ab_writer" hb_after="$ab_after" hb_vac="$ab_vac"
+ab_abort ab pgcolumnar
+check "a delete that fails after a nested read: the nested read ran, the delete failed with 22012 and the next transaction ran, as on heap" \
+	"$ab_writer || $hb_writer" "NOTICE:  00000|ERROR:  22012|W_END || NOTICE:  00000|ERROR:  22012|W_END"
+check "a delete that fails after a nested read: the counts use a seq scan, an index scan and an index-only scan" \
+	"$ab_plans" "Seq Scan|Index Scan|Index Only Scan"
+check "a delete that fails after a nested read: every row is live by each scan in a new transaction, as on heap" \
+	"$ab_after || $hb_after" "20000/20000/20000 || 20000/20000/20000"
+check "a delete that fails after a nested read: every row is live by each scan after vacuum, as on heap" \
+	"$ab_vac || $hb_vac" "20000/20000/20000 || 20000/20000/20000"
+
+# ---------------------------------------------------------------------------
+# Phase 10 (#2169, review of #2241): a second deleter of the same rows. The
+# first deleter A pauses inside a nested read on row 999, on advisory lock
+# 2241, which session H holds; by then its nested statement has written its
+# marks. B, at READ COMMITTED, deletes ids 500..1500 meanwhile. B waits for A,
+# as on heap. When A commits, B fails with serialization_failure, where heap
+# re-checks and deletes the other 500: the documented columnar rule
+# (docs/limitations.md, Concurrency). Pinned, so a change shows.
+# ---------------------------------------------------------------------------
+echo "-- phase 10: a second deleter of the same rows during the first's nested read (#2169)"
+psql_run "CREATE FUNCTION cd_gate(t text, i int) RETURNS bool LANGUAGE plpgsql AS \$\$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %I WHERE id = \$1 AND pg_advisory_lock_shared(2241)::text = %L', t, '') INTO n USING i;
+	RETURN true;
+END \$\$;"
+
+# cd_race TABLE AM: sets cd_paused, cd_wait, cd_a, cd_b, cd_left
+cd_race() {
+	local tbl="$1" am="$2" i apid bpid
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING $am;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	h_send "SELECT 'H_LOCKED_$tbl' FROM pg_advisory_lock(2241);"
+	h_wait "H_LOCKED_$tbl" || true
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate \
+		-c "DELETE FROM $tbl WHERE CASE WHEN id > 1000 THEN false WHEN id = 999 THEN cd_gate('$tbl', id) ELSE true END" \
+		> "$PGC_WORKDIR/$tbl.a.out" 2>&1 &
+	apid=$!
+	cd_paused="no"
+	for i in $(seq 1 200); do
+		if [ "$(q "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 2241 AND NOT granted;")" = "1" ]; then
+			cd_paused="yes"; break
+		fi
+		sleep 0.1
+	done
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate \
+		-c "DELETE FROM $tbl WHERE id BETWEEN 500 AND 1500" > "$PGC_WORKDIR/$tbl.b.out" 2>&1 &
+	bpid=$!
+	cd_wait="B never waited"
+	for i in $(seq 1 200); do
+		if [ "$(q "SELECT wait_event_type FROM pg_stat_activity WHERE query LIKE 'DELETE FROM $tbl WHERE id BETWEEN%';")" = "Lock" ]; then
+			cd_wait="Lock"; break
+		fi
+		sleep 0.1
+	done
+	h_send "SELECT 'H_UNLOCKED_$tbl' FROM pg_advisory_unlock(2241);"
+	h_wait "H_UNLOCKED_$tbl" || true
+	wait "$apid" 2>/dev/null || true
+	wait "$bpid" 2>/dev/null || true
+	cd_a="$(paste -sd '|' "$PGC_WORKDIR/$tbl.a.out")"
+	cd_b="$(paste -sd '|' "$PGC_WORKDIR/$tbl.b.out")"
+	cd_left="$(q_last "SET enable_seqscan = on; SELECT count(*) FROM $tbl;")"
+}
+
+cd_race cd_h heap
+hc_wait="$cd_wait" hc_a="$cd_a" hc_b="$cd_b" hc_left="$cd_left"
+cd_race cd pgcolumnar
+check "a second deleter during the first's nested read: the first deleter was paused inside its nested read" "$cd_paused" "yes"
+check "a second deleter during the first's nested read: the second deleter waits for the first, as on heap" "$cd_wait|$hc_wait" "Lock|Lock"
+check "a second deleter during the first's nested read: the first deleter deletes its 1000 rows, as on heap" "$cd_a|$hc_a" "DELETE 1000|DELETE 1000"
+check "a second deleter during the first's nested read: the second then fails with serialization_failure, where heap deletes the other 500" "$cd_b|$hc_b" "ERROR:  40001|DELETE 500"
+check "a second deleter during the first's nested read: 19000 rows remain, where heap leaves 18500" "$cd_left|$hc_left" "19000|18500"
+
+exec 9>&-
+wait "$H_PID" 2>/dev/null || true
 
 pgc_summary

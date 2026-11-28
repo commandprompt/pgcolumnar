@@ -99,11 +99,11 @@ check "a writer that finds no complete extent recomputes one over every group" "
 
 # ---- concurrent writers never share a row --------------------------------------
 #
-# Ordinary writers into one table are serialized by the storage-row lock (class
-# 102) from their first flush to their commit, so they never overlap. The writers
-# that do are parallel_copy's loaders: separate sessions flushing into one storage
-# at once, each preparing its transaction. An in-place update from two of them
-# would fail ("tuple concurrently updated") or lose one's widening; and each
+# Ordinary writers into one table share the storage-row lock (class 102) since
+# #2184, so they can overlap too; parallel_copy's loaders always did: separate
+# sessions flushing into one storage at once, each preparing its transaction. An
+# in-place update from two of them would fail ("tuple concurrently updated") or
+# lose one's widening; and each
 # writes its row at PRE_PREPARE, so one missing would leave the extent too narrow.
 # The file's earliest rows and its latest are far apart in it, so different loaders
 # hold them.

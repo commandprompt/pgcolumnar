@@ -45,6 +45,9 @@ TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
 G, NCOLS, ROWS_PER_GROUP = 3, 8, 8000
 COLDEFS = ", ".join(f"c{i} int8" for i in range(NCOLS))
+# pgc_reads (#2198): count(*), sum(c3) and sum(c7) of the fixture, c3 = 4v and c7 = 8v for row v
+_N = G * ROWS_PER_GROUP
+READS_WANT = f"{_N} {4 * _N * (_N - 1) // 2} {8 * _N * (_N - 1) // 2}"
 # label -> (foreign table, server, OpenSSL's verification reason)
 REFUSED = {
     "wrong-host": ("fwrong", "wronghost", "IP address mismatch"),
@@ -53,6 +56,17 @@ REFUSED = {
     "self-signed": ("fself", "selfsigned", "self-signed certificate"),
 }
 CRASH = "terminated by signal"
+# G (#2246): label -> (server mode, the error with {url} for its URL, GETs sent)
+G_REFUSED = {
+    "an EOF over TLS after half a body": ("finbody", '08006: columnar: TLS read from "{url}" failed', 1),
+    "an EOF over TLS on a fresh connection": (
+        "finfresh", '08006: columnar: connection to "{url}" failed before a response', 1),
+    "a TLS record error on a kept-alive connection": ("garbka", '08006: columnar: TLS read from "{url}" failed', 1),
+    "a bad record MAC on a kept-alive connection": ("badmac", '08006: columnar: TLS read from "{url}" failed', 1),
+    # #2258: a whole 103 Early Hints head, then the EOF with no close_notify
+    "an EOF over TLS after a 103 interim head on a kept-alive connection": (
+        "fin103", '08006: columnar: TLS read from "{url}" failed', 1),
+}
 
 
 def _message(exc):
@@ -296,6 +310,57 @@ def otr(pgc_cluster, server_dir):
         r["D elapsed"] = time.monotonic() - t0
         _wait_up(dsn)
 
+        # F (#2198): a reset on a kept-alive TLS connection, as the shell's
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE FUNCTION pgc_reads(url text, n int) RETURNS text "
+                      "LANGUAGE plpgsql AS $f$ "
+                      "DECLARE ok int := 0; bad int := 0; c text; last text := ''; BEGIN "
+                      "FOR i IN 1..n LOOP BEGIN "
+                      "EXECUTE format('SELECT count(*) || '' '' || sum(c3) || '' '' || sum(c7) FROM pgcolumnar.read_parquet(%L) "
+                      f"AS t({COLDEFS})', url) INTO c; "
+                      f"IF c = '{READS_WANT}' THEN ok := ok + 1; "
+                      "ELSE bad := bad + 1; last := 'rows sum(c3) sum(c7)=' || c; END IF; "
+                      "EXCEPTION WHEN others THEN bad := bad + 1; "
+                      "last := SQLSTATE || ': ' || SQLERRM; END; END LOOP; "
+                      "RETURN 'ok=' || ok || ' failed=' || bad || "
+                      "CASE WHEN bad > 0 THEN ' last=' || last ELSE '' END; END $f$")
+        r["F rstka"] = _one(dsn, f"SELECT pgc_reads('{url('good', 'rstka/')}', 30)")
+        _wait_up(dsn)
+        r["F rsthead url"] = url("good", "rsthead/")
+        got = _refusal(dsn, "SET statement_timeout = '20s'",
+                       f"SELECT count(*) FROM pgcolumnar.read_parquet('{r['F rsthead url']}') AS t({COLDEFS})")
+        r["F rsthead"] = f"{got['state']}: {got['message']}"
+        _wait_up(dsn)
+
+        # G (#2246): a FIN with no close_notify on a kept-alive TLS connection, as
+        # the shell's arm G.
+        fin0 = _count(tlslog, "FINKA")
+        r["G finka"] = _one(dsn, f"SELECT pgc_reads('{url('good', 'finka/')}', 30)")
+        fin1 = _count(tlslog, "FINKA")
+        r["G finka closes"] = fin1 - fin0 if isinstance(fin0, int) and isinstance(fin1, int) \
+            else query_error(f"FINKA count unreadable: {fin0} -> {fin1}")
+        _wait_up(dsn)
+        # #2258 control: one response's interim head does not carry over to the next
+        fin0 = _count(tlslog, "FINKA")
+        r["G hint103 finka"] = _one(
+            dsn, f"SELECT pgc_reads('{url('good', 'hint103/')}', 3) || ' then ' "
+                 f"|| pgc_reads('{url('good', 'finka/')}', 3)")
+        fin1 = _count(tlslog, "FINKA")
+        r["G hint103 finka closes"] = fin1 - fin0 if isinstance(fin0, int) and isinstance(fin1, int) \
+            else query_error(f"FINKA count unreadable: {fin0} -> {fin1}")
+        _wait_up(dsn)
+        for label, (mode, _, _) in G_REFUSED.items():
+            u = url("good", f"{mode}/")
+            g0 = _count(tlslog, f"GET /{mode}/")
+            got = _refusal(dsn, "SET statement_timeout = '20s'",
+                           f"SELECT count(*) FROM pgcolumnar.read_parquet('{u}') AS t({COLDEFS})")
+            g1 = _count(tlslog, f"GET /{mode}/")
+            _wait_up(dsn)
+            r[f"G {label}"] = {
+                "url": u, "error": f"{got['state']}: {got['message']}",
+                "gets": g1 - g0 if isinstance(g0, int) and isinstance(g1, int)
+                else query_error(f"GET count unreadable: {g0} -> {g1}")}
+
         _restart(cluster, datadir, log, {"SSL_CERT_DIR": str(pki / "cadir")})
         r["E count"] = _one(dsn, "SELECT count(*) FROM fgood")
 
@@ -401,6 +466,67 @@ def test_the_cancel_latency_is_bounded(otr, expect):
         return
     got = "bounded" if otr["D elapsed"] <= 10 else f"slow({otr['D elapsed']:.0f}s)"
     expect.text(got, "bounded", "D: cancel latency bounded (<=10s)")
+
+
+def test_reads_over_tls_from_a_server_that_resets_each_kept_alive_connection_all_succeed(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["F rstka"], "ok=30 failed=0",
+                "F: 30 reads over TLS from a server that resets each kept-alive connection all succeed")
+
+
+def test_a_reset_over_tls_after_part_of_a_status_line_is_refused(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["F rsthead"], f'08006: columnar: TLS read from "{otr["F rsthead url"]}" failed',
+                "F: a reset over TLS after part of a status line is refused")
+
+
+def test_reads_over_tls_from_a_server_that_closes_each_kept_alive_connection_all_succeed(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["G finka"], "ok=30 failed=0",
+                "G: 30 reads over TLS from a server that closes each kept-alive connection without close_notify "
+                "all succeed")
+
+
+def test_the_server_closed_a_kept_alive_connection_on_each_read(otr, expect):
+    if _declined(otr, expect):
+        return
+    got = "yes" if isinstance(otr["G finka closes"], int) and otr["G finka closes"] >= 30 \
+        else f"no ({otr['G finka closes']} closes)"
+    expect.text(got, "yes", "G: the server closed a kept-alive connection with no answer on each of the 30 reads")
+
+
+def test_after_reads_over_tls_answered_103_first_a_closed_kept_alive_connection_is_still_retried(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["G hint103 finka"], "ok=3 failed=0 then ok=3 failed=0",
+                "G: after reads over TLS answered 103 Early Hints first, reads from a server that closes each "
+                "kept-alive connection without close_notify all succeed")
+
+
+def test_the_server_closed_a_kept_alive_connection_on_each_of_those_reads(otr, expect):
+    if _declined(otr, expect):
+        return
+    n = otr["G hint103 finka closes"]
+    got = "yes" if isinstance(n, int) and n >= 3 else f"no ({n} closes)"
+    expect.text(got, "yes", "G: the server closed a kept-alive connection with no answer on each of those 3 reads")
+
+
+@pytest.mark.parametrize("label", list(G_REFUSED))
+def test_the_eof_or_tls_error_is_refused(otr, expect, label):
+    if _declined(otr, expect):
+        return
+    got = otr[f"G {label}"]
+    expect.text(got["error"], G_REFUSED[label][1].format(url=got["url"]), f"G: {label} is refused")
+
+
+@pytest.mark.parametrize("label", list(G_REFUSED))
+def test_the_eof_or_tls_error_sent_one_get(otr, expect, label):
+    if _declined(otr, expect):
+        return
+    expect.num(otr[f"G {label}"]["gets"], G_REFUSED[label][2], f"G: {label} sent {G_REFUSED[label][2]} GET")
 
 
 def test_ssl_cert_dir_alone_trusts_the_ca(otr, expect):

@@ -202,13 +202,16 @@ delete vector and skips marked rows.
 Serializes concurrent writers of the same row (issue #5). A columnar update is a
 delete plus an insert, and the table AM takes no row lock, so core never runs
 EvalPlanQual. Without this module, two transactions updating one row would each
-keep a new version. At delete-vector flush, the flushed rows are sorted by lock
-key, and each gets an advisory lock held to commit. The sort gives every
-transaction the same lock order, so no deadlock cycle forms. The flush then
-rereads the latest committed state. A row that a concurrent transaction already
-deleted raises a retryable `serialization_failure`. A hash-bucket collision only
-adds waiting, never a false failure. `pgcolumnar.enable_row_update_lock` turns it
-on, and `pgcolumnar.row_lock_buckets` sets the number of lock buckets.
+keep a new version. At delete-vector flush, the flush first takes the
+chunk-group lock of every group it marks, held to commit, so any other writer of
+those rows has finished. It then rereads the latest committed state. A row that
+a concurrent transaction already deleted raises a retryable
+`serialization_failure`. The flushed rows' bucketed advisory locks are taken
+only when free, never waited for: a transaction flushes more than once, and
+waiting let writers of unrelated rows that share buckets deadlock (#2184). An
+`UPDATE` on a table with a unique index waits on its row's bucket during the
+statement (#1421). `pgcolumnar.enable_row_update_lock` turns it on, and
+`pgcolumnar.row_lock_buckets` sets the number of lock buckets.
 
 ### columnar_customscan.c
 Planner and executor integration. A `set_rel_pathlist_hook` replaces a columnar

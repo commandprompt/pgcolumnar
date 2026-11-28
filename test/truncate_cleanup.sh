@@ -240,8 +240,10 @@ COMMIT;" 2>&1)"
 
 # PREMISE: the transaction has to have committed, or every check below is
 # vacuous -- a rolled-back transaction leaves no table and no rows to count.
+# Any ERROR, not only row_group_pkey's: since #2266 a flush inserts its
+# row_group row last, so the same collision would report another catalog's key.
 check "PREMISE the in-place transaction committed" \
-	"$(printf '%s\n' "$inplace_out" | grep -c 'row_group_pkey')" "0"
+	"$(printf '%s\n' "$inplace_out" | grep -c 'ERROR')" "0"
 check "PREMISE the table exists after it" \
 	"$(q "SELECT count(*) FROM pg_class WHERE relname = 'tcl_inplace';" | tail -1)" "1"
 check "the rows written after the in-place truncate are all there" \

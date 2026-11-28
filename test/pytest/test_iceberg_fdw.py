@@ -778,6 +778,89 @@ def test_a_year_on_date_equality_prunes_to_one_file(ice, expect):
                 "year()-on-date equality returns id 2")
 
 
+# ------------------------------- day() and hour() pruning near the largest timestamp
+#
+# day() and hour() move the constant from the PostgreSQL epoch (2000) to the Iceberg
+# one (1970) by adding 30 years of microseconds. Past 294247-01-10 04:00:54.775807
+# that sum overflows int64. Before #2230 it wrapped to a large negative bucket, so
+# `ts < constant` pruned every file and returned NO ROWS where iceberg_scan returned
+# three. Each table holds three rows in 2021. The last safe microsecond must still
+# prune every file: the guard is exactly the overflow, not a margin below it.
+#
+# Literal tables, for the reason TEMPORAL_PRUNE gives: the grader reads literals.
+
+EPOCH_EDGE_ORACLE = [
+    ("td", "ts < TIMESTAMP '294276-12-31 23:59:59.999999'", "id bigint, ts timestamp",
+     "day()-on-timestamp: ts < the largest timestamp matches iceberg_scan (#2230)"),
+    ("th", "ts < TIMESTAMP '294276-12-31 23:59:59.999999'", "id bigint, ts timestamp",
+     "hour()-on-timestamp: ts < the largest timestamp matches iceberg_scan (#2230)"),
+    ("dz", "tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'", "id bigint, tt timestamptz",
+     "day()-on-timestamptz: tt < the largest timestamptz matches iceberg_scan (#2230)"),
+    ("hz", "tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'", "id bigint, tt timestamptz",
+     "hour()-on-timestamptz: tt < the largest timestamptz matches iceberg_scan (#2230)"),
+]
+
+EPOCH_EDGE_PRUNE = [
+    ("td", "ts <= TIMESTAMP '294247-01-10 04:00:54.775808'", 0,
+     "day()-on-timestamp: ts <= the first overflowing microsecond prunes no file "
+     "(Files Pruned: 0) (#2230)"),
+    ("td", "ts > TIMESTAMP '294247-01-10 04:00:54.775807'", 3,
+     "day()-on-timestamp: ts > the last safe microsecond still prunes every file "
+     "(Files Pruned: 3) (#2230)"),
+    ("th", "ts <= TIMESTAMP '294247-01-10 04:00:54.775808'", 0,
+     "hour()-on-timestamp: ts <= the first overflowing microsecond prunes no file "
+     "(Files Pruned: 0) (#2230)"),
+    ("th", "ts > TIMESTAMP '294247-01-10 04:00:54.775807'", 3,
+     "hour()-on-timestamp: ts > the last safe microsecond still prunes every file "
+     "(Files Pruned: 3) (#2230)"),
+    ("dz", "tt <= TIMESTAMPTZ '294247-01-10 04:00:54.775808+00'", 0,
+     "day()-on-timestamptz: tt <= the first overflowing microsecond prunes no file "
+     "(Files Pruned: 0) (#2230)"),
+    ("dz", "tt > TIMESTAMPTZ '294247-01-10 04:00:54.775807+00'", 3,
+     "day()-on-timestamptz: tt > the last safe microsecond still prunes every file "
+     "(Files Pruned: 3) (#2230)"),
+    ("hz", "tt <= TIMESTAMPTZ '294247-01-10 04:00:54.775808+00'", 0,
+     "hour()-on-timestamptz: tt <= the first overflowing microsecond prunes no file "
+     "(Files Pruned: 0) (#2230)"),
+    ("hz", "tt > TIMESTAMPTZ '294247-01-10 04:00:54.775807+00'", 3,
+     "hour()-on-timestamptz: tt > the last safe microsecond still prunes every file "
+     "(Files Pruned: 3) (#2230)"),
+]
+
+
+@pytest.mark.parametrize("rel,where,cols,name", EPOCH_EDGE_ORACLE,
+                         ids=[t[0] for t in EPOCH_EDGE_ORACLE])
+def test_a_constant_past_the_epoch_shift_limit_does_not_prune_every_file(
+        ice, expect, rel, where, cols, name):
+    """#2230: the wrapped bucket shows as an EMPTY answer, never as an error."""
+    conn, meta = ice
+    if not _need(expect, meta, rel):
+        return
+    expect.text(_ids(conn, rel, where), _scan_ids(conn, meta[rel], cols, where), name)
+
+
+@pytest.mark.parametrize("rel,where,files,name", EPOCH_EDGE_PRUNE,
+                         ids=[f"{t[0]}-{t[2]}" for t in EPOCH_EDGE_PRUNE])
+def test_day_and_hour_pruning_stop_exactly_at_the_epoch_shift_limit(
+        ice, expect, rel, where, files, name):
+    """#2230: one microsecond past the limit prunes nothing; the last safe one still
+    prunes all three files, so the guard is not a margin that gives up early."""
+    conn, meta = ice
+    if not _need(expect, meta, rel):
+        return
+    expect.num(_pruned(conn, f"SELECT * FROM {rel} WHERE {where}"), files, name)
+
+
+def test_a_constant_on_the_left_past_the_epoch_shift_limit_keeps_every_row(ice, expect):
+    """#2230: the same overflow with the operator commuted (`const > ts`)."""
+    conn, meta = ice
+    if not _need(expect, meta, "td"):
+        return
+    expect.text(_ids(conn, "td", "TIMESTAMP '294276-12-31 23:59:59.999999' > ts"), "1,2,3",
+                "day()-on-timestamp: the largest timestamp > ts, constant on the left, "
+                "returns ids 1,2,3 (#2230)")
+
+
 # ------------------------------- a temporal transform read into the OTHER timestamp type
 #
 # The reader converts a naive (timestamp) source read into timestamptz, and a
