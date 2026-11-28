@@ -2651,7 +2651,19 @@ guard_tests 910
 # cluster_tests 6432 -> 6439 for #2184's scenarios L and M in test_concurrency.py (jdatcmd's review of 7b8cb54a): the
 # group locks held from before the same-row check to commit, and taken in group order, by collection of that file
 # (46 -> 53) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6439 -> 6452, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
+# cluster_tests 6439 -> 6448 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
+# serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
+# same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
+# workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6448 -> 6451 for the #2250 review's three tests in test_parallel_flush_optin.py: a column under an
+# ICU collation, and one under a libc collation, created in the same transaction flushes serially with no worker
+# failure, and a column under a collation from an earlier transaction flushes in workers, by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6451 -> 6455 for the #2250 re-review's four tests in test_parallel_flush_optin.py: a column whose
+# enum type, or whose ICU collation, a savepoint created, released or still open, flushes serially with no worker
+# failure, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6455 -> 6468, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
 # test_parallel_copy_projection_ddl_premise,
 # test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
 # test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
@@ -2663,7 +2675,7 @@ guard_tests 910
 # test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
 # test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6452 -> 6453, still #2215, for the review of #2226 at d49f08e1:
+# cluster_tests 6468 -> 6469, still #2215, for the review of #2226 at d49f08e1:
 # test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6453
+cluster_tests 6469

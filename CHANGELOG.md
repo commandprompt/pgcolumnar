@@ -644,6 +644,21 @@ true until the next version shipped.
   write to the other's table can now deadlock, which PostgreSQL detects.
   docs/sql-reference.md and docs/limitations.md. `test/parallel_copy.sh`,
   `test/projections.sh`, `test/parallel_export_parquet.sh` and their twins.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  until `statement_timeout` when a column's type is or contains a composite
+  whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
+  `TRUNCATE` or `LOCK TABLE` on that table (#2182). The column may be the
+  composite itself, an array of it, a domain over it, a range or multirange
+  over it, or a composite with it as a field. Each flush worker reads the type
+  cache, which opens a composite's table with ACCESS SHARE. The workers are not
+  in the inserting backend's lock group, so they waited on its lock, as in
+  #2072. A column whose type or collation was created in the same
+  transaction no longer makes a worker fail with a WARNING. The backend now
+  flushes such a row group serially, which stores the same bytes. A worker runs on its own snapshot, so
+  it cannot see what the transaction changed under the lock, such as an
+  attribute added to the composite; that is why the flush does not join the
+  workers to the backend's lock group instead. `parallel_flush_optin.sh` arm 8
+  and `test_parallel_flush_optin.py`.
 - Two writers to one table no longer deadlock on the chunk-group and
   storage-row locks (#2184). A writer holds the chunk-group lock of each row
   group it deletes from and the storage-row lock, which every flush of new
