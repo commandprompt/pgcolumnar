@@ -505,7 +505,8 @@ def _rl_rel(dsn, r):
             cur = w2.execute("DELETE FROM vr_rel WHERE id = 5000")
             r["rl w2"] = f"DELETE {cur.rowcount}"
     except psycopg.Error as exc:
-        r["rl w2"] = f"ERROR:  {exc.sqlstate}: {exc.diag.message_primary}"
+        r["rl w2"] = f"ERROR:  {exc.sqlstate}"
+        r["rl w2 msg"] = exc.diag.message_primary
     r["rl w2still"] = _rl_wait_event(dsn, "vr_rel")
     t.join(120)
     r["rl vout"] = out.get("vacuum", "vacuum did not finish")
@@ -753,7 +754,8 @@ def io(pgc_cluster):
                 plain.execute("SET pgcolumnar.vm_set_release_hold_ms = 1000")
                 r["rl suset"] = "SET"
         except psycopg.Error as exc:
-            r["rl suset"] = f"ERROR:  {exc.sqlstate}: {exc.diag.message_primary}"
+            r["rl suset"] = f"ERROR:  {exc.sqlstate}"
+            r["rl suset msg"] = exc.diag.message_primary
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1342,7 +1344,7 @@ def test_2268_delete_during_pause_ios_counts_no_deleted_row_while_held(io, expec
 
 
 def test_2268_delete_during_pause_second_delete_waits_and_times_out(io, expect):
-    expect.text(io["rl w2"], "ERROR:  55P03: canceling statement due to lock timeout",
+    expect.text(f"{io['rl w2']}: {io.get('rl w2 msg', '')}", "ERROR:  55P03: canceling statement due to lock timeout",
                 "#2268 a delete during vacuum's pause: a second delete of the group waits for vacuum's lock and times out")
 
 
@@ -1460,5 +1462,6 @@ def test_2268_clean_shared_block_second_vacuum_records_all_visible_pages(io, exp
 
 
 def test_2268_release_hold_is_superuser_only(io, expect):
-    expect.text(io["rl suset"], 'ERROR:  42501: permission denied to set parameter "pgcolumnar.vm_set_release_hold_ms"',
+    expect.text(f"{io['rl suset']}: {io.get('rl suset msg', '')}",
+                'ERROR:  42501: permission denied to set parameter "pgcolumnar.vm_set_release_hold_ms"',
                 "#2268 a role without superuser cannot set pgcolumnar.vm_set_release_hold_ms")
