@@ -454,7 +454,7 @@ def test_a_stable_function_parallel_index_scan_inside_a_cte_delete(pgc_conn, exp
 def test_a_stable_function_parallel_index_scan_in_a_cursor(pgc_conn, expect):
     _fresh_pk(pgc_conn)
     expect.text(_same_tx(pgc_conn, PARIDX + [
-        "DECLARE c CURSOR FOR SELECT cnt_idx('%t')", "DELETE FROM %t WHERE id <= 1000", "FETCH ALL FROM c"]), "same",
+        "DECLARE c CURSOR FOR SELECT cnt_idx('%t')", "DELETE FROM %t WHERE id % 30 = 0", "FETCH ALL FROM c"]), "same",
                 "a STABLE function's parallel index scan in a cursor does not see a later DELETE, as heap does")
 
 

@@ -2681,10 +2681,11 @@ guard_tests 910
 # cluster_tests 6521 -> 6538 for #2266's review: seventeen more tests in test_vacuum_retire_visibility.py, five
 # for a table given a column after its data (test_*added_column*) and twelve for an upsert during another
 # session's flush (test_*upsert_*), by collection over the cluster files.
-# cluster_tests 6538 -> 6570 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
+# cluster_tests 6538 -> 6586 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
 # (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
-# and guard shapes (12: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key,
-# an AFTER ROW trigger, and parallel premises, scans and refusals by the custom scan off and on), one test per
-# check, by collection of that file (1 on main 39e0307b, 33 here), restated after
-# the merge of origin/main 39e0307b (6439 -> 6471 before it).
-cluster_tests 6570
+# guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
+# AFTER ROW trigger, and parallel premises and scans by the custom scan off and on), and for the review of #2269
+# the probes S1, R2, R3 (two isolation levels), R4 and R5 (6), a STABLE function's parallel index scan (premise
+# and 3) and its parallel sequential scan against serial (premise and 3, at two settings: 8), one test per check,
+# by collection of that file (1 on main 39e0307b, 49 here).
+cluster_tests 6586

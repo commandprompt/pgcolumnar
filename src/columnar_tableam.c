@@ -21,7 +21,6 @@
 #include "columnar_reader.h"
 #include "columnar_storage.h"
 #include "columnar_write_state.h"
-#include "access/parallel.h"
 #include "access/multixact.h"
 #include "access/genam.h"
 #include "access/table.h"
@@ -662,12 +661,6 @@ pgcolumnar_slot_callbacks(Relation relation)
 	return &PgColumnarSlotOps;
 }
 
-/*
- * The shared descriptor is the block-scan one, then what the worker check
- * reads (#2247), at PGC_PSCAN_CID_OFFSET.
- */
-#define PGC_PSCAN_CID_OFFSET MAXALIGN(sizeof(ParallelBlockTableScanDescData))
-
 static TableScanDesc
 pgcolumnar_scan_begin(Relation rel, Snapshot snapshot, int nkeys,
 					ScanKey key, ParallelTableScanDesc pscan, uint32 flags)
@@ -675,10 +668,6 @@ pgcolumnar_scan_begin(Relation rel, Snapshot snapshot, int nkeys,
 	PgColumnarScanDesc scan;
 
 	RelationIncrementReferenceCount(rel);
-
-	/* a worker of a parallel scan: see PgColumnarCidCheckWorker (#2247) */
-	if (pscan != NULL && IsParallelWorker())
-		PgColumnarParallelCidCheck((char *) pscan + PGC_PSCAN_CID_OFFSET, snapshot);
 
 	/*
 	 * Persist any data and delete marks written earlier in this transaction so
@@ -1162,7 +1151,7 @@ pgcolumnar_planner(PGC_PLANNER_PARAMS)
 static Size
 pgcolumnar_parallelscan_estimate(Relation rel)
 {
-	return PGC_PSCAN_CID_OFFSET + PgColumnarParallelCidSize();
+	return sizeof(ParallelBlockTableScanDescData);
 }
 
 static Size
@@ -1176,9 +1165,11 @@ pgcolumnar_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	SpinLockInit(&bpscan->phs_mutex);
 	bpscan->phs_startblock = InvalidBlockNumber;
 	pg_atomic_init_u64(&bpscan->phs_nallocated, 0);
-	PgColumnarParallelCidStore((char *) pscan + PGC_PSCAN_CID_OFFSET);
 
-	return PGC_PSCAN_CID_OFFSET + PgColumnarParallelCidSize();
+	/* the workers' copy of this backend's own-write registry (#2247) */
+	PgColumnarCidRegistryPublish();
+
+	return sizeof(ParallelBlockTableScanDescData);
 }
 
 static void
@@ -1187,6 +1178,9 @@ pgcolumnar_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 	ParallelBlockTableScanDesc bpscan = (ParallelBlockTableScanDesc) pscan;
 
 	pg_atomic_write_u64(&bpscan->phs_nallocated, 0);
+
+	/* a rescan launches workers again: give them the registry as it is now (#2247) */
+	PgColumnarCidRegistryPublish();
 }
 
 /* -------------------------------------------------------------------------
@@ -3111,6 +3105,16 @@ pgcolumnar_executor_start(QueryDesc *queryDesc, int eflags)
 		prev_executor_start_hook(queryDesc, eflags);
 	else
 		standard_ExecutorStart(queryDesc, eflags);
+
+	/*
+	 * A plan that may run in parallel workers: publish this backend's
+	 * own-write registry for them (#2247), after the plan's scans have
+	 * flushed what they flush at start. A parallel index scan reaches no
+	 * table-AM or custom-scan callback in the leader, so this is its only
+	 * publication.
+	 */
+	if (queryDesc->plannedstmt->parallelModeNeeded)
+		PgColumnarCidRegistryPublish();
 }
 
 /* -------------------------------------------------------------------------
@@ -5151,17 +5155,6 @@ _PG_init(void)
 							0,
 							NULL, NULL, NULL);
 
-	DefineCustomIntVariable("pgcolumnar.debug_registry_cid_skew",
-							"Report a parallel leader's own-write command ids this far ahead (dev fault injection).",
-							"0 disables. Above 0, a parallel worker sees a leader whose own writes it "
-							"could not hide, and refuses to run (#2247).",
-							&pgcolumnar_debug_registry_cid_skew,
-							0,
-							0, 1000000,
-							PGC_SUSET,
-							GUC_NOT_IN_SAMPLE,
-							NULL, NULL, NULL);
-
 	DefineCustomIntVariable("pgcolumnar.sink_fail_after",
 							"Fail export writes after this many bytes (dev fault injection).",
 							"-1 disables. The failure takes the same path a full disk takes.",
@@ -5339,7 +5332,11 @@ _PG_init(void)
 	 * without preload simply loses the daemon.
 	 */
 	if (process_shared_preload_libraries_in_progress)
+	{
 		PgColumnarAutovacuumRegister();
+		/* the slots a parallel leader publishes its own-write registry in (#2247) */
+		PgColumnarCidRegistryShmemRegister();
+	}
 
 	RegisterXactCallback(pgcolumnar_xact_callback, NULL);
 	RegisterSubXactCallback(pgcolumnar_subxact_callback, NULL);

@@ -222,9 +222,12 @@ check "a delete mark made under a released savepoint goes with its parent's roll
 	"$(same "BEGIN; $PROBE SAVEPOINT o; SAVEPOINT i; DELETE FROM %t WHERE id = 5; RELEASE i; ROLLBACK TO o;
 	         DECLARE c CURSOR FOR SELECT id || '|' || pad FROM %t WHERE id = 5;
 	         DELETE FROM %t WHERE id = 5; FETCH c; ROLLBACK;")" "same"
+# The TRUNCATE runs on its own: in one psql -c string it would take the snapshot,
+# and the isolation level could no longer be set.
 for iso in "REPEATABLE READ" "SERIALIZABLE"; do
+	psql_run "TRUNCATE sv_pgcolumnar_u, sv_heap_u;"
 	check "ON CONFLICT DO NOTHING with a duplicate in one statement keeps one row at $iso, as heap does" \
-		"$(same "TRUNCATE %t_u; BEGIN ISOLATION LEVEL $iso; INSERT INTO %t_u VALUES (1), (1) ON CONFLICT DO NOTHING;
+		"$(same "BEGIN ISOLATION LEVEL $iso; INSERT INTO %t_u VALUES (1), (1) ON CONFLICT DO NOTHING;
 		         SELECT count(*) FROM %t_u; COMMIT;")" "same"
 done
 check "the first row a statement flushes, just after an earlier statement's run, is hidden from it, as heap does" \
@@ -255,7 +258,7 @@ check "a STABLE function's parallel index scan inside a DELETE in a WITH clause 
 	"$(same "BEGIN; $PARIDX WITH d AS (DELETE FROM %t WHERE id % 1000 = 1 AND cnt_idx('%t') > 0 RETURNING cnt_idx('%t') AS n)
 	         SELECT count(*) || '|' || min(n) || '|' || max(n) FROM d; ROLLBACK;")" "same"
 check "a STABLE function's parallel index scan in a cursor does not see a later DELETE, as heap does" \
-	"$(same "BEGIN; $PARIDX DECLARE c CURSOR FOR SELECT cnt_idx('%t'); DELETE FROM %t WHERE id <= 1000;
+	"$(same "BEGIN; $PARIDX DECLARE c CURSOR FOR SELECT cnt_idx('%t'); DELETE FROM %t WHERE id % 30 = 0;
 	         FETCH ALL FROM c; ROLLBACK;")" "same"
 par_vs_serial() {	# par_vs_serial TABLE SETTINGS SQL -> "same" when the columnar answer is the same with and without workers
 	local a b

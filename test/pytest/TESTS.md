@@ -7709,7 +7709,19 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 | `test_a_before_row_trigger_sees_earlier_rows` | #2247: a BEFORE ROW trigger that inserts into its own table, so the write buffer holds runs from several commands, sees the statement's earlier rows and its own earlier rows |
 | `test_guard_a_duplicate_key_in_one_statement` | #2247 guard: a duplicate key inserted twice in one statement is still refused (the unique check's dirty snapshot sees every buffered row) |
 | `test_guard_an_after_row_trigger_reads_old_and_new` | #2247 guard: an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW (the re-fetch under SnapshotAny sees every row) |
-| `test_guard_a_parallel_worker_refuses_a_leader_it_could_not_hide` | #2247: with `pgcolumnar.debug_registry_cid_skew`, a parallel worker refuses a leader whose own writes it could not hide (custom scan on and off) |
+| `test_a_mark_under_a_rolled_back_savepoint_is_forgotten` | review of #2269, S1: a delete mark made under a savepoint that rolled back is forgotten, read through a cursor after a later DELETE of the same row |
+| `test_a_mark_under_a_released_savepoint_goes_with_its_parent` | review of #2269, R2: a delete mark made under a released savepoint goes with its parent's rollback |
+| `test_on_conflict_do_nothing_with_a_duplicate_in_one_statement[iso]` | review of #2269, R3: `INSERT ... VALUES (1), (1) ON CONFLICT DO NOTHING` keeps one row at REPEATABLE READ and at SERIALIZABLE |
+| `test_the_first_row_flushed_after_an_earlier_run_is_hidden` | review of #2269, R4: the first row a statement flushes, just after an earlier statement's run, is hidden from that statement |
+| `test_a_trigger_does_not_read_its_own_rows_in_the_outer_buffer` | review of #2269, R5: a BEFORE ROW trigger's INSERT ... SELECT does not read rows it wrote into the outer statement's buffer |
+| `test_premise_the_function_index_query_runs_in_parallel` | premise: the STABLE function's index query launches parallel workers |
+| `test_a_stable_function_parallel_index_scan_inside_an_update` | a STABLE function's parallel index scan inside an UPDATE that moves rows out of its range sees the rows as they were, as heap does |
+| `test_a_stable_function_parallel_index_scan_inside_a_cte_delete` | the same inside a DELETE in a WITH clause |
+| `test_a_stable_function_parallel_index_scan_in_a_cursor` | the same in a cursor fetched after a later DELETE |
+| `test_premise_the_function_sequential_query_runs_in_parallel[setting]` | premise: the STABLE function's sequential query launches parallel workers, with parallel costs at 0 and with PostgreSQL's default settings on a 3,000,000-row table |
+| `test_a_stable_function_parallel_sequential_scan_inside_an_update[setting]` | a STABLE function's parallel sequential scan inside an UPDATE answers as it does serially (the heap answer is #2267's) |
+| `test_a_stable_function_parallel_sequential_scan_inside_a_cte_delete[setting]` | the same inside a DELETE in a WITH clause |
+| `test_a_stable_function_parallel_sequential_scan_in_a_cursor[setting]` | the same in a cursor fetched after a later DELETE |
 | `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
 | `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
 | `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |

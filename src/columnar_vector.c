@@ -5646,8 +5646,7 @@ static const CustomExecMethods pgcolumnar_agg_exec_methods = {
 static Size
 PgColumnarEstimateDSMAggScan(CustomScanState *node, ParallelContext *pcxt)
 {
-	/* the group counter, then what the worker check reads (#2247) */
-	return PGC_PARALLEL_CID_OFFSET + PgColumnarParallelCidSize();
+	return sizeof(pg_atomic_uint32);
 }
 
 static void
@@ -5676,7 +5675,7 @@ PgColumnarInitializeDSMAggScan(CustomScanState *node, ParallelContext *pcxt,
 	}
 
 	/* after the flush, which may register more own writes (#2247) */
-	PgColumnarParallelCidStore((char *) coordinate + PGC_PARALLEL_CID_OFFSET);
+	PgColumnarCidRegistryPublish();
 }
 
 static void
@@ -5687,6 +5686,9 @@ PgColumnarReInitializeDSMAggScan(CustomScanState *node, ParallelContext *pcxt,
 
 	/* a rescan restarts group claiming from zero for every participant */
 	pg_atomic_write_u32(counter, 0);
+
+	/* and launches workers again: give them the registry as it is now (#2247) */
+	PgColumnarCidRegistryPublish();
 }
 
 static void
@@ -5696,8 +5698,6 @@ PgColumnarInitializeWorkerAggScan(CustomScanState *node, shm_toc *toc,
 	PgColumnarAggScanState *state = (PgColumnarAggScanState *) node;
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
-	PgColumnarParallelCidCheck((char *) coordinate + PGC_PARALLEL_CID_OFFSET,
-							   GetActiveSnapshot());
 	state->parallelCounter = counter;
 }
 
@@ -7641,8 +7641,7 @@ static const CustomExecMethods pgcolumnar_groupagg_exec_methods = {
 static Size
 PgColumnarEstimateDSMGroupAggScan(CustomScanState *node, ParallelContext *pcxt)
 {
-	/* the group counter, then what the worker check reads (#2247) */
-	return PGC_PARALLEL_CID_OFFSET + PgColumnarParallelCidSize();
+	return sizeof(pg_atomic_uint32);
 }
 
 static void
@@ -7679,7 +7678,7 @@ PgColumnarInitializeDSMGroupAggScan(CustomScanState *node, ParallelContext *pcxt
 	}
 
 	/* after the flush, which may register more own writes (#2247) */
-	PgColumnarParallelCidStore((char *) coordinate + PGC_PARALLEL_CID_OFFSET);
+	PgColumnarCidRegistryPublish();
 }
 
 static void
@@ -7690,6 +7689,9 @@ PgColumnarReInitializeDSMGroupAggScan(CustomScanState *node, ParallelContext *pc
 
 	/* a rescan restarts group claiming from zero for every participant */
 	pg_atomic_write_u32(counter, 0);
+
+	/* and launches workers again: give them the registry as it is now (#2247) */
+	PgColumnarCidRegistryPublish();
 }
 
 static void
@@ -7699,8 +7701,6 @@ PgColumnarInitializeWorkerGroupAggScan(CustomScanState *node, shm_toc *toc,
 	PgColumnarGroupAggScanState *state = (PgColumnarGroupAggScanState *) node;
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
-	PgColumnarParallelCidCheck((char *) coordinate + PGC_PARALLEL_CID_OFFSET,
-							   GetActiveSnapshot());
 	state->parallelCounter = counter;
 }
 

@@ -631,10 +631,10 @@ true until the next version shipped.
   command id of its own, so the write buffer and the delete-mark buffer now
   record the command that wrote each row and mark, and a fetch under an MVCC
   snapshot hides what its own command or a later one wrote, as heap does. A
-  parallel worker refuses to run if the leader wrote under a command its
-  snapshot could not hide. `pgcolumnar.debug_registry_cid_skew`, an internal
-  setting for tests, drives that refusal. Sequential scans still see such rows
-  in three cases, now in docs/limitations.md and tracked in #2267, part of #2064.
+  parallel worker gets a copy of that record from its leader, so a `STABLE`
+  function's parallel query filters as a serial one does. Sequential scans
+  still see such rows in four cases, now in docs/limitations.md and tracked in
+  #2267, part of #2064.
   `test/statement_self_visibility.sh` and `test_statement_self_visibility.py`.
 
 - A lazy VACUUM no longer clears the all-visible bits of clean blocks that an

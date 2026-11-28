@@ -206,9 +206,11 @@ current then. The write buffer and the delete-mark buffer therefore record the
 writer's command id as runs, and register them here when they flush. A fetch
 under an MVCC snapshot hides a row or a mark that this transaction wrote under a
 command id at or above the snapshot's curcid, as heap does. Non-MVCC snapshots
-see every write. A parallel worker has no copy of the registry, so the leader
-passes its highest registered command id, and a worker refuses to run if its
-snapshot could not hide that command.
+see every write. A mark is stored as the rows it marked, not as its row group's
+bitmap. A parallel worker filters as the leader does: before workers can start,
+the leader copies the registry into a DSM segment and publishes its handle in a
+shared-memory slot of its own, and each worker loads its lock-group leader's
+copy before it first consults the registry.
 
 ### columnar_row_lock.c
 Serializes concurrent writers of the same row (issue #5). A columnar update is a

@@ -40,21 +40,7 @@ typedef struct DeleteVectorChunkBuffer
 	uint64		rowCount;
 	char	   *mask;			/* maskLen bytes */
 	uint32		maskLen;
-
-	/*
-	 * The same marks split by the command that made them (#2247): one
-	 * DeleteVectorCidLayer per command id, each with its own maskLen-byte
-	 * bitmap, in the order the commands marked. A row is marked once, so
-	 * exactly one layer holds each bit of `mask`.
-	 */
-	List	   *layers;
 } DeleteVectorChunkBuffer;
-
-typedef struct DeleteVectorCidLayer
-{
-	CommandId	cid;
-	char	   *mask;
-} DeleteVectorCidLayer;
 
 /* pending delete marks for one storage id under one subtransaction */
 typedef struct DeleteVectorBuffer
@@ -69,6 +55,18 @@ typedef struct DeleteVectorBuffer
 	 * that subtransaction resolves, as PgColumnarWriteState.flushedUnder is.
 	 */
 	SubTransactionId flushedUnder;
+
+	/*
+	 * Which command made each mark (#2247). Every mark was made by firstCid,
+	 * except the rows listed in otherCids, one DeleteVectorCidRows per other
+	 * command id. Since #2241 every statement that marks a relation first
+	 * flushes that relation's marks, so a buffer almost never holds two
+	 * commands' marks and otherCids stays empty; no bitmap is kept per
+	 * command (review of #2269). firstCid is meaningful while chunks is not
+	 * NIL.
+	 */
+	CommandId	firstCid;
+	List	   *otherCids;
 	List	   *chunks;			/* list of DeleteVectorChunkBuffer* */
 	List	   *rowGroupCache;	/* cached NativeRowGroupMetadata* for resolution */
 
@@ -81,6 +79,15 @@ typedef struct DeleteVectorBuffer
 	NativeRowGroupMetadata *lastGroup;
 	DeleteVectorChunkBuffer *lastChunk;
 } DeleteVectorBuffer;
+
+/* the rows one command marked, when it is not the buffer's firstCid */
+typedef struct DeleteVectorCidRows
+{
+	CommandId	cid;
+	uint64	   *rows;
+	uint32		n;
+	uint32		cap;
+} DeleteVectorCidRows;
 
 static MemoryContext PgColumnarDeleteVectorContext = NULL;
 static List *PgColumnarDeleteVectorBuffers = NIL;
@@ -95,6 +102,17 @@ static DeleteVectorChunkBuffer *delete_vector_get_chunk(DeleteVectorBuffer *buf,
 											 uint64 rowCount);
 static void delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep);
 static void delete_vector_reset_buffer(DeleteVectorBuffer *buf);
+static void delete_vector_register_chunk(DeleteVectorBuffer *buf,
+										 DeleteVectorChunkBuffer *chunk);
+
+static int
+delete_vector_row_cmp(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a;
+	uint64		y = *(const uint64 *) b;
+
+	return x < y ? -1 : (x > y ? 1 : 0);
+}
 
 /*
  * delete_vector_chunk_cmp
@@ -195,6 +213,7 @@ delete_vector_find_row_group(DeleteVectorBuffer *buf, uint64 rowNumber)
 				MemoryContextSwitchTo(PgColumnarDeleteVectorContext);
 			Snapshot	snap = PgColumnarCatalogSnapshot(GetActiveSnapshot());
 
+			list_free_deep(buf->rowGroupCache);
 			buf->rowGroupCache = PgColumnarReadRowGroupList(buf->storageId, snap);
 			buf->lastGroup = NULL;	/* points into the list just replaced */
 			MemoryContextSwitchTo(oldContext);
@@ -277,30 +296,37 @@ PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber, CommandId cid)
 			 "columnar: cannot delete row " UINT64_FORMAT
 			 ": no row group covers it", rowNumber);
 
+	/* which command made the mark (#2247): see DeleteVectorBuffer */
+	if (buf->chunks == NIL)
+		buf->firstCid = cid;
+	else if (cid != buf->firstCid)
+	{
+		DeleteVectorCidRows *cr = buf->otherCids != NIL
+			? (DeleteVectorCidRows *) llast(buf->otherCids) : NULL;
+		MemoryContext oldContext = MemoryContextSwitchTo(PgColumnarDeleteVectorContext);
+
+		if (cr == NULL || cr->cid != cid)
+		{
+			cr = palloc0(sizeof(DeleteVectorCidRows));
+			cr->cid = cid;
+			buf->otherCids = lappend(buf->otherCids, cr);
+		}
+		if (cr->n == cr->cap)
+		{
+			cr->cap = cr->cap == 0 ? 16 : cr->cap * 2;
+			cr->rows = cr->rows == NULL ? palloc(sizeof(uint64) * cr->cap)
+				: repalloc(cr->rows, sizeof(uint64) * cr->cap);
+		}
+		cr->rows[cr->n++] = rowNumber;
+		MemoryContextSwitchTo(oldContext);
+	}
+
 	startRowNumber = rg->firstRowNumber;
 	endRowNumber = startRowNumber + rg->rowCount - 1;
 	chunk = delete_vector_get_chunk(buf, rg->groupNumber, 0,
 							  startRowNumber, endRowNumber, rg->rowCount);
 	bitIndex = rowNumber - startRowNumber;
 	chunk->mask[bitIndex >> 3] |= (char) (1 << (bitIndex & 7));
-
-	/* and in the layer of the command that made the mark (#2247) */
-	{
-		DeleteVectorCidLayer *layer = chunk->layers != NIL
-			? (DeleteVectorCidLayer *) llast(chunk->layers) : NULL;
-
-		if (layer == NULL || layer->cid != cid)
-		{
-			MemoryContext oldContext = MemoryContextSwitchTo(PgColumnarDeleteVectorContext);
-
-			layer = palloc(sizeof(DeleteVectorCidLayer));
-			layer->cid = cid;
-			layer->mask = palloc0(chunk->maskLen);
-			chunk->layers = lappend(chunk->layers, layer);
-			MemoryContextSwitchTo(oldContext);
-		}
-		layer->mask[bitIndex >> 3] |= (char) (1 << (bitIndex & 7));
-	}
 
 	/*
 	 * The deleted row makes its block not all-visible; clear any VM bit so an
@@ -320,6 +346,24 @@ PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber, CommandId cid)
  *		old row is buffered-deleted) proceed. Checks every buffer for the relation,
  *		across subtransactions.
  */
+/* the command that made a buffered mark of this row */
+static CommandId
+delete_vector_mark_cid(DeleteVectorBuffer *buf, uint64 rowNumber)
+{
+	ListCell   *lc;
+
+	foreach(lc, buf->otherCids)
+	{
+		DeleteVectorCidRows *cr = (DeleteVectorCidRows *) lfirst(lc);
+		uint32		i;
+
+		for (i = 0; i < cr->n; i++)
+			if (cr->rows[i] == rowNumber)
+				return cr->cid;
+	}
+	return buf->firstCid;
+}
+
 bool
 PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber, Snapshot snapshot)
 {
@@ -343,30 +387,15 @@ PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber, Snapshot s
 				rowNumber > chunk->endRowNumber)
 				continue;
 			bitIndex = rowNumber - chunk->startRowNumber;
-			if (dv_row_deleted(chunk->mask, chunk->maskLen, bitIndex))
-			{
-				ListCell   *yc;
 
-				/*
-				 * A mark made by this snapshot's own command, or a later one,
-				 * does not delete the row for it (#2247). Only an MVCC snapshot
-				 * filters; the unique check and the self-modified check see
-				 * every mark.
-				 */
-				foreach(yc, chunk->layers)
-				{
-					DeleteVectorCidLayer *layer = (DeleteVectorCidLayer *) lfirst(yc);
-
-					if (dv_row_deleted(layer->mask, chunk->maskLen, bitIndex))
-					{
-						if (PgColumnarCidVisible(snapshot, layer->cid))
-							return true;
-						break;
-					}
-				}
-				if (yc == NULL)
-					return true;	/* no layer: a mark with no recorded command */
-			}
+			/*
+			 * A mark made by this snapshot's own command, or a later one, does
+			 * not delete the row for it (#2247). Only an MVCC snapshot filters;
+			 * the unique check and the self-modified check see every mark.
+			 */
+			if (dv_row_deleted(chunk->mask, chunk->maskLen, bitIndex) &&
+				PgColumnarCidVisible(snapshot, delete_vector_mark_cid(buf, rowNumber)))
+				return true;
 		}
 	}
 
@@ -380,10 +409,76 @@ PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber, Snapshot s
 static void
 delete_vector_reset_buffer(DeleteVectorBuffer *buf)
 {
+	ListCell   *lc;
+
+	/*
+	 * Free what the flushed marks held, so a loop of single-row DELETEs keeps
+	 * no group-sized mask per statement to commit (review of #2269).
+	 */
+	foreach(lc, buf->chunks)
+	{
+		DeleteVectorChunkBuffer *chunk = (DeleteVectorChunkBuffer *) lfirst(lc);
+
+		pfree(chunk->mask);
+		pfree(chunk);
+	}
+	list_free(buf->chunks);
+	foreach(lc, buf->otherCids)
+	{
+		DeleteVectorCidRows *cr = (DeleteVectorCidRows *) lfirst(lc);
+
+		if (cr->rows)
+			pfree(cr->rows);
+		pfree(cr);
+	}
+	list_free(buf->otherCids);
+	list_free_deep(buf->rowGroupCache);
 	buf->chunks = NIL;
+	buf->otherCids = NIL;
 	buf->rowGroupCache = NIL;
 	buf->lastChunk = NULL;
 	buf->lastGroup = NULL;
+}
+
+/*
+ * delete_vector_register_chunk
+ *		Register one chunk's marks with the command that made each (#2247),
+ *		as row lists, not bitmaps: the firstCid's marks, then each other
+ *		command's rows that fall in this chunk.
+ */
+static void
+delete_vector_register_chunk(DeleteVectorBuffer *buf, DeleteVectorChunkBuffer *chunk)
+{
+	uint64	   *rows = palloc(sizeof(uint64) * Max(chunk->rowCount, 1));
+	uint32		n = 0;
+	uint64		bit;
+	ListCell   *lc;
+
+	for (bit = 0; bit < chunk->rowCount; bit++)
+	{
+		uint64		rowNumber = chunk->startRowNumber + bit;
+
+		if (dv_row_deleted(chunk->mask, chunk->maskLen, bit) &&
+			(buf->otherCids == NIL ||
+			 delete_vector_mark_cid(buf, rowNumber) == buf->firstCid))
+			rows[n++] = rowNumber;
+	}
+	PgColumnarCidRegisterMarkRows(buf->storageId, rows, n, buf->firstCid);
+
+	foreach(lc, buf->otherCids)
+	{
+		DeleteVectorCidRows *cr = (DeleteVectorCidRows *) lfirst(lc);
+		uint32		i;
+
+		n = 0;
+		for (i = 0; i < cr->n; i++)
+			if (cr->rows[i] >= chunk->startRowNumber && cr->rows[i] <= chunk->endRowNumber)
+				rows[n++] = cr->rows[i];
+		if (n > 1)
+			qsort(rows, n, sizeof(uint64), delete_vector_row_cmp);
+		PgColumnarCidRegisterMarkRows(buf->storageId, rows, n, cr->cid);
+	}
+	pfree(rows);
 }
 
 /*
@@ -504,20 +599,13 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 			memcpy(rm.bitmap, chunk->mask, chunk->maskLen);
 		}
 
+		/*
+		 * Which command made which of these marks (#2247). Before the upsert,
+		 * which merges the stored marks of every transaction into the mask.
+		 */
+		delete_vector_register_chunk(buf, chunk);
+
 		PgColumnarUpsertDeleteVector(buf->storageId, &rm);
-
-		/* which command made which of these marks (#2247) */
-		{
-			ListCell   *yc;
-
-			foreach(yc, chunk->layers)
-			{
-				DeleteVectorCidLayer *layer = (DeleteVectorCidLayer *) lfirst(yc);
-
-				PgColumnarCidRegisterMarks(buf->storageId, chunk->startRowNumber,
-										   layer->mask, chunk->maskLen, layer->cid);
-			}
-		}
 	}
 
 	/*

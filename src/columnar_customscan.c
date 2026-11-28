@@ -4389,8 +4389,7 @@ PgColumnarExplainGroupStats(const PgColumnarGroupStats *stats, ExplainState *es)
 static Size
 PgColumnarEstimateDSMCustomScan(CustomScanState *node, ParallelContext *pcxt)
 {
-	/* the group counter, then what the worker check reads (#2247) */
-	return PGC_PARALLEL_CID_OFFSET + PgColumnarParallelCidSize();
+	return sizeof(pg_atomic_uint32);
 }
 
 static void
@@ -4401,10 +4400,12 @@ PgColumnarInitializeDSMCustomScan(CustomScanState *node, ParallelContext *pcxt,
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
 	pg_atomic_init_u32(counter, 0);
-	PgColumnarParallelCidStore((char *) coordinate + PGC_PARALLEL_CID_OFFSET);
 	cstate->parallelCounter = counter;
 	if (cstate->readState != NULL)
 		PgColumnarReadSetParallelCounter(cstate->readState, counter);
+
+	/* the workers' copy of this backend's own-write registry (#2247) */
+	PgColumnarCidRegistryPublish();
 }
 
 static void
@@ -4414,6 +4415,9 @@ PgColumnarReInitializeDSMCustomScan(CustomScanState *node, ParallelContext *pcxt
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
 	pg_atomic_write_u32(counter, 0);
+
+	/* a rescan launches workers again: give them the registry as it is now (#2247) */
+	PgColumnarCidRegistryPublish();
 }
 
 static void
@@ -4423,8 +4427,6 @@ PgColumnarInitializeWorkerCustomScan(CustomScanState *node, shm_toc *toc,
 	PgColumnarCustomScanState *cstate = (PgColumnarCustomScanState *) node;
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
-	PgColumnarParallelCidCheck((char *) coordinate + PGC_PARALLEL_CID_OFFSET,
-							   GetActiveSnapshot());
 	cstate->parallelCounter = counter;
 	if (cstate->readState != NULL)
 		PgColumnarReadSetParallelCounter(cstate->readState, counter);
