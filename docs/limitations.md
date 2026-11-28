@@ -700,6 +700,13 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   reason, two multi-statement transactions can rarely deadlock, even on disjoint
   rows. This happens when their bucketed locks collide in opposite statement order.
   Retry resolves it, as with any serialization failure.
+- A writer keeps its delete marks in memory until it writes them to the catalog.
+  It writes them at the end of each statement. It also writes them when a nested
+  statement that names the table starts, such as a trigger that reads it (#2169).
+  From then on, a second writer of the same rows waits for the first, as on a
+  heap. It then gets the `serialization_failure` described above.
+  Before that fix, a second writer that ran while the nested statement was still
+  running did not wait. It committed, and the first writer failed instead.
 - `SERIALIZABLE` works on columnar tables: a write skew between two serializable
   transactions fails one of them with `serialization_failure` (40001), as on a
   heap. The access method takes no predicate locks of its own. The protection comes
@@ -718,6 +725,20 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   not fail here, because `VACUUM` moves no row. Retry the transaction: the retry
   takes a new snapshot, sees the moved row, and skips the insert.
   `test/am_contracts.sh` checks this behavior (#2060).
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb can fail inside the
+  transaction with `serialization_failure` (40001). The verbs are `vacuum`,
+  `vacuum_sorted`, `cluster`, `cluster_hilbert`, `recluster`,
+  `recluster_hilbert` and `compact_rewrite`. This happens when another session
+  changed the row groups the verb would rewrite after the snapshot was taken. The verb reads the newest
+  committed rows, and the transaction sees the rows it writes as its own. A row
+  group carries one xmin for all its rows, so the copies cannot keep each row's
+  own xmin and xmax, as heap's `CLUSTER` does. Before #2167 the transaction then
+  saw rows inserted after its snapshot and lost rows deleted after it. When
+  nothing changed, the verb runs and the transaction sees the rows it saw. Retry
+  the transaction, or run the verb at `READ COMMITTED`, where each statement takes
+  a new snapshot anyway. The maintenance daemon runs at `READ COMMITTED` whatever
+  `default_transaction_isolation` says, as PostgreSQL's autovacuum does.
+  `test/rewrite_snapshot.sh` checks this behavior (#2167).
 - Concurrent inserts of the same unique key go in sequence. The server therefore
   always finds the conflict. Before a new row reaches the uniqueness check, the
   access method takes an advisory lock with the scope of the transaction. The key

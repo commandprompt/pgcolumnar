@@ -410,6 +410,7 @@ behaviour, the source of that number is named.
 - [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
+- [365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees](#365-test_rewrite_snapshotpy-a-rewrite-inside-a-repeatable-read-transaction-does-not-change-what-it-sees)
 
 ## 1. How to read a test in here
 
@@ -1739,6 +1740,66 @@ already in use` (#1742). CI runs the cluster files serially, so only `-n` runs m
 | `test_two_workers_taking_a_fixture_port_do_not_collide` | an inner `-n 2` run where each worker takes `pick_port(27)`, waits for the other, then binds it: two workers, two ports, inner run green | with the port independent of the worker (main before #1742), both workers get one port and the second bind fails |
 | `test_every_literal_fixture_slot_fits_a_workers_block` | every literal `pick_port(<n>)` in the corpus fits a worker's block of WORKER_STRIDE ports, naming any file that asks for more |
 | `test_the_highest_slot_in_the_corpus_gets_a_port` | the corpus's highest slot gets a port inside the AUX band, so the stride and the corpus cannot drift apart |
+
+### Two runs at once must not get one fixture port
+
+The worker blocks keep one run's workers apart, not two runs. `run_all_versions.sh`
+runs suites in parallel, and a shell suite and a twin share the AUX band. A picker
+proves a port free and returns it, and nothing held the port until the caller bound
+it, so two pickers that started from the same port were both given it. In CI
+`iceberg_rest_scan` and `iceberg_rest_vended` both got 31732, and the scan got HTTP 401
+from the other suite's REST fixture (#2165). `pgc_pick_free_port` (test/portlib.sh)
+and `pick_port` now keep one reservation protocol, stated in both files: an exclusive
+`flock` on `<dir>/lock` from the first probe to the reservation; a file `<dir>/<port>`
+holding `<picker pid> <epoch>`; `<dir>` is `PGC_PORT_RESERVE_DIR`, else
+`${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>`. These arms drive `pick_port` only. The shell
+picker has the same arms in selftest 660, and neither harness runs the other's picker
+(CONTEXT.md, "Tests"; #2208's first version did, and reddened the harness inventory).
+Where an arm needs another picker, it plays one by the protocol: it holds the lock, or
+writes a reservation file itself. The collision arm starts every picker at the same
+port and binds nothing until all have picked, and each pick sleeps a second between its
+probe and its reservation (`PGC_PORT_PICK_DELAY`), so it fails without the lock as well.
+The pickers reserve in a directory of the test's own.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_four_twin_runs_picking_one_slot_get_four_ports` | premise: two twin pickers alone take one port; four processes asking `pick_port(27)` for gw0 at once get four ports, and all four bind | main, or the reservation skip, its write or the lock removed: one port |
+| `test_a_pick_waits_for_a_picker_that_holds_the_lock` | premise: `pick_port` alone takes a port; with the test holding `<dir>/lock` (at least 3 s, and three times an unblocked pick) and reserving that port before it lets go, the pick waits and takes another | the lock removed, or taken on another file: the pick returns at once with the port |
+| `test_a_pick_reserves_its_port_naming_its_picker` | the port's reservation file holds the picker's pid and the time, and its mtime is the time | the file never written, or pid and time swapped |
+| `test_pick_port_reserves_in_the_stated_directory_by_default` | with `PGC_PORT_RESERVE_DIR` unset, `port_reserve_dir()` is `/tmp/pgcolumnar-ports-<uid>`, and `$TMPDIR/pgcolumnar-ports-<uid>` when `TMPDIR` is set | another default name, or `TMPDIR` ignored |
+
+### How long a reservation holds
+
+A suite that stops and restarts its own server on the port it picked (vended's
+restart, the pg_upgrade cycles, crash recovery, replication) leaves the port unbound
+for a moment, possibly more than 120 s after the pick. So a reservation holds while the
+process it names runs, at any age, and the 120 s limit applies only once that process
+has gone (review of #2208). Each arm learns the port `pick_port` takes alone, rewrites
+that port's reservation with an owner and an age, and asks again in the same directory.
+A gone owner is `pid_max + 1`. Selftest 660 has the same three arms for the shell picker.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_a_dead_pickers_reservation_holds_for_sixty_seconds` | a reservation 60 s old whose picker has gone moves the pick off its port | the limit cut to 2 s, or the age test inverted: the pick takes the port |
+| `test_a_dead_pickers_reservation_lapses_after_the_limit` | a reservation 121 s old whose picker has gone does not | the limit raised to 200 s, or any reservation that names an owner held: the pick moves |
+| `test_a_live_pickers_reservation_holds_at_any_age` | a reservation an hour old whose picker (this test's process) still runs moves the pick | a live owner ignored: the pick takes the port |
+
+### A fixture that never says READY stops the run
+
+`iceberg_rest_scan` and `iceberg_rest_vended`, and their twins, used to wait 5 s for
+a REST fixture's READY and carry on without it, so their arms read whatever answered
+on the port: in CI another suite's fixture, which gave HTTP 401 (#2165). Both twins now
+wait through `pgc_cluster.await_ready`, which waits up to 30 s, stops early when the
+fixture's process exits, and raises naming the fixture. The suites reach it only on the
+path where READY arrives, so these drive it against real processes (review of #2208).
+The never-READY arm passes `wait=1`. The shell's `pgc_await_ready` has the same arms in
+selftest 650.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_a_fixture_that_exits_without_ready_stops_the_run` | a fixture that prints a bind error and exits raises `the test fixture on port 1 did not start (exited): bind: Address already in use`, and well inside its 20 s limit | the raise turned into a return; the exit not noticed (20.0 s); the two states swapped |
+| `test_a_fixture_that_says_ready_late_is_waited_for` | a fixture that says READY after 1 s is waited for, inside a 10 s limit | a wait of 0.5 s whatever the limit says |
+| `test_a_fixture_that_never_says_ready_stops_the_run` | a fixture that runs and never says READY raises `the silent fixture did not start (still running with no READY after 1 s)` | the raise turned into a return; the two states swapped |
 
 ## 11. test_zonemap_boundaries.py: exact boundaries
 
@@ -5651,24 +5712,24 @@ names the holder's pid.
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
 Port of `native_vacuum_race.sh` (#432). `pgcolumnar_compact_relation` used the caller's
-pre-lock statement snapshot, so a row group committed after that snapshot was invisible
-to the rewrite and was destroyed by the relfilenode swap (#295). Covered for `vacuum()`,
-`vacuum_sorted()` and `cluster()`.
+pre-lock statement snapshot, so a row group committed while it waited for its lock was
+invisible to the rewrite and was destroyed by the relfilenode swap (#295). Covered for
+`vacuum()`, `vacuum_sorted()` and `cluster()`.
 
-**The shell suite races on the clock; this one does not.** The original backgrounds a
-`psql` running `SELECT pg_sleep(5)` inside its transaction, sleeps 2 in the shell, and
-inserts during the gap — and redirects to `/dev/null` the one observation that would
-prove the race happened. If session B's snapshot were taken after A's commit, B would
-simply see all 150 rows, the maintenance call would keep them, and every check would
-pass having tested nothing.
+Session A inserts 100 rows and holds its transaction open. Session B runs one READ
+COMMITTED statement that counts the table and then calls the maintenance op. The count
+runs at once under the statement snapshot, and the op waits for its AccessExclusiveLock.
+Once B is seen waiting, A commits. No sleeps decide the order: the premise asserts that
+B's statement counted 50 and that B was waiting.
 
-The port uses two connections and no sleeps, and asserts the interleaving: B sees 50
-before A commits, and **still** sees 50 after. The second premise is the load-bearing
-one — it says A's rows are genuinely outside B's snapshot, which is the precondition for
-the defect and exactly what a timing slip destroys.
+Until #2167 this pinned B's snapshot at REPEATABLE READ before A's commit and ran the op
+inside that transaction. That is #2167's case, where the op made A's rows visible to B's
+old snapshot. The op now refuses there with 40001 (`test_rewrite_snapshot.py`), so this
+moved to the lock wait #295 describes.
 
-Removal proof: take the caller's transaction snapshot instead of a fresh post-lock one,
-and `vacuum()` destroys 100 of 150 rows — the arm reports `got 50 want 150`.
+Removal proof: read with the statement snapshot instead of a fresh post-lock one, and
+each op keeps 50 of 150 rows; the arm reports `got 50 want 150` (measured on PG 18, both
+harnesses).
 
 The three maintenance calls are driven from an inline literal loop table, because an
 f-string name would reach `compare_to_bash` as one template and could not match the
@@ -5678,7 +5739,7 @@ three literal names the shell suite states.
 
 | test | what it holds |
 | --- | --- |
-| `test_native_vacuum_race` | every arm: per maintenance call, that B pinned a snapshot of 50 and that A's commit stayed outside it, then that all 150 rows survive; and that `vacuum()` preserves the exact row set rather than only the count |
+| `test_native_vacuum_race` | every arm: per maintenance call, that B's statement counted 50 and B waited for its lock while A's transaction was open, then that all 150 rows survive; and that each op preserves the exact row set rather than only the count |
 
 ## 64. test_native_delete_vector_index.py: reading the delete vector uses its index
 
@@ -9974,11 +10035,11 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set.
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set. And an AFTER trigger of a DELETE or UPDATE that reads through an index-only scan, after a VACUUM ran inside the statement, counts what heap counts (#2169).
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit. For #2169, the writer pauses on its last target row, on an advisory lock the holder connection holds, and the VACUUM runs during that wait; the AFTER STATEMENT trigger then counts the 39 targets through an index-only scan joined to a heap list of them. Each case runs on a heap table too, and each count is checked against heap's. One case reads inside an EXCEPTION block that then fails and rolls back. Two more #2169 scenarios come from the review of #2241. A DELETE reads the table through an index-only scan in a nested statement on row 999, then fails with division by zero on row 1000. The writer's connection runs one more transaction, and fresh connections count the rows by seq, index and index-only scan, before and after a VACUUM. And a second deleter of the same rows runs while the first pauses inside its nested read: it waits, then gets serialization_failure, which is pinned against heap's outcome. The #2059 VACUUM hold is 15 s.
 
 | test | what it holds |
 | --- | --- |
@@ -10050,6 +10111,36 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_delete_over_three_row_groups_between_vacuum_steps_delete_committed_while_paused` | delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused |
 | `test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_visible_after` | delete over three row groups between vacuum's two steps: no target block all-visible after vacuum (#2059) |
 | `test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete over three row groups between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_trigger_of_delete_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger of a delete during vacuum: every target block all-visible before the writer starts |
+| `test_trigger_of_delete_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger of a delete during vacuum: vacuum ran while the writer was paused |
+| `test_trigger_of_delete_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger of a delete during vacuum: the vacuum set all 39 target blocks again |
+| `test_trigger_of_delete_during_vacuum_writer_deleted_39_rows` | an AFTER trigger of a delete during vacuum: the writer deleted 39 rows, as heap did |
+| `test_trigger_of_delete_during_vacuum_trigger_read_through_index_only_scan` | an AFTER trigger of a delete during vacuum: the trigger read through an index-only scan, as on heap |
+| `test_trigger_of_delete_during_vacuum_trigger_count_matches_heap` | an AFTER trigger of a delete during vacuum: the trigger counts none of the deleted rows, as heap does (#2169) |
+| `test_trigger_of_delete_during_vacuum_count_after_commit_matches_heap` | an AFTER trigger of a delete during vacuum: after commit none of them is counted, as on heap (#2169) |
+| `test_trigger_of_update_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger of an update during vacuum: every target block all-visible before the writer starts |
+| `test_trigger_of_update_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger of an update during vacuum: vacuum ran while the writer was paused |
+| `test_trigger_of_update_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger of an update during vacuum: the vacuum set all 39 target blocks again |
+| `test_trigger_of_update_during_vacuum_writer_updated_39_rows` | an AFTER trigger of an update during vacuum: the writer updated 39 rows, as heap did |
+| `test_trigger_of_update_during_vacuum_trigger_read_through_index_only_scan` | an AFTER trigger of an update during vacuum: the trigger read through an index-only scan, as on heap |
+| `test_trigger_of_update_during_vacuum_trigger_count_matches_heap` | an AFTER trigger of an update during vacuum: the trigger counts each updated row once, as heap does (#2169) |
+| `test_trigger_of_update_during_vacuum_count_after_commit_matches_heap` | an AFTER trigger of an update during vacuum: after commit each is counted once, as on heap (#2169) |
+| `test_trigger_in_exception_block_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger reading in an EXCEPTION block during vacuum: every target block all-visible before the writer starts |
+| `test_trigger_in_exception_block_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger reading in an EXCEPTION block during vacuum: vacuum ran while the writer was paused |
+| `test_trigger_in_exception_block_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger reading in an EXCEPTION block during vacuum: the vacuum set all 39 target blocks again |
+| `test_trigger_in_exception_block_during_vacuum_writer_deleted_39_rows` | an AFTER trigger reading in an EXCEPTION block during vacuum: the writer deleted 39 rows, as heap did |
+| `test_trigger_in_exception_block_during_vacuum_trigger_read_through_index_only_scan` | an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger read through an index-only scan, as on heap |
+| `test_trigger_in_exception_block_during_vacuum_trigger_count_matches_heap` | an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger counts none of the deleted rows, as heap does (#2169) |
+| `test_trigger_in_exception_block_during_vacuum_count_after_commit_matches_heap` | an AFTER trigger reading in an EXCEPTION block during vacuum: after commit none of them is counted, as on heap (#2169) |
+| `test_delete_that_fails_after_nested_read_writer_outcome_matches_heap` | a delete that fails after a nested read: the nested read ran, the delete failed with 22012 and the next transaction ran, as on heap (#2169) |
+| `test_delete_that_fails_after_nested_read_counts_use_three_scans` | a delete that fails after a nested read: the counts use a seq scan, an index scan and an index-only scan (#2169) |
+| `test_delete_that_fails_after_nested_read_every_row_live_in_new_transaction` | a delete that fails after a nested read: every row is live by each scan in a new transaction, as on heap (#2169) |
+| `test_delete_that_fails_after_nested_read_every_row_live_after_vacuum` | a delete that fails after a nested read: every row is live by each scan after vacuum, as on heap (#2169) |
+| `test_second_deleter_during_nested_read_first_paused` | a second deleter during the first's nested read: the first deleter was paused inside its nested read (#2169) |
+| `test_second_deleter_during_nested_read_waits_for_first` | a second deleter during the first's nested read: the second deleter waits for the first, as on heap (#2169) |
+| `test_second_deleter_during_nested_read_first_deletes_1000` | a second deleter during the first's nested read: the first deleter deletes its 1000 rows, as on heap (#2169) |
+| `test_second_deleter_during_nested_read_second_fails_40001` | a second deleter during the first's nested read: the second then fails with serialization_failure, where heap deletes the other 500 (#2169) |
+| `test_second_deleter_during_nested_read_rows_left` | a second deleter during the first's nested read: 19000 rows remain, where heap leaves 18500 (#2169) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 
@@ -13844,7 +13935,7 @@ Every test makes one check under the shell's name. Refusals are a SQLSTATE plus 
 
 ## 329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused
 
-The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA. A server that resets each kept-alive connection before any byte of an answer is read 30 times without a failure, because the reset is retried once on a new connection; a reset after part of a status line is refused (#2198).
+The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA. A server that resets each kept-alive connection before any byte of an answer is read 30 times without a failure, because the reset is retried once on a new connection; a reset after part of a status line is refused (#2198). A server that closes each kept-alive connection with a FIN and no `close_notify`, before any byte of an answer, is read 30 times without a failure too: OpenSSL 3 reports that close as an unexpected EOF, which is retried once on a new connection (#2246). The same EOF after half a body, the same EOF on a fresh connection, bytes that are not a TLS record on a kept-alive connection, and a record whose MAC does not verify on one, are each refused with 08006 and their own message, after one GET.
 
 ### Every test
 
@@ -13866,6 +13957,10 @@ Every test makes one check under the shell's name. A refusal is 08006, the modul
 | `test_the_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_reads_over_tls_from_a_server_that_resets_each_kept_alive_connection_all_succeed` | F: 30 reads over TLS from a server that resets each kept-alive connection all succeed |
 | `test_a_reset_over_tls_after_part_of_a_status_line_is_refused` | F: a reset over TLS after part of a status line is refused |
+| `test_reads_over_tls_from_a_server_that_closes_each_kept_alive_connection_all_succeed` | G: 30 reads over TLS from a server that closes each kept-alive connection without close_notify all succeed |
+| `test_the_server_closed_a_kept_alive_connection_on_each_read` | G: the server closed a kept-alive connection with no answer on each of the 30 reads |
+| `test_the_eof_or_tls_error_is_refused[...]` | G: {label} is refused: 08006 and the whole message, one test per label (an EOF over TLS after half a body, an EOF over TLS on a fresh connection, a TLS record error on a kept-alive connection, a bad record MAC on a kept-alive connection) |
+| `test_the_eof_or_tls_error_sent_one_get[...]` | G: {label} sent 1 GET, one test per label |
 | `test_ssl_cert_dir_alone_trusts_the_ca` | E: SSL_CERT_DIR alone trusts the CA (count(*) over https) |
 | `test_no_backend_was_terminated_by_a_signal` | survival: no backend was terminated by a signal |
 
@@ -15187,3 +15282,32 @@ Removal proof, each failing a test here:
 | --- | --- |
 | `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read, with or without a trailing comment; a comment line, a step's timeout and the next job's are not; a job without one, a missing job, and a job that gives the key twice read as none |
 | `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job has exactly one timeout of its own, between 1.5 and 2 times `MEASURED_MAX_MINUTES` |
+
+## 365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees
+
+`compact_rewrite`, `recluster`, `cluster`, `vacuum` and `vacuum_sorted` read the newest committed rows and write them as the calling transaction's own. On main before the fix, a REPEATABLE READ transaction that ran one counted a row another session inserted after its snapshot and lost a row another session deleted after it (#2167). Heap's `CLUSTER` keeps both as the snapshot saw them. At REPEATABLE READ and SERIALIZABLE the verb now raises 40001 when its read and the transaction's snapshot differ over the groups it rewrites, and runs when they agree. The maintenance daemon forces READ COMMITTED, as core's autovacuum does.
+
+### Every test
+
+Each arm reads `ok|<A's count|sum after the verb>|<count|sum after commit>`, or `<SQLSTATE>|<message>|<count|sum after the rollback>`. The table holds ids 1-50 (sum 1275), with 51-60 deleted. Session B commits its change after A's snapshot and before A's verb. Both sessions run with a statement_timeout and a lock_timeout.
+
+| test | what it holds |
+| --- | --- |
+| `test_heap_cluster_keeps_the_snapshot` | control: heap's `CLUSTER` at REPEATABLE READ, after B inserted row 70 and deleted row 3, still counts 50 rows summing 1275 |
+| `test_recluster_refuses_an_insert_after_the_snapshot` | `recluster` after B inserted row 70 raises 40001 with the message; on main A counted 51 rows summing 1345 |
+| `test_recluster_refuses_a_delete_after_the_snapshot` | `recluster` after B deleted row 3 raises 40001; on main A counted 49 rows summing 1272 |
+| `test_recluster_refuses_at_serializable` | the same insert arm at SERIALIZABLE raises 40001 |
+| `test_compact_rewrite_refuses_a_delete_in_its_group` | `compact_rewrite` after B deleted a row in the group it rewrites raises 40001 |
+| `test_cluster_refuses_an_insert_after_the_snapshot` | `cluster` after B inserted row 70 raises 40001 |
+| `test_cluster_refuses_a_delete_after_the_snapshot` | `cluster` after B deleted row 3 raises 40001 |
+| `test_cluster_refuses_groups_another_compact_rewrite_replaced` | `cluster` after B deleted five rows of a second group and its `compact_rewrite` replaced both groups raises 40001: both snapshots list two groups, with different numbers and no deleted rows in the new ones; on main A counted 55 of the 60 rows it saw |
+| `test_recluster_hilbert_refuses_an_insert_after_the_snapshot` | `recluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_cluster_hilbert_refuses_an_insert_after_the_snapshot` | `cluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_vacuum_refuses_a_change_after_the_snapshot` | `vacuum` after B's insert and delete raises 40001 |
+| `test_vacuum_sorted_refuses_a_change_after_the_snapshot` | `vacuum_sorted` after B's insert and delete raises 40001 |
+| `test_every_verb_runs_with_nothing_changed` | control: with nothing changed, all five verbs run at REPEATABLE READ, each in its own statement, and A still counts 50 rows summing 1275 |
+| `test_compact_rewrite_runs_past_an_insert_elsewhere` | `compact_rewrite` runs when B only inserted a row into a new group, which it does not rewrite, and A still does not see that row |
+| `test_recluster_runs_after_own_writes` | `recluster` runs after A's own insert and delete in the same transaction, and A sees both: 50 rows summing 1351 |
+| `test_cluster_runs_after_own_writes` | the same for `cluster` |
+| `test_read_committed_sees_what_its_statement_sees` | control: at READ COMMITTED, `recluster` runs and A sees B's insert and delete, as any statement would |
+| `test_the_daemon_runs_at_read_committed` | with `default_transaction_isolation = 'repeatable read'` set by ALTER SYSTEM, the daemon's `compact_rewrite` rewrites a group that a delete changed during its 3 s hold, and logs the rewrite, not a skip. Settings are reset at the end |

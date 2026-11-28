@@ -629,6 +629,57 @@ true until the next version shipped.
   attribute added to the composite; that is why the flush does not join the
   workers to the backend's lock group instead. `parallel_flush_optin.sh` arm 8
   and `test_parallel_flush_optin.py`.
+- At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb inside the
+  transaction no longer changes what the transaction sees (#2167). `recluster`,
+  `recluster_hilbert`, `compact_rewrite`, `cluster`, `cluster_hilbert`, `vacuum`
+  and `vacuum_sorted` read the newest committed rows and write them as the
+  calling transaction's own, so the transaction then saw a row another session
+  inserted after its snapshot and lost a row another session deleted after it.
+  Heap's `CLUSTER` keeps both as the snapshot saw them. At those levels each verb
+  now compares what the transaction's snapshot and its own read see of the groups
+  it rewrites: each group visible to the snapshot with the same deleted-row count,
+  and for a whole-table verb the same list of groups. When they differ it raises
+  40001 with `could not rewrite table "t": rows changed after this transaction's
+  snapshot`, and a retry runs. When they agree it runs as before. The maintenance
+  daemon now forces `READ COMMITTED`, as PostgreSQL's autovacuum does, so a
+  `default_transaction_isolation` of `repeatable read` does not make it skip a
+  busy table. docs/limitations.md and docs/sql-reference.md.
+  `test/rewrite_snapshot.sh` and `test_rewrite_snapshot.py`.
+- An AFTER trigger of a DELETE or UPDATE that reads the table through an
+  index-only scan no longer counts rows its own statement deleted, when a
+  VACUUM ran during the statement (#2169). The writer keeps its delete marks in
+  memory until the statement ends. A VACUUM cannot see them, so it set the
+  blocks all-visible again, and AFTER triggers fire before the statement's end
+  writes the marks. #2059 fixed the result after commit, not inside the
+  statement. Measured on main: a DELETE of 39 rows saw 38 of them in its trigger
+  (heap 0), and an UPDATE of 39 rows saw 77 (heap 39). Each statement now
+  writes this backend's marks for every table it names before it starts, as a
+  sequential scan already did for its own table. A VACUUM then sees the marks,
+  and the write clears any bit it set. The tests also read inside an EXCEPTION
+  block that rolls back, and check that the marks still reach the catalog.
+  A DELETE that fails after such a nested read leaves every row live in the
+  next transaction. A second writer of the same rows now waits for the first
+  from the nested statement's start, then gets the documented
+  `serialization_failure` (docs/limitations.md). The #2059 test that commits a
+  DELETE during VACUUM's pause now holds VACUUM 15 s instead of 5 s, because its
+  400,000-row DELETE did not always finish within 5 s on a loaded machine.
+  `test/index_only.sh` and `test_index_only.py`.
+- A remote read over `https://` now retries a kept-alive connection that the
+  server closed without a TLS `close_notify`, as a plain `http://` read does
+  (#2246). Since #2225 the reader retries once, on a new connection, when a
+  kept-alive connection ends before any byte of an answer. OpenSSL 3 reports a
+  TLS connection that ends with no `close_notify` as an unexpected EOF
+  (`SSL_ERROR_SSL`), not as `SSL_ERROR_SYSCALL` with errno 0, so over TLS the
+  read failed with 08006 `TLS read from ... failed`. A load balancer or store
+  that drops idle connections this way hit that error. The reader now takes
+  that EOF, and only that reason, as the stale keep-alive case when no byte of
+  an answer has arrived. The same EOF on a fresh connection now fails with
+  08006 `failed before a response`, as it does over plain TCP. An EOF in the
+  middle of an answer, and any other TLS error, still fail with `TLS read from
+  ... failed` and are not retried. A build against an OpenSSL without
+  `SSL_R_UNEXPECTED_EOF_WHILE_READING` is unchanged. `test/objstore_tls_read.sh`
+  and `test_objstore_tls_read.py`.
+
 - `ORDER BY ... LIMIT` no longer returns rows in the wrong order on a table
   whose sort key column was dropped on a build older than #2135, once another
   column is renamed to the dropped name (#2175). The ordering mark from that
@@ -1019,6 +1070,36 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- Two test suites running at once no longer get the same fixture port (#2165).
+  `iceberg_rest_scan` and `iceberg_rest_vended` failed together in a PG 18 CI
+  job: both started a fixture on port 31732, the scan got HTTP 401 from the
+  other suite's REST catalog, and the vended suite got `Connection refused`.
+  `pgc_pick_free_port` in `test/portlib.sh` checked that a port was free and
+  returned it, and nothing held the port until the caller bound it, so two
+  suites whose walks met at one free port were both given it. The picker now
+  takes a lock per user and reserves the port it returns, as a file named for
+  the port that holds the picker's pid. A pick skips a reserved port: one whose
+  picker still runs, at any age, so a suite that restarts its own server on its
+  port keeps it, or one reserved less than 120 s ago by a picker that has gone.
+  The pytest harness's `pick_port` uses the same lock and the same files, so a
+  shell suite and a pytest twin don't collide either. `PGC_PORT_RESERVE_DIR`
+  moves the directory, and `PGC_PORT_PICK_DELAY` holds a pick open, for tests.
+  `iceberg_rest_vended` and `iceberg_rest_scan` used to wait 5 s for a REST
+  fixture and carry on without it; they now wait up to 30 s and stop with a
+  FATAL naming the fixture (the new `pgc_await_ready` in `test/lib.sh`), and
+  their twins raise (the new `await_ready` in `pgc_cluster.py`). Selftest 650
+  and three tests in `test_runshape.py` drive each against a fixture that
+  exits, one that says READY late and one that never says it. Measured with both suites forced onto one port at once:
+  before, both picked 29768, the vended S3 fixture failed with `Address
+  already in use` and the scan failed 6 checks; after, they picked 29769 and
+  29768 and both passed (128 and 18 checks). Each harness tests its own
+  picker against the reservation protocol, which both files state, and
+  neither runs the other's: selftest 660 for the shell picker and seven tests
+  in `test_runshape.py` for `pick_port`, with the same arms (four pickers at
+  once from one start get four ports; a pick waits for a picker that holds the
+  lock; the reservation names the picker's pid and the time; the default
+  directory; a reservation holds 60 s but not 121 s after a picker that has
+  gone, and at any age while it runs).
 - `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
   wait until `statement_timeout` when the calling transaction already holds,
   on the target or one of its partitions, a lock their workers' lock conflicts
