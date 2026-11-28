@@ -2696,12 +2696,22 @@ guard_tests 910
 # cluster_tests 6551 -> 6552, still #2215, for the review of #2226 at d49f08e1:
 # test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6552 -> 6600 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
+# cluster_tests 6552 -> 6561 for #2186's nine tests in test_arrow_import.py: a float64 field with no type table
+# refused for bigint (42804) and malformed for float8 (XX001), int64, timestamp and decimal malformed, the other
+# parameterised tags malformed, a list element with no type table, the parameterless control and the null field,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6127 collected.
+# cluster_tests 6561 -> 6565 for the review of #2224 (#2186): four tests in test_arrow_import.py, a field with
+# neither tag nor type table, a struct child and a map value, a second column, and a list with no children vector,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6131 collected.
+# cluster_tests 6565 -> 6566 for the review of #2224 at b9747c41 (#2186): one test in test_arrow_import.py, a
+# struct or map field with no children vector, by collection over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it): 6132 collected.
+# cluster_tests 6566 -> 6614 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
 # (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
 # guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
 # AFTER ROW trigger, and parallel premises and scans by the custom scan off and on), and for the review of #2269
 # the probes S1, R2, R3 (two isolation levels), R4 and R5 (6), a STABLE function's parallel index scan (premise
 # and 3) and its parallel sequential scan against serial (premise and 3, at two settings: 8), one test per check,
-# by collection of that file (1 on main 1a126cdb, 49 here),
-# restated after the merge of origin/main 1a126cdb (6538 -> 6586 before it).
-cluster_tests 6600
+# by collection of that file (1 on main 02d7c185, 49 here),
+# restated after the merges of origin/main 1a126cdb and 02d7c185 (6538 -> 6586 before them).
+cluster_tests 6614
