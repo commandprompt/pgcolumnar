@@ -6379,7 +6379,7 @@ native_rewrite_conc	native_rewrite_conc	conc-rewrite count/sum	15;16;17;18;19	20
 native_rewrite_conc	native_rewrite_conc	conc-rewrite range	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
 native_rewrite_conc	native_rewrite_conc	conc-rewrite whole-row	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
 native_rewrite_conc	native_rewrite_conc	row count sane	15;16;17;18;19	never	-
-native_rewrite_conc	native_rewrite_conc	the compactor rewrote groups while the workers were writing	15;16;17;18;19	2026-10-22	columnar_metadata.c: every delete flush is refused as a concurrent compaction (over-apply)
+native_rewrite_conc	native_rewrite_conc	the compactor rewrote groups while the workers were writing	15;16;17;18;19	2026-11-28	columnar_metadata.c: every delete flush is refused as a concurrent compaction (over-apply);columnar_vacuum.c: pgcolumnar_compact_rewrite rewrites no group (drop)
 native_rewrite_conc	native_rewrite_conc	the held rewrite itself completed	15;16;17;18;19	never	-
 native_rewrite_conc	native_rewrite_conc	two writers and the compact_rewrite all commit when the second writer updates that group	15;16;17;18;19	2026-11-24	columnar_vacuum.c: lock_rewrite_groups keeps the busy group lock after waiting for it
 native_rewrite_conc	native_rewrite_conc	two writers and the recluster all commit when the second writer updates that group	15;16;17;18;19	2026-11-24	columnar_vacuum.c: lock_rewrite_groups keeps the busy group lock after waiting for it

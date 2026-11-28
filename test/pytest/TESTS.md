@@ -13958,7 +13958,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 
 ## 325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them
 
-The twin of `test/native_rewrite_conc.sh`. Six workers insert, delete and update disjoint ranges of a columnar table and its heap oracle while a compactor loops compact_rewrite and compact. A delete that races a rewrite of its group is refused with a serialization failure and retried, so the two tables must end equal. A compact_rewrite held mid-verb must then let a reader and a writer through.
+The twin of `test/native_rewrite_conc.sh`. Six workers insert, delete and update disjoint ranges of a columnar table and its heap oracle while a compactor loops compact_rewrite and compact. A delete that races a rewrite of its group is refused with a serialization failure and retried, so the two tables must end equal. Each worker waits, at most 60 s, after its deletes until a compact_rewrite has rewritten a group, and the race check reads the groups each worker saw there (#2172). A compact_rewrite held mid-verb must then let a reader and a writer through.
 
 ### Every test
 

@@ -7,8 +7,9 @@ heap oracle, while a compactor loop runs compact_rewrite (online rewrite of part
 deleted groups) and compact (retire fully-dead groups). A delete or update that races a
 rewrite of its group is refused with a serialization failure and retried, so the final
 state is deterministic and the columnar table must equal the heap oracle. Asserted: every
-worker finished, the compactor moved rows while they wrote (so the race was run, not
-assumed), the two tables agree by whole row, by count and sum, and over a range, and a
+worker finished, a compact_rewrite had rewritten a group before each worker's UPDATEs
+(each worker waits for one at a gate after its deletes, so the race is run, not assumed,
+#2172), the two tables agree by whole row, by count and sum, and over a range, and a
 compact_rewrite held mid-verb with its lock taken lets a reader and a writer, each with a
 3 s lock_timeout, finish while it still holds the lock -- a rewrite that took a stronger
 lock would otherwise pass everything above, since the workers would simply wait for it.
@@ -117,6 +118,19 @@ def rc(pgc_cluster):
 
         results = [None] * WORKERS
         errs = [[] for _ in range(WORKERS)]
+        gates = [None] * WORKERS
+
+        def gate(w):
+            """#2172: wait, at most 60 s, until a compact_rewrite has rewritten a group,
+            and record the groups seen. So a rewrite has finished while this worker still
+            has statements to run, however slow the runner, and however many of the
+            compactor's calls lost a lock race (#2074) and rolled back."""
+            for _ in range(300):
+                if sum(moved) > 0:
+                    break
+                time.sleep(0.2)
+            gates[w] = sum(moved)
+            return True
 
         def worker(w):
             lo, hi = w * PER + 1, (w + 1) * PER
@@ -125,10 +139,11 @@ def rc(pgc_cluster):
                 f"INSERT INTO t_col  SELECT g, g%5, g*3, md5(g::text) FROM generate_series({lo},{hi}) g",
                 f"DELETE FROM t_heap WHERE id BETWEEN {lo} AND {hi} AND id % 7 = 0",
                 f"DELETE FROM t_col  WHERE id BETWEEN {lo} AND {hi} AND id % 7 = 0",
+                None,
                 f"UPDATE t_heap SET v = v + 1 WHERE id BETWEEN {lo} AND {hi} AND id % 5 = 0",
                 f"UPDATE t_col  SET v = v + 1 WHERE id BETWEEN {lo} AND {hi} AND id % 5 = 0",
             ]
-            results[w] = all(_retry(d, s, errs[w]) for s in steps)
+            results[w] = all(gate(w) if s is None else _retry(d, s, errs[w]) for s in steps)
 
         comp = threading.Thread(target=compactor)
         comp.start()
@@ -143,6 +158,7 @@ def rc(pgc_cluster):
         r = {
             "fail": "0" if all(results) else "1",
             "moved": sum(moved),
+            "gates": gates,
             "retries": sum(1 for e in errs for x in e if "compacted concurrently" in x),
         }
         # a final settling pass, then the columnar table must equal the heap oracle
@@ -206,8 +222,11 @@ def test_all_rewrite_workers_succeeded(rc, expect):
 
 
 def test_the_compactor_rewrote_groups_while_the_workers_were_writing(rc, expect):
-    m = rc["moved"]
-    expect.text("yes" if isinstance(m, int) and m > 0 else f"no (moved [{m}])", "yes",
+    # read at each worker's gate, before its UPDATEs, not as the loop's total: the
+    # loop's last call can finish after the workers (#2172)
+    g = rc["gates"]
+    ok = all(isinstance(v, int) and v > 0 for v in g)
+    expect.text("yes" if ok else f"no (groups at the gates {g}, {rc['moved']} in all)", "yes",
                 "the compactor rewrote groups while the workers were writing")
 
 
