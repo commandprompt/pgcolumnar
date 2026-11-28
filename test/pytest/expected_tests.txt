@@ -2750,9 +2750,17 @@ guard_tests 910
 # test_parallel_copy_storage_row_gone_during_the_load_premise and
 # test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6639 -> 6649 for #2216's ten tests in test_parallel_copy.py: for each of the issue's own-lock cases
+# cluster_tests 6639 -> 6640 for #2240: one test in test_projection_drop_column.py, a column dropped by ALTER
+# TYPE ... DROP ATTRIBUTE ... CASCADE or DROP DOMAIN ... CASCADE takes its projections with it, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6640 -> 6647 for #2260's seven tests in test_parallel_copy.py:
+# test_parallel_copy_eod_marker_after_key_premise, test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does
+# (4 parametrized), test_parallel_copy_eod_marker_after_null_key_is_a_null_key and
+# test_parallel_copy_eod_marker_after_key_out_of_order_is_refused, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6647 -> 6657 for #2216's ten tests in test_parallel_copy.py: for each of the issue's own-lock cases
 # (the referenced table with 2 workers and with 1, the trigger's table, the trigger's sequence, the fresh columnar
 # table a trigger writes), the 40P01's DETAIL names the loader's lock and its relation (5), and a retry after
 # ROLLBACK TO SAVEPOINT gets 40P01 again while a load after ROLLBACK loads (5), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6649
+cluster_tests 6657

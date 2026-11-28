@@ -343,6 +343,10 @@ these constraints.
   when the key is not valid. On PostgreSQL 15 to 17, one is a `\.` followed by
   the line end the rest of the file does not use. The other is a character
   with no equivalent in the database encoding (`22P05` from `COPY`).
+  On PostgreSQL 15 to 17, a key followed by `\.` and a line end is read as
+  `COPY` reads it. The `\.` ends the line, so `1200\.` is the key 1200 (#2260).
+  With the line end the rest of the file does not use, such a row gets `COPY`'s
+  `22P04`.
   A file that also has a row out of order is refused for its order (`22000`).
   The order is checked before any worker starts.
 - The caller needs membership in the `pg_read_server_files` role and INSERT on

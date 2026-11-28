@@ -4365,6 +4365,15 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 			Relation	rel = relation_open(objectId, NoLock);
 
 			PgColumnarForgetSortKeyColumn(PgColumnarStorageId(rel), attname);
+
+			/*
+			 * A projection stores the column by attnum and declares it by
+			 * name, and neither may outlive it (#2240). ALTER TABLE ... DROP
+			 * COLUMN never gets here with a projected column: it refuses
+			 * first. Every other route is a cascade, and takes the projection
+			 * with it. See PgColumnarDropProjectionsOnColumn.
+			 */
+			PgColumnarDropProjectionsOnColumn(rel, (AttrNumber) subId, attname);
 			relation_close(rel, NoLock);
 
 			/*
