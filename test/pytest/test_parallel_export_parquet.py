@@ -24,7 +24,8 @@ created), and "still up" also needs the server log's count of backends killed by
 signal unmoved since setup: a fresh connection answers again after crash recovery.
 
 ON A PRIVATE DATABASE. Files the backend writes live in `server_dir`. Four workers at
-most, inside the cluster's default max_worker_processes of 8.
+most, inside the cluster's default max_worker_processes of 8, except the #2191 arm,
+which checks that six fit and seven do not.
 """
 import os
 import pathlib
@@ -966,3 +967,80 @@ def test_pexport_a_worker_deadlock_victim_reaches_the_caller_as_40p01(pep, expec
     expect.text(pep["qx victim"],
                 "40P01 pgcolumnar.parallel_export_parquet worker 0 failed: deadlock detected | detail names the run lock | under 8 s",
                 "a parallel_export_parquet worker chosen as the deadlock victim reaches the caller as 40P01 with the cycle in its detail, within 8 s (#2245)")
+
+
+_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8}
+
+
+def _doc_counts(page):
+    """Every explicit worker count in a page's parallel_export_parquet calls."""
+    text = (SRCDIR / "docs" / page).read_text()
+    return [int(n) for n in re.findall(r"parallel_export_parquet\('[^']*', *'[^']*', *([0-9]+)", text)]
+
+
+def _doc_figure(page):
+    """The page's default-server worker figure ("of 8 fits six workers" or "of 8, six
+    workers fit"), or None."""
+    text = " ".join((SRCDIR / "docs" / page).read_text().split())
+    m = re.search(r"of 8,? (?:fits ([a-z]+) workers|([a-z]+) workers fit)", text)
+    return _WORDS.get((m.group(1) or m.group(2))) if m else None
+
+
+def test_pexport_the_documented_worker_counts_fit_a_default_server(pep, pgc_cluster, server_dir, expect):
+    """#2191: each worker takes one background worker slot, and the server's own
+    background workers hold slots too. The docs asked for 8 workers, which failed on a
+    table of 7 or more row groups at the default max_worker_processes = 8. Every
+    explicit count on each page is read from the page and exported with, from a table
+    of 16 row groups. The figure the SQL reference and the user guide give is the
+    largest that fits: it exports, and one worker more is refused with 53000."""
+    db = _Db(pgc_cluster.dsn(dbname=DB))
+    expect.text(db.one("SELECT (setting = boot_val)::text FROM pg_settings WHERE name = 'max_worker_processes'"), "true",
+                "premise: the cluster runs at the default max_worker_processes")
+    db.run("CREATE TABLE t_docw (id int, txt text) USING pgcolumnar")
+    db.run("SELECT pgcolumnar.set_options('t_docw'::regclass, stripe_row_limit => 1000)")
+    db.run("INSERT INTO t_docw SELECT g, 'r' || g FROM generate_series(1, 16000) g")
+    expect.num(db.one("SELECT count(*) FROM pgcolumnar.row_group r JOIN pgcolumnar.storage s USING (storage_id) "
+                      "WHERE s.relation_oid = 't_docw'::regclass"), 16,
+               "premise: the documented-count table holds 16 row groups, more than any count tried")
+    # The earlier tests' workers must have exited, or they still hold slots. Bounded.
+    deadline = time.monotonic() + 10
+    while db.one("SELECT count(*) FROM pg_stat_activity "
+                 "WHERE backend_type LIKE 'pgcolumnar parallel_export%'") != 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    out = server_dir / "pep_docw"
+    out.mkdir(exist_ok=True)
+    out.chmod(0o777)
+    seq = iter(range(1, 1000))
+
+    def export(n):
+        """-> rows exported, or "SQLSTATE: message" for a refusal."""
+        sql = f"SELECT pgcolumnar.parallel_export_parquet('t_docw'::regclass, '{out}/docw_{next(seq)}', {n})"
+        try:
+            with psycopg.connect(db.dsn, autocommit=True) as conn:
+                return str(conn.execute(sql).fetchone()[0])
+        except psycopg.Error as exc:
+            return f"{exc.sqlstate}: {exc.diag.message_primary}"
+
+    def runs(page):
+        got = " ".join(f"{n}={export(n)}" for n in _doc_counts(page))
+        want = " ".join(f"{n}=16000" for n in _doc_counts(page))
+        return got or "no worker count found", want or "at least one worker count"
+
+    got, want = runs("how-to.md")
+    expect.text(got, want,
+                "the how-to's parallel_export_parquet worker counts export at the default max_worker_processes")
+    got, want = runs("user-guide.md")
+    expect.text(got, want,
+                "the user guide's parallel_export_parquet worker counts export at the default max_worker_processes")
+    got, want = runs("sql-reference.md")
+    expect.text(got, want,
+                "the SQL reference's parallel_export_parquet worker counts export at the default max_worker_processes")
+    fig = _doc_figure("sql-reference.md")
+    expect.text(f"sql-reference.md:{fig} user-guide.md:{_doc_figure('user-guide.md')}",
+                f"sql-reference.md:{fig} user-guide.md:{fig if fig else 'a-figure'}",
+                "the SQL reference and the user guide give the same default-server worker figure")
+    expect.text(export(fig) if fig else "no figure on the page", "16000",
+                "the documented default-server worker figure exports at the default max_worker_processes")
+    expect.text(export(fig + 1) if fig else "no figure on the page",
+                f"53000: could not register pgcolumnar parallel_export worker {(fig or 0) + 1} of {(fig or 0) + 1}",
+                "and one worker more is refused with 53000")

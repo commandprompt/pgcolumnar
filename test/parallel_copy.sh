@@ -2744,6 +2744,85 @@ check "parallel_copy whose caller wrote a fresh columnar table its INSERT trigge
 # only hung here until statement_timeout).
 check "parallel_copy whose caller holds FOR UPDATE a referenced row only the second loader's rows reach gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
 	"$(dk_own "SELECT 1 FROM t_dfk_ref WHERE id = 4000 FOR UPDATE" t_dfk 2)" "40P01 | under 5 s | 0 rows | 0 prepared"
+# #2216 is answered by that 40P01, not by a refusal up front: the tables a
+# loader reaches through a trigger, the sequences it calls and the columnar
+# storage it writes cannot be listed before the load. Two things make 40P01 an
+# answer and not only an end to the wait, and these checks pin both. The error's
+# DETAIL is the deadlock report, and it names the lock the loader waits for and
+# the table it is on. When the caller is the victim, core writes that DETAIL; when
+# a loader is, the caller relays the loader's. With 1 worker the first load runs
+# with the caller's deadlock_timeout at 3 s, so the loader (1 s) is the victim
+# and the relayed DETAIL is the one read. With 2 workers either side can be
+# picked at the default 1 s, so that check reads the SQLSTATE only: both
+# DETAILs name the loader's wait. The retry runs with the default. And the lock stays the
+# caller's to the end of its transaction, so a retry after ROLLBACK TO SAVEPOINT
+# gets 40P01 again, and a load after ROLLBACK loads. Each of the three loads
+# runs under a 10 s statement_timeout.
+dk_lock_named() {	# FILE REACHED -> "MODE on TABLE": the first lock in the first
+	# error's DETAIL that is not a run lock (class 107). A relation is named by
+	# its name; a storage-row lock (class 102) as "the storage of REACHED" when
+	# its key is REACHED's storage id.
+	local w mode rel k
+	w="$(sed -n '/^ERROR:/,/^\(HINT\|LOCATION\|ROLLBACK\)/p' "$1" |
+		grep -o 'waits for [A-Za-z]* on \(relation [0-9]*\|advisory lock \[[0-9,]*\]\)' | grep -v ',107\]$' | head -1)"
+	[ -z "$w" ] && { echo "no lock named"; return; }
+	mode="$(sed 's/^waits for \([A-Za-z]*\) on .*/\1/' <<<"$w")"
+	case "$w" in
+	*relation*)
+		rel="$(sed 's/.* relation //' <<<"$w")"
+		echo "$mode on $(q "SELECT coalesce((SELECT relname::text FROM pg_class WHERE oid = $rel), 'relation $rel')")" ;;
+	*",102]")
+		k="$(sed 's/.*\[[0-9]*,\([0-9]*\),\([0-9]*\),102\]/\1 * 4294967296 + \2/' <<<"$w")"
+		echo "$mode on $(q "SELECT CASE WHEN pgcolumnar.get_storage_id('$2') = $k THEN 'the storage of $2' ELSE 'storage ' || ($k) END")" ;;
+	*) echo "$mode on $(sed 's/.* on //' <<<"$w")" ;;
+	esac
+}
+dk_retry() {	# KEY SETUP TABLE WORKERS REACHED DEADLOCK-TIMEOUT: runs the three loads, and writes
+	# "names LOCK | first SQLSTATE" to dk_t_KEY.names, the first error's message to dk_t_KEY.msg and "retry SQLSTATE | after
+	# ROLLBACK result | rows | prepared | time" to dk_t_KEY.retry.
+	local t0 ms o="$DATADIR/dk_t_$1"
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_t -c "SET statement_timeout = '10s'" -c "BEGIN" -c "$2" -c "SET deadlock_timeout = '$6'" -c "SAVEPOINT s" \
+		-c "SELECT pgcolumnar.parallel_copy('$3'::regclass, '$F', $4)" -c "ROLLBACK TO SAVEPOINT s" -c "RESET deadlock_timeout" \
+		-c "SELECT 'retry'" -c "SELECT pgcolumnar.parallel_copy('$3'::regclass, '$F', $4)" -c "ROLLBACK" \
+		-c "SELECT 'after'" -c "SELECT pgcolumnar.parallel_copy('$3'::regclass, '$F', $4)" >"$o.out"
+	ms=$(dk_ms "$t0")
+	sed -n '/^retry$/q;p' "$o.out" >"$o.first"
+	sed -n '/^retry$/,/^after$/p' "$o.out" >"$o.second"
+	sed -n '/^after$/,$p' "$o.out" >"$o.after"
+	printf 'names %s | %s\n' "$(dk_lock_named "$o.first" "$5")" "$(dk_state "$o.first")" >"$o.names"
+	dk_err "$o.first" | sed 's/^[0-9A-Z]\{5\} //; s/worker [0-9]* failed/worker N failed/' >"$o.msg"
+	printf 'retry %s | after ROLLBACK %s | %s rows | %s prepared | %s\n' "$(dk_state "$o.second")" \
+		"$(e="$(dk_err "$o.after")"; [ -n "$e" ] && echo "$e" || grep -x '[0-9]*' "$o.after" | tail -1)" \
+		"$(q "SELECT count(*) FROM $3")" "$(q "SELECT count(*) FROM pg_prepared_xacts")" "$(dk_under "$ms" 10)" >"$o.retry"
+}
+dk_retry fk2 "LOCK TABLE t_dfk_ref IN EXCLUSIVE MODE" t_dfk 2 t_dfk_ref 1s
+psql_run "TRUNCATE t_dfk" >/dev/null
+dk_retry fk1 "LOCK TABLE t_dfk_ref IN EXCLUSIVE MODE" t_dfk 1 t_dfk_ref 3s
+dk_retry tg "LOCK TABLE t_dtg_log IN ACCESS EXCLUSIVE MODE" t_dtg 1 t_dtg_log 3s
+dk_retry sq "ALTER SEQUENCE t_dsq_seq RESTART" t_dsq 1 t_dsq_seq 3s
+dk_retry cw "INSERT INTO t_dcw_log VALUES (0)" t_dcw 1 t_dcw_log 3s
+DK_RETRY_WANT="retry 40P01 | after ROLLBACK 5000 | 5000 rows | 0 prepared | under 10 s"
+check "the 40P01 of a 2-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references names a loader's RowShareLock on that table in its DETAIL, whichever side is the victim (#2216)" \
+	"$(cat "$DATADIR/dk_t_fk2.names")" "names RowShareLock on t_dfk_ref | 40P01"
+check "a 2-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references gets 40P01 again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)" \
+	"$(cat "$DATADIR/dk_t_fk2.retry")" "$DK_RETRY_WANT"
+check "the 40P01 of a 1-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references names the loader's RowShareLock on that table in the DETAIL it relays from the loader (#2216)" \
+	"$(cat "$DATADIR/dk_t_fk1.names") | $(cat "$DATADIR/dk_t_fk1.msg")" "names RowShareLock on t_dfk_ref | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected"
+check "a 1-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references gets 40P01 again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)" \
+	"$(cat "$DATADIR/dk_t_fk1.retry")" "$DK_RETRY_WANT"
+check "the 40P01 of a parallel_copy whose caller holds ACCESS EXCLUSIVE on the table its INSERT trigger writes names the loader's RowExclusiveLock on that table in the DETAIL it relays from the loader (#2216)" \
+	"$(cat "$DATADIR/dk_t_tg.names") | $(cat "$DATADIR/dk_t_tg.msg")" "names RowExclusiveLock on t_dtg_log | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected"
+check "a parallel_copy whose caller holds ACCESS EXCLUSIVE on the table its INSERT trigger writes gets 40P01 again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)" \
+	"$(cat "$DATADIR/dk_t_tg.retry")" "$DK_RETRY_WANT"
+check "the 40P01 of a parallel_copy whose caller restarted the sequence its INSERT trigger calls names the loader's RowExclusiveLock on that sequence in the DETAIL it relays from the loader (#2216)" \
+	"$(cat "$DATADIR/dk_t_sq.names") | $(cat "$DATADIR/dk_t_sq.msg")" "names RowExclusiveLock on t_dsq_seq | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected"
+check "a parallel_copy whose caller restarted the sequence its INSERT trigger calls gets 40P01 again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)" \
+	"$(cat "$DATADIR/dk_t_sq.retry")" "$DK_RETRY_WANT"
+check "the 40P01 of a parallel_copy whose caller wrote the fresh columnar table its INSERT trigger writes names the loader's wait for that table's storage-row lock in the DETAIL it relays from the loader (#2216)" \
+	"$(cat "$DATADIR/dk_t_cw.names") | $(cat "$DATADIR/dk_t_cw.msg")" "names ExclusiveLock on the storage of t_dcw_log | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected"
+check "a parallel_copy whose caller wrote the fresh columnar table its INSERT trigger writes gets 40P01 again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)" \
+	"$(cat "$DATADIR/dk_t_cw.retry")" "$DK_RETRY_WANT"
 
 # The coordinator can be the victim too (the review of #2244). On a fresh
 # target its storage-row step waits for another writer's storage-row lock;
@@ -3383,9 +3462,9 @@ check "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c bef
 #            the outcome is heap COPY's
 #   ceodcrlf the same in a file with CRLF line ends, the row ending x\. CR LF
 MAL="$DATADIR/mal"; mkdir -p "$MAL"; chmod 755 "$MAL"
-mal_gen() {	# NAME kt|ktcrlf|tk ROW: writes $MAL/NAME.txt, 2000 rows of the shape with row 1200 printf ROW
+mal_gen() {	# NAME kt|ktcrlf|tk|tkcrlf ROW: writes $MAL/NAME.txt, 2000 rows of the shape with row 1200 printf ROW
 	local f="$MAL/$1.txt" fmt
-	case "$2" in kt) fmt='%d\tx%d\n' ;; ktcrlf) fmt='%d\tx%d\r\n' ;; *) fmt='a%d\t%d\n' ;; esac
+	case "$2" in kt) fmt='%d\tx%d\n' ;; ktcrlf) fmt='%d\tx%d\r\n' ;; tkcrlf) fmt='a%d\t%d\r\n' ;; *) fmt='a%d\t%d\n' ;; esac
 	{ awk -v fmt="$fmt" 'BEGIN { for (i = 1; i < 1200; i++) printf fmt, i, i }'
 	  printf "$3"
 	  awk -v fmt="$fmt" 'BEGIN { for (i = 1201; i <= 2000; i++) printf fmt, i, i }'; } >"$f"
@@ -3499,4 +3578,86 @@ check "#2222 premise: heap COPY refuses badunsorted.txt with 22P04 missing data 
 	"22P04|missing data for column \"txt\" 300978"
 check "#2222 a row COPY refuses, then a row out of order / partitioned at 500, 1000 and 1500, 1, 2 and 4 workers: the splitter still refuses the order (22000), 0 rows, no prepared transaction" \
 	"${_bu_res# }" "1:$_mal_sorted 2:$_mal_sorted 4:$_mal_sorted"
+# ---- #2260: a key followed by \. and a line end, on PG 15 to 17 -----------------
+# PG 15 to 17 end a line at an unescaped \. that a CR or LF follows, keep what came
+# before it, and go on reading the next line (copyfromparse.c, CopyReadLineText).
+# So a row a TAB 1200\. LF loads with key 1200. The splitter's key reader read the
+# key as 1200. (the \. as an escaped dot) and refused the load with 22P02, where
+# heap COPY loads it. With the wrong line end for the file, core refuses the \.
+# (22P04), and the splitter gave 22P02 there too. Each file is tk (a<id> TAB id),
+# 2000 rows, row 1200 replaced, compared with heap COPY in the UTF8 database with
+# 1, 2 and 4 workers (outcome, message, rows, prepared transactions, row hash):
+#   eodlfk    a TAB 1200\. LF, LF line ends: COPY loads it
+#   eodcrlfk  a TAB 1200\. CR LF, CRLF line ends: COPY loads it
+#   eodcrk    a TAB 1200\. CR LF, LF line ends: COPY refuses the \. (22P04)
+#   eodlfcrlf a TAB 1200\. LF, CRLF line ends: COPY refuses the \. (22P04)
+#   eodnullk  a TAB \N\. LF: COPY reads a NULL key, which no partition takes
+#             (23514); the key reader must end the field before the \., or it
+#             reads \N\. as a value and refuses it with 22P02
+#   ceodk     a TAB 0\. LF in place of row 1200, a control: the splitter must read
+#             the key and refuse the order (22000), 1 worker. Leaving every such
+#             row for the loader would pass the checks above, and would put a row
+#             in a range that may not own its partition (#2222's N4)
+# PG 18 refuses \. anywhere but alone on its line, and #2222's checks cover that,
+# so these checks are SKIPs on 18 and later. The major is asserted first.
+if ! pgc_is_number "${PGC_MAJOR:-}"; then
+	for _n in "#2260 premise: heap COPY loads eodlfk and eodcrlfk 2000 rows each, row a with id 1200, refuses eodcrk and eodlfcrlf with 22P04 end-of-copy marker does not match previous newline style, and loads eodnullk 2000 rows, row a with a NULL id; row 1200 of each file is the bytes named" \
+		"#2260 an end-of-data marker then LF after the key, the last field / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 an end-of-data marker then CR LF after the key, the last field, in a file with CRLF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 an end-of-data marker then CR LF after the key, in a file with LF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 an end-of-data marker then LF after the key, in a file with CRLF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 a NULL marker then an end-of-data marker and LF as the key / partitioned, 1, 2 and 4 workers: the key is NULL, as COPY reads it, and the loader refuses the row (23514), 0 rows, no prepared transaction" \
+		"#2260 control: an end-of-data marker then LF after the key, on a row out of order / partitioned, 1 worker: the splitter reads the key, 0, and refuses the order (22000)"; do
+		check "$_n" "unreadable server major [${PGC_MAJOR:-<none>}]" "a server major to gate on"
+	done
+elif [ "$PGC_MAJOR" -lt 18 ]; then
+	mal_gen eodlfk tk 'a\t1200\\.\n'
+	mal_gen eodcrlfk tkcrlf 'a\t1200\\.\r\n'
+	mal_gen eodcrk tk 'a\t1200\\.\r\n'
+	mal_gen eodlfcrlf tkcrlf 'a\t1200\\.\n'
+	mal_gen eodnullk tk 'a\t\\N\\.\n'
+	mal_gen ceodk tk 'a\t0\\.\n'
+	[ "$(id -u)" = "0" ] && chown postgres "$MAL"/eod*k.txt "$MAL"/eodlfcrlf.txt "$MAL"/ceodk.txt
+	_e2260_row() {	# NAME -> row 1200 of $MAL/NAME.txt as hex bytes, its line end included
+		head -n 1200 "$MAL/$1.txt" | tail -n 1 | od -An -tx1 | tr -d ' \n'
+	}
+	_e2260_p=""
+	for _m in eodlfk eodcrlfk; do
+		_e2260_p="$_e2260_p $(ENC_COLS="txt text, id int" enc_heap "$ENC_DB" UTF8 "$MAL/$_m.txt" | cut -d'|' -f1,2) $(PGC_DB=$ENC_DB q "SELECT id FROM h_enc WHERE txt = 'a'")"
+	done
+	for _m in eodcrk eodlfcrlf; do
+		_e2260_p="$_e2260_p $(ENC_COLS="txt text, id int" enc_heap "$ENC_DB" UTF8 "$MAL/$_m.txt" | cut -d'|' -f1,2)"
+	done
+	_e2260_p="$_e2260_p $(ENC_COLS="txt text, id int" enc_heap "$ENC_DB" UTF8 "$MAL/eodnullk.txt" | cut -d'|' -f1,2) $(PGC_DB=$ENC_DB q "SELECT count(*) FROM h_enc WHERE txt = 'a' AND id IS NULL")"
+	for _m in eodlfk eodcrlfk eodcrk eodlfcrlf eodnullk; do
+		_e2260_p="$_e2260_p $(_e2260_row "$_m")"
+	done
+	_e2260_m='22P04|end-of-copy marker does not match previous newline style'
+	check "#2260 premise: heap COPY loads eodlfk and eodcrlfk 2000 rows each, row a with id 1200, refuses eodcrk and eodlfcrlf with 22P04 end-of-copy marker does not match previous newline style, and loads eodnullk 2000 rows, row a with a NULL id; row 1200 of each file is the bytes named" "${_e2260_p# }" \
+		"loaded|2000 rows 1200 loaded|2000 rows 1200 $_e2260_m $_e2260_m loaded|2000 rows 1 6109313230305c2e0a 6109313230305c2e0d0a 6109313230305c2e0d0a 6109313230305c2e0a 61095c4e5c2e0a"
+	check "#2260 an end-of-data marker then LF after the key, the last field / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" "$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/eodlfk.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+	check "#2260 an end-of-data marker then CR LF after the key, the last field, in a file with CRLF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" "$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/eodcrlfk.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+	check "#2260 an end-of-data marker then CR LF after the key, in a file with LF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" "$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/eodcrk.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+	check "#2260 an end-of-data marker then LF after the key, in a file with CRLF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" "$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/eodlfcrlf.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+	_e2260_n=""
+	for _w in 1 2 4; do
+		ENC_COLS="txt text, id int" enc_target "$ENC_DB" part
+		_e2260_n="$_e2260_n $_w:$(enc_outcome "$ENC_DB" UTF8 "SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '$MAL/eodnullk.txt', $_w)" t_enc)"
+	done
+	_e2260_w='23514|no partition of relation "t_enc" found for row|0 rows|0 prepared'
+	check "#2260 a NULL marker then an end-of-data marker and LF as the key / partitioned, 1, 2 and 4 workers: the key is NULL, as COPY reads it, and the loader refuses the row (23514), 0 rows, no prepared transaction" "${_e2260_n# }" "1:$_e2260_w 2:$_e2260_w 4:$_e2260_w"
+	check "#2260 control: an end-of-data marker then LF after the key, on a row out of order / partitioned, 1 worker: the splitter reads the key, 0, and refuses the order (22000)" \
+		"$(ENC_COLS="txt text, id int" mal_order UTF8 "$MAL/ceodk.txt")" "$_mal_sorted"
+else
+	for _n in "#2260 premise: heap COPY loads eodlfk and eodcrlfk 2000 rows each, row a with id 1200, refuses eodcrk and eodlfcrlf with 22P04 end-of-copy marker does not match previous newline style, and loads eodnullk 2000 rows, row a with a NULL id; row 1200 of each file is the bytes named" \
+		"#2260 an end-of-data marker then LF after the key, the last field / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 an end-of-data marker then CR LF after the key, the last field, in a file with CRLF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 an end-of-data marker then CR LF after the key, in a file with LF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 an end-of-data marker then LF after the key, in a file with CRLF line ends / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+		"#2260 a NULL marker then an end-of-data marker and LF as the key / partitioned, 1, 2 and 4 workers: the key is NULL, as COPY reads it, and the loader refuses the row (23514), 0 rows, no prepared transaction" \
+		"#2260 control: an end-of-data marker then LF after the key, on a row out of order / partitioned, 1 worker: the splitter reads the key, 0, and refuses the order (22000)"; do
+		check_skip "$_n" "SKIP  $_n (PostgreSQL $PGC_MAJOR refuses \\. anywhere but alone on its line; 15 to 17 end the line there)" \
+			"PostgreSQL $PGC_MAJOR refuses \\. anywhere but alone on its line"
+	done
+fi
 pgc_summary

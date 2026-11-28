@@ -615,4 +615,76 @@ check_text "lock_timeout and log_lock_waits read back unchanged after a parallel
 check_text "no backend died during the lock-cycle cases (#2256)" \
 	"$(( $(cy_crashes) - CY_CRASHES_AT_START )) terminated by signal" "0 terminated by signal"
 
+
+# ---- 10. a flush worker waits no longer than the caller's lock_timeout (#2271) ----
+#
+# A worker is a session of its own. For a composite column it opens the composite's
+# table with ACCESS SHARE, and connecting reads pg_database with ACCESS SHARE. It
+# waited as long as the server's or its role's lock_timeout allowed, never the
+# inserting session's. A serial flush needs neither lock (A's type cache already
+# holds the entry), so with parallel_flush on A waited for a lock it did not need,
+# past its own lock_timeout. Each worker now takes the caller's lock_timeout before
+# it connects. After connecting, its 55P03 reaches A as a WARNING and A encodes its
+# columns itself; while connecting the worker ends with no report, and A encodes its
+# columns serially. Either way A commits, in about its lock_timeout.
+#
+# B holds ACCESS EXCLUSIVE on a table and sleeps, A has loaded the type cache entry
+# first, and A then runs a parallel INSERT with one worker (max_parallel_workers 2).
+# A gets a 15 s statement_timeout and B 20 s. The time is psql's timing of A's
+# INSERT, which starts as soon as B holds the lock.
+# lt_case TABLE A-LOCK-TIMEOUT B-TABLE B-HOLD-SECONDS SELECT-LIST
+# -> "A: <what A did> | <rows in TABLE> | <time>"
+lt_case() {
+	local ms bp ae aw
+	cy_sess pf_lt_b -c "SET statement_timeout = '20s'" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'pf_lt_a' AND query LIKE 'DO%')")" \
+		-c "BEGIN" -c "LOCK TABLE $3 IN ACCESS EXCLUSIVE MODE" -c "SELECT pg_sleep($4)" -c "COMMIT" >"$PGC_WORKDIR/lt_b.out" &
+	bp=$!
+	cy_sess pf_lt_a -c "SET max_parallel_workers = 2" -c "SELECT (row(1, 1)::cy_c).x" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = '$3'::regclass AND mode = 'AccessExclusiveLock' AND granted)")" \
+		-c "SET lock_timeout = '$2'" -c "SET pgcolumnar.parallel_flush = on" -c "SET client_min_messages = debug1" \
+		-c "SET statement_timeout = '15s'" -c '\timing on' \
+		-c "INSERT INTO $1 SELECT $5 FROM generate_series(1, 20000) g" >"$PGC_WORKDIR/lt_a.out"
+	# psql's own timing of the INSERT alone: "Time: 1085.688 ms"
+	ms="$(sed -n 's/^Time: \([0-9]*\)\..*$/\1/p' "$PGC_WORKDIR/lt_a.out" | tail -1)"
+	echo "-- lt_case $1: A's INSERT took ${ms:-?} ms" >&2
+	wait "$bp"
+	ae="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/lt_a.out")"
+	aw="$(sed -n '/^WARNING:/{s/^WARNING: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' "$PGC_WORKDIR/lt_a.out")"
+	printf 'A: %s | %s rows | %s\n' \
+		"$(if [ -n "$ae" ]; then echo "$ae"; elif [ -n "$aw" ]; then echo "committed after WARNING $aw"; else echo "committed, $(allsplit "$PGC_WORKDIR/lt_a.out")"; fi)" \
+		"$(q "SELECT count(*) FROM $1")" \
+		"$(if [ -z "$ms" ]; then echo "no time"; elif [ "$ms" -lt 3000 ]; then echo "under 3 s"; elif [ "$ms" -lt 10000 ]; then echo "waited for B"; else echo "took $ms ms"; fi)"
+}
+q "CREATE TABLE lt_w (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE lt_w0 (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE lt_wl (a int, r cy_c) USING pgcolumnar;
+   CREATE TABLE lt_wc (a int, b int) USING pgcolumnar;" >/dev/null
+LT_CRASHES_AT_START="$(cy_crashes)"
+check_text "a parallel flush worker waiting on a composite column's table gives up at the caller's lock_timeout, and the INSERT commits its rows serially after a 55P03 WARNING within 3 s (#2271)" \
+	"$(lt_case lt_w 1s cy_c 6 "g, row(g, g)::cy_c")" \
+	"A: committed after WARNING 55P03 pgcolumnar parallel_flush worker 0 failed, completing its columns serially: canceling statement due to lock timeout | 20000 rows | under 3 s"
+# The connect phase: B holds pg_database instead, and A's columns are ints. The
+# worker gives up while it connects, so it reports nothing and A encodes both
+# columns itself.
+check_text "a parallel flush worker held up connecting (another session's ACCESS EXCLUSIVE on pg_database) gives up at the caller's lock_timeout, and the INSERT commits its rows serially within 3 s (#2271)" \
+	"$(lt_case lt_wc 1s pg_database 6 "g, g")" \
+	"A: committed, not every column in workers:[parallel_flush: 0 of 2 columns by 1 worker;] | 20000 rows | under 3 s"
+# The controls. A caller's lock_timeout longer than B's hold lets the worker wait,
+# and every column is encoded in the worker: a worker that read the value in the
+# wrong unit, or always gave up, reads red. A caller's 0 means no limit for the
+# worker too, even with a 1 s lock_timeout set for the role in this database, which
+# the worker's connection would otherwise apply.
+check_text "a parallel flush worker waits for a composite column's table while the caller's lock_timeout (20 s) has not run out, and encodes every column (#2271)" \
+	"$(lt_case lt_wl 20s cy_c 5 "g, row(g, g)::cy_c")" \
+	"A: committed, every column in workers | 20000 rows | waited for B"
+q "ALTER ROLE postgres IN DATABASE $PGC_DB SET lock_timeout = '1s'" >/dev/null
+lt_zero="$(lt_case lt_w0 0 cy_c 5 "g, row(g, g)::cy_c")"
+q "ALTER ROLE postgres IN DATABASE $PGC_DB RESET lock_timeout" >/dev/null
+check_text "a caller's lock_timeout 0 is the parallel flush worker's too, over a role's 1 s setting in the database: the worker waits for the composite column's table and encodes every column (#2271)" \
+	"$lt_zero" \
+	"A: committed, every column in workers | 20000 rows | waited for B"
+check_text "no backend died during the lock_timeout cases (#2271)" \
+	"$(( $(cy_crashes) - LT_CRASHES_AT_START )) terminated by signal" "0 terminated by signal"
+
 pgc_summary

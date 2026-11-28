@@ -21,8 +21,10 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # parallel_export spawns N read-only workers (no coordinator), so the cluster
-# needs at least that many worker slots.
-export PGC_EXTRA_CONF=$'max_worker_processes=16'
+# needs at least that many worker slots. max_worker_processes STAYS AT ITS DEFAULT
+# OF 8 (#2191). It was 16 here, which hid that the documented examples asked for
+# 8 workers: with the server's own background workers, 8 do not fit a default
+# server. No check here uses more workers than the documented figure.
 
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
@@ -716,6 +718,79 @@ qx_victim() {	# -> "caller's error | what its detail names | time"
 }
 check "a parallel_export_parquet worker chosen as the deadlock victim reaches the caller as 40P01 with the cycle in its detail, within 8 s (#2245)" \
 	"$(qx_victim)" "40P01 pgcolumnar.parallel_export_parquet worker 0 failed: deadlock detected | detail names the run lock | under 8 s"
+
+# ---- #2191: the documented worker counts fit a default server -----------------
+# Each export worker takes one background worker slot, and the server's own
+# background workers hold slots too. The docs asked for 8 workers, which failed on
+# a table of 7 or more row groups at the default max_worker_processes = 8 with
+# "could not register pgcolumnar parallel_export worker 7 of 8". Every explicit
+# worker count in a page's parallel_export_parquet calls is read from the page and
+# exported with, from a table of 16 row groups, on this cluster at the default.
+check "premise: the cluster runs at the default max_worker_processes" \
+	"$(q "SELECT setting = boot_val FROM pg_settings WHERE name = 'max_worker_processes'")" "t"
+psql_run "SET pgcolumnar.stripe_row_limit = 1000;
+	CREATE TABLE t_docw (id int, txt text) USING pgcolumnar;
+	INSERT INTO t_docw SELECT g, 'r' || g FROM generate_series(1, 16000) g;"
+check "premise: the documented-count table holds 16 row groups, more than any count tried" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group r JOIN pgcolumnar.storage s USING (storage_id)
+		WHERE s.relation_oid = 't_docw'::regclass")" "16"
+# The earlier arms' workers must have exited, or they still hold slots. Bounded.
+for _i in $(seq 1 200); do
+	[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_export%'")" = 0 ] && break
+	sleep 0.05
+done
+dw_export() {	# dw_export N -> rows exported, or "SQLSTATE: message" for a refusal
+	# A fresh directory per call: the counter cannot live in a variable, because
+	# every call runs in a $(...) subshell.
+	local d
+	d="$(mktemp -d "$PGC_WORKDIR/docw_$1.XXXXXX")"; rmdir "$d"
+	env PATH="$PGC_BINDIR:$PATH" psql -X -At -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-v VERBOSITY=verbose -c "SELECT pgcolumnar.parallel_export_parquet('t_docw'::regclass,
+			'$d', $1)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR' | sed -E 's/^ERROR: +//'
+}
+dw_counts() {	# dw_counts PAGE -> every explicit worker count in its parallel_export_parquet calls
+	grep -oE "parallel_export_parquet\('[^']*', *'[^']*', *[0-9]+" "$PGC_SRCDIR/docs/$1" | grep -oE '[0-9]+$'
+}
+dw_runs() {	# dw_runs PAGE -> "N=rows" per documented count
+	local n acc=""
+	for n in $(dw_counts "$1"); do acc="$acc${acc:+ }$n=$(dw_export "$n")"; done
+	echo "${acc:-no worker count found}"
+}
+dw_wants() {	# dw_wants PAGE -> "N=16000" per documented count
+	local n acc=""
+	for n in $(dw_counts "$1"); do acc="$acc${acc:+ }$n=16000"; done
+	echo "${acc:-at least one worker count}"
+}
+check "the how-to's parallel_export_parquet worker counts export at the default max_worker_processes" \
+	"$(dw_runs how-to.md)" "$(dw_wants how-to.md)"
+check "the user guide's parallel_export_parquet worker counts export at the default max_worker_processes" \
+	"$(dw_runs user-guide.md)" "$(dw_wants user-guide.md)"
+check "the SQL reference's parallel_export_parquet worker counts export at the default max_worker_processes" \
+	"$(dw_runs sql-reference.md)" "$(dw_wants sql-reference.md)"
+# The figure the SQL reference and the user guide give ("the default ... of 8 fits
+# six workers" / "of 8, six workers fit") is the largest that fits: it exports, and
+# one worker more is refused with 53000 and its message.
+dw_figure() {	# dw_figure PAGE -> the page's default-server worker figure, or "no-figure"
+	local t w
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	w="$(grep -oE 'of 8,? (fits [a-z]+ workers|[a-z]+ workers fit)' <<<"$t" | grep -oE '(one|two|three|four|five|six|seven|eight)' | head -1)"
+	case "$w" in one) echo 1 ;; two) echo 2 ;; three) echo 3 ;; four) echo 4 ;; five) echo 5 ;;
+		six) echo 6 ;; seven) echo 7 ;; eight) echo 8 ;; *) echo no-figure ;; esac
+}
+DW_FIG="$(dw_figure sql-reference.md)"
+check "the SQL reference and the user guide give the same default-server worker figure" \
+	"sql-reference.md:$DW_FIG user-guide.md:$(dw_figure user-guide.md)" \
+	"sql-reference.md:$DW_FIG user-guide.md:$([[ "$DW_FIG" =~ ^[0-9]+$ ]] && echo "$DW_FIG" || echo a-figure)"
+if [[ "$DW_FIG" =~ ^[0-9]+$ ]]; then
+	check "the documented default-server worker figure exports at the default max_worker_processes" \
+		"$(dw_export "$DW_FIG")" "16000"
+	check "and one worker more is refused with 53000" \
+		"$(dw_export "$((DW_FIG + 1))")" \
+		"53000: could not register pgcolumnar parallel_export worker $((DW_FIG + 1)) of $((DW_FIG + 1))"
+else
+	pgc_fail "the documented default-server worker figure exports at the default max_worker_processes" "no figure on the page"
+	pgc_fail "and one worker more is refused with 53000" "no figure on the page"
+fi
 
 check "server still up after the exports" "$(survived "$CRASHES_AT_START")" 1
 
