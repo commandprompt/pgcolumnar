@@ -425,7 +425,9 @@ check "missing file: server still up (no worker crash)" "$(survived "$CRASHES_BE
 check "missing file: nothing loaded" "$(q "SELECT count(*) FROM t_pcp")" 0
 
 # ---- a non-columnar (heap) target is rejected --------------------------------
-psql_run "DROP TABLE IF EXISTS t_heaptgt; CREATE TABLE t_heaptgt (id int, txt text);" >/dev/null
+# t_heaptgt has a primary key, so the #2080 section below can check that a heap
+# target gets 42809 before the unique-index refusal (#2209).
+psql_run "DROP TABLE IF EXISTS t_heaptgt; CREATE TABLE t_heaptgt (id int PRIMARY KEY, txt text);" >/dev/null
 nc_err="$(err_of "SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '$F', 2)")"
 check "non-columnar target is rejected" \
 	"$(grep -qi "not a pgcolumnar table" <<<"$nc_err" && echo ok || echo no)" ok
@@ -1505,6 +1507,24 @@ check "parallel_copy refuses an s3:// URL with the #1886 refusal before the uniq
 check "parallel_copy refuses a single table with a primary key, 2 workers and dedup => true with 0A000 and the hint (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$F', 2, dedup => true)")" \
 	"$(want_unique t_uk)"
+# A heap target with a primary key gets 42809 first (#2209). The unique-index
+# refusal's hint says "workers => 1", and one worker would still get 42809, so
+# the refusal whose cause holds for every worker count comes first.
+check "premise: t_heaptgt, the heap target, has a primary key (#2209)" \
+	"$(q "SELECT count(*) FROM pg_index WHERE indrelid = 't_heaptgt'::regclass AND indisprimary")" 1
+check "parallel_copy gives a heap target with a primary key and 2 workers 42809 before the unique-index refusal (#2209)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '$F', 2)")" \
+	'42809 "t_heaptgt" is not a pgcolumnar table or a partitioned table | no hint'
+# The refusal comes before the file is opened (#2209): it depends only on the
+# table and the worker count, so a missing file on a table with a primary key
+# gets 0A000, not 58P01. With 1 worker the same call opens the file and gets
+# 58P01, which shows that the path is really missing.
+check "parallel_copy refuses a missing file for a single table with a primary key and 2 workers with 0A000, before it opens the file (#2209)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$DATADIR/nope.txt', 2)")" \
+	"$(want_unique t_uk)"
+check "control: parallel_copy gives a missing file for a single table with a primary key and 1 worker 58P01 (#2209)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$DATADIR/nope.txt', 1)")" \
+	"58P01 could not open file \"$DATADIR/nope.txt\" for reading: No such file or directory | no hint"
 # An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY fails on
 # a columnar table and leaves the index invalid but ready, and a ready unique
 # index still checks every insert, so two loaders would wait on each other. The

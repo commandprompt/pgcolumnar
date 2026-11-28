@@ -282,6 +282,15 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/parallel_copy.sh` and `test_parallel_copy.py` pin two edges of the
+  unique-index refusal for 2 or more workers (#2209). A heap table with a primary
+  key gets `42809` before that refusal: the heap fixture now has a primary key.
+  A missing file on a table with a primary key gets the refusal, `0A000`, not
+  `58P01`, because the refusal comes before the file is opened. With 1 worker the
+  same call gets `58P01`. Before this, moving the refusal above the check of the
+  target's kind, or after the file is opened, passed both suites.
+  docs/limitations.md states that order. The third edge in #2209, the loader's
+  hint, already reaches the caller since #2187. Test-only.
 - The user documentation is brought up to date with the changes since 1.0-alpha4,
   after an audit of every `[Unreleased]` entry against the docs and the code.
   Stale statements corrected: the release and PGXN versions and the native format
@@ -627,6 +636,37 @@ true until the next version shipped.
   table's storage row, the caller now gets the coordinator's 40P01 with its
   DETAIL. It used to get XX000 `coordinator exited without reporting a result`.
   docs/limitations.md. `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order on a table
+  whose sort key column was dropped on a build older than #2135, once another
+  column is renamed to the dropped name (#2175). The ordering mark from that
+  build still named the dropped column, and the rename handed its order to the
+  new column, so the planner left out the Sort. A rename now clears the mark
+  when the new name is already in it: the rename succeeded, so that entry named
+  a dropped column. The rename of a column that is itself in the key, and a
+  stale name in any position of the key, are both covered. Giving the dropped
+  name to a new column with `ADD COLUMN` does not clear such a mark; run
+  `vacuum_sorted` on the table first.
+- `DROP COLUMN` of a sort key column now clears the ordering run as well as
+  the key (#2174). `sort_status` reported every group of such a table as
+  sorted, with no column it was sorted on. It now reports no sorted group.
+- `ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE` on the type of a columnar
+  typed table now renames the column in the ordering mark, `sort_by`,
+  `sketch_columns` and `ttl_column`, as `ALTER TABLE ... RENAME COLUMN` does
+  (#2177). PostgreSQL refuses `RENAME COLUMN` on a typed table, so this is the
+  only rename there, and it was ignored. `expire` then failed with 42703, and
+  once another column took the old name it cut on that column and retired rows
+  inside the retention. A stale mark made `ORDER BY` on the column that took the
+  name skip the Sort. Every columnar table of the type is covered, and their
+  partitions too.
+- `DROP COLUMN` of the retention column now clears `ttl_column` and
+  `ttl_interval` (#2070). The declaration used to keep the dropped name:
+  `expire` failed with 42703, and once another time column took the name it
+  cut on that column and retired rows inside the retention. `expire` now
+  refuses the table with 55000 ("has no declared retention") until a new
+  retention is declared. A drop of any other column leaves the declaration
+  alone. A table whose retention column was dropped on an older build keeps the
+  stale name. docs/sql-reference.md. `test/ttl_expire.sh`,
+  `test/sorted_mark_rename.sh` and their pytest twins.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error
@@ -986,6 +1026,36 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- Two test suites running at once no longer get the same fixture port (#2165).
+  `iceberg_rest_scan` and `iceberg_rest_vended` failed together in a PG 18 CI
+  job: both started a fixture on port 31732, the scan got HTTP 401 from the
+  other suite's REST catalog, and the vended suite got `Connection refused`.
+  `pgc_pick_free_port` in `test/portlib.sh` checked that a port was free and
+  returned it, and nothing held the port until the caller bound it, so two
+  suites whose walks met at one free port were both given it. The picker now
+  takes a lock per user and reserves the port it returns, as a file named for
+  the port that holds the picker's pid. A pick skips a reserved port: one whose
+  picker still runs, at any age, so a suite that restarts its own server on its
+  port keeps it, or one reserved less than 120 s ago by a picker that has gone.
+  The pytest harness's `pick_port` uses the same lock and the same files, so a
+  shell suite and a pytest twin don't collide either. `PGC_PORT_RESERVE_DIR`
+  moves the directory, and `PGC_PORT_PICK_DELAY` holds a pick open, for tests.
+  `iceberg_rest_vended` and `iceberg_rest_scan` used to wait 5 s for a REST
+  fixture and carry on without it; they now wait up to 30 s and stop with a
+  FATAL naming the fixture (the new `pgc_await_ready` in `test/lib.sh`), and
+  their twins raise (the new `await_ready` in `pgc_cluster.py`). Selftest 650
+  and three tests in `test_runshape.py` drive each against a fixture that
+  exits, one that says READY late and one that never says it. Measured with both suites forced onto one port at once:
+  before, both picked 29768, the vended S3 fixture failed with `Address
+  already in use` and the scan failed 6 checks; after, they picked 29769 and
+  29768 and both passed (128 and 18 checks). Each harness tests its own
+  picker against the reservation protocol, which both files state, and
+  neither runs the other's: selftest 660 for the shell picker and seven tests
+  in `test_runshape.py` for `pick_port`, with the same arms (four pickers at
+  once from one start get four ports; a pick waits for a picker that holds the
+  lock; the reservation names the picker's pid and the time; the default
+  directory; a reservation holds 60 s but not 121 s after a picker that has
+  gone, and at any age while it runs).
 - `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
   wait until `statement_timeout` when the calling transaction already holds,
   on the target or one of its partitions, a lock their workers' lock conflicts

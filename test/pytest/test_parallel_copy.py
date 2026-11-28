@@ -1496,7 +1496,9 @@ def pcopy(pgc_cluster, server_dir):
         r["missing up"] = _survived(db, pgc_cluster, before)
         r["missing empty"] = db.value("SELECT count(*) FROM t_pcp")
 
-        db.run("CREATE TABLE t_heaptgt (id int, txt text)")
+        # t_heaptgt has a primary key, so the #2080 section below can check that
+        # a heap target gets 42809 before the unique-index refusal (#2209).
+        db.run("CREATE TABLE t_heaptgt (id int PRIMARY KEY, txt text)")
         r["heap target"] = db.refused(f"SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '{f}', 2)",
                                       "not a pgcolumnar table")
 
@@ -2115,6 +2117,18 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{REMOTE_S3}', 2)", timeout="10s")
         r["unique dedup"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{f}', 2, dedup => true)", timeout="10s")
+        # A heap target with a primary key gets 42809 first (#2209), and the
+        # refusal comes before the file is opened, so a missing file on a table
+        # with a primary key gets 0A000. With 1 worker the same call gets 58P01.
+        r["heap pk premise"] = db.value(
+            "SELECT count(*) FROM pg_index WHERE indrelid = 't_heaptgt'::regclass AND indisprimary")
+        r["heap pk"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '{f}', 2)", timeout="10s")
+        r["missing path"] = str(d / "nope.txt")
+        r["unique missing"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{d / 'nope.txt'}', 2)", timeout="10s")
+        r["unique missing 1"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{d / 'nope.txt'}', 1)", timeout="10s")
         # An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY
         # fails on a columnar table and leaves the index invalid but ready, and a
         # ready unique index still checks every insert. The keys are distinct, so
@@ -3331,6 +3345,26 @@ def test_parallel_copy_refuses_a_url_before_the_unique_refusal(pcopy, expect):
 def test_parallel_copy_refuses_a_primary_key_table_with_dedup(pcopy, expect):
     expect.text(pcopy["unique dedup"], _want_unique("t_uk"),
                 "parallel_copy refuses a single table with a primary key, 2 workers and dedup => true with 0A000 and the hint (#2080)")
+
+
+def test_parallel_copy_heap_target_has_a_primary_key(pcopy, expect):
+    expect.num(pcopy["heap pk premise"], 1, "premise: t_heaptgt, the heap target, has a primary key (#2209)")
+
+
+def test_parallel_copy_gives_a_heap_target_with_a_primary_key_42809_before_the_unique_refusal(pcopy, expect):
+    expect.text(pcopy["heap pk"], '42809 "t_heaptgt" is not a pgcolumnar table or a partitioned table | no hint',
+                "parallel_copy gives a heap target with a primary key and 2 workers 42809 before the unique-index refusal (#2209)")
+
+
+def test_parallel_copy_refuses_a_missing_file_for_a_primary_key_table_before_opening_it(pcopy, expect):
+    expect.text(pcopy["unique missing"], _want_unique("t_uk"),
+                "parallel_copy refuses a missing file for a single table with a primary key and 2 workers with 0A000, before it opens the file (#2209)")
+
+
+def test_parallel_copy_gives_a_missing_file_for_a_primary_key_table_with_one_worker_58P01(pcopy, expect):
+    expect.text(pcopy["unique missing 1"],
+                f'58P01 could not open file "{pcopy["missing path"]}" for reading: No such file or directory | no hint',
+                "control: parallel_copy gives a missing file for a single table with a primary key and 1 worker 58P01 (#2209)")
 
 
 def test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index(pcopy, expect):

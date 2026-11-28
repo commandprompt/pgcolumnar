@@ -61,3 +61,5 @@
 620-a-suite-s-own-trap-must-stop.sh
 630-a-build-with-no-pg-config-must.sh
 640-every-suite-job-installs-the-extensions.sh
+650-a-fixture-that-never-says-ready-stops.sh
+660-a-picked-port-is-reserved-until.sh

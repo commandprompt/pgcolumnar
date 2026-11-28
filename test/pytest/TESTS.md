@@ -1740,6 +1740,66 @@ already in use` (#1742). CI runs the cluster files serially, so only `-n` runs m
 | `test_every_literal_fixture_slot_fits_a_workers_block` | every literal `pick_port(<n>)` in the corpus fits a worker's block of WORKER_STRIDE ports, naming any file that asks for more |
 | `test_the_highest_slot_in_the_corpus_gets_a_port` | the corpus's highest slot gets a port inside the AUX band, so the stride and the corpus cannot drift apart |
 
+### Two runs at once must not get one fixture port
+
+The worker blocks keep one run's workers apart, not two runs. `run_all_versions.sh`
+runs suites in parallel, and a shell suite and a twin share the AUX band. A picker
+proves a port free and returns it, and nothing held the port until the caller bound
+it, so two pickers that started from the same port were both given it. In CI
+`iceberg_rest_scan` and `iceberg_rest_vended` both got 31732, and the scan got HTTP 401
+from the other suite's REST fixture (#2165). `pgc_pick_free_port` (test/portlib.sh)
+and `pick_port` now keep one reservation protocol, stated in both files: an exclusive
+`flock` on `<dir>/lock` from the first probe to the reservation; a file `<dir>/<port>`
+holding `<picker pid> <epoch>`; `<dir>` is `PGC_PORT_RESERVE_DIR`, else
+`${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>`. These arms drive `pick_port` only. The shell
+picker has the same arms in selftest 660, and neither harness runs the other's picker
+(CONTEXT.md, "Tests"; #2208's first version did, and reddened the harness inventory).
+Where an arm needs another picker, it plays one by the protocol: it holds the lock, or
+writes a reservation file itself. The collision arm starts every picker at the same
+port and binds nothing until all have picked, and each pick sleeps a second between its
+probe and its reservation (`PGC_PORT_PICK_DELAY`), so it fails without the lock as well.
+The pickers reserve in a directory of the test's own.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_four_twin_runs_picking_one_slot_get_four_ports` | premise: two twin pickers alone take one port; four processes asking `pick_port(27)` for gw0 at once get four ports, and all four bind | main, or the reservation skip, its write or the lock removed: one port |
+| `test_a_pick_waits_for_a_picker_that_holds_the_lock` | premise: `pick_port` alone takes a port; with the test holding `<dir>/lock` (at least 3 s, and three times an unblocked pick) and reserving that port before it lets go, the pick waits and takes another | the lock removed, or taken on another file: the pick returns at once with the port |
+| `test_a_pick_reserves_its_port_naming_its_picker` | the port's reservation file holds the picker's pid and the time, and its mtime is the time | the file never written, or pid and time swapped |
+| `test_pick_port_reserves_in_the_stated_directory_by_default` | with `PGC_PORT_RESERVE_DIR` unset, `port_reserve_dir()` is `/tmp/pgcolumnar-ports-<uid>`, and `$TMPDIR/pgcolumnar-ports-<uid>` when `TMPDIR` is set | another default name, or `TMPDIR` ignored |
+
+### How long a reservation holds
+
+A suite that stops and restarts its own server on the port it picked (vended's
+restart, the pg_upgrade cycles, crash recovery, replication) leaves the port unbound
+for a moment, possibly more than 120 s after the pick. So a reservation holds while the
+process it names runs, at any age, and the 120 s limit applies only once that process
+has gone (review of #2208). Each arm learns the port `pick_port` takes alone, rewrites
+that port's reservation with an owner and an age, and asks again in the same directory.
+A gone owner is `pid_max + 1`. Selftest 660 has the same three arms for the shell picker.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_a_dead_pickers_reservation_holds_for_sixty_seconds` | a reservation 60 s old whose picker has gone moves the pick off its port | the limit cut to 2 s, or the age test inverted: the pick takes the port |
+| `test_a_dead_pickers_reservation_lapses_after_the_limit` | a reservation 121 s old whose picker has gone does not | the limit raised to 200 s, or any reservation that names an owner held: the pick moves |
+| `test_a_live_pickers_reservation_holds_at_any_age` | a reservation an hour old whose picker (this test's process) still runs moves the pick | a live owner ignored: the pick takes the port |
+
+### A fixture that never says READY stops the run
+
+`iceberg_rest_scan` and `iceberg_rest_vended`, and their twins, used to wait 5 s for
+a REST fixture's READY and carry on without it, so their arms read whatever answered
+on the port: in CI another suite's fixture, which gave HTTP 401 (#2165). Both twins now
+wait through `pgc_cluster.await_ready`, which waits up to 30 s, stops early when the
+fixture's process exits, and raises naming the fixture. The suites reach it only on the
+path where READY arrives, so these drive it against real processes (review of #2208).
+The never-READY arm passes `wait=1`. The shell's `pgc_await_ready` has the same arms in
+selftest 650.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_a_fixture_that_exits_without_ready_stops_the_run` | a fixture that prints a bind error and exits raises `the test fixture on port 1 did not start (exited): bind: Address already in use`, and well inside its 20 s limit | the raise turned into a return; the exit not noticed (20.0 s); the two states swapped |
+| `test_a_fixture_that_says_ready_late_is_waited_for` | a fixture that says READY after 1 s is waited for, inside a 10 s limit | a wait of 0.5 s whatever the limit says |
+| `test_a_fixture_that_never_says_ready_stops_the_run` | a fixture that runs and never says READY raises `the silent fixture did not start (still running with no READY after 1 s)` | the raise turned into a return; the two states swapped |
+
 ## 11. test_zonemap_boundaries.py: exact boundaries
 
 ### `test_exact_zonemap_boundaries`
@@ -6761,7 +6821,7 @@ restored byte-identical.
 | test | what it pins |
 | --- | --- |
 | `test_expire_retires_expired_groups_and_keeps_the_straddling_one` | the feature, and the straddling group that constrains it |
-| `test_expire_refuses_what_it_cannot_honour` | #1341: a non-owner holding DELETE (`42501`), a retention column that is not a time type (`42804`) and a dropped one (`42703`) are refused with every row still there, on tables whose rows are all past retention; the owner's `expire` is the control that retires them |
+| `test_expire_refuses_what_it_cannot_honour` | #1341: a non-owner holding DELETE (`42501`), a retention column that is not a time type (`42804`) and a dropped one, written back by hand as an older build left it since #2070 clears it on the drop (`42703`), are refused with every row still there, on tables whose rows are all past retention; the owner's `expire` is the control that retires them |
 | `test_a_half_declaration_is_no_retention` | #1341: a retention column without an interval, or an interval without a column, is accepted by `set_options` and refused by `expire` with `55000`, every aged row kept |
 | `test_a_null_retention_value_keeps_its_group` | a live NULL the maximum cannot speak for |
 | `test_an_index_only_scan_does_not_return_retired_rows` | the visibility-map bits over a group `expire` removed |
@@ -6774,9 +6834,12 @@ restored byte-identical.
 | `test_a_no_op_expire_reads_the_extent_not_every_zone_map` | #1310: with the retention column's extent (#1304 option 5) past the cutoff, a no-op `expire` makes 0 zone-map scans where it made one per group; the same groups retire with or without the extent; aged rows written in `expire`'s own transaction retire; a column left with only NULLs needs no reads. Counted in a fresh connection, with the test schema's `search_path` carried over. Seen red first: 40 scans |
 | `test_the_retention_column_follows_a_rename` | #2070: `ALTER TABLE ... RENAME COLUMN` carries the new name into `ttl_column`; renaming `t` (a prefix of `ts`), `"TS"` (a case variant), `ts_old` (starts with `ts`), `old_ts` (ends with `ts`) or `tx` (same first letter and length) leaves it `ts`; the table also declares `sort_by` and `sketch_columns`, so renaming a column held only there leaves `ttl_column` alone and `expire` retires nothing, and renaming `ts` moves `sort_by` and `ttl_column` together; `expire` still runs and returns 0, and a column that later takes the old name, holding values two years old, retires no group and drops no row. Seen red first: `ttl_column` stayed `ts` |
 | `test_the_retention_column_follows_a_rename_on_a_retention_only_table` | #2070: on a table that declares only `ttl_column` and `ttl_interval`, with no `sort_by` or `sketch_columns`, renaming `ts` moves `ttl_column` to `event_at`, `expire` still runs and returns 0, and a column that then takes the old name, holding values a year old, retires no group and drops no row. On `ttl_ren` the `sort_by` update writes the catalog row on its own, so only this table shows that the `ttl_column` update asks for the write itself. Seen red first under the #2136 review's mutant M2a (the ttl block's `any = true` removed): `ttl_column` stayed `ts` |
+| `test_dropping_the_retention_column_clears_the_declaration` | #2070: `DROP COLUMN` of the retention column clears `ttl_column` and `ttl_interval`; dropping `t` (a prefix of `ts`), `ts_old` (starts with `ts`) or `"TS"` (differs only in case) leaves them; after the drop `expire` refuses with `55000` and its message, and still does after a year-old column takes the dropped name, every row kept |
+| `test_the_retention_column_follows_rename_attribute_on_a_typed_table` | #2177: on a typed table, where `ALTER TABLE ... RENAME COLUMN` is refused (`42809`), `ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE` moves `ttl_column`; `expire` still runs, a year-old column that takes the old name is not cut on, and every row is kept |
+| `test_the_retention_column_follows_rename_attribute_on_every_typed_table` | #2177, #2237 review: with two columnar typed tables of one type, `ALTER TYPE ... RENAME ATTRIBUTE` moves `ttl_column` on both, and neither `expire` cuts on the column that then takes the old name |
 | `test_a_rename_leaves_a_null_retention_column_null` | #2070: renaming a column on a table that declares only an interval leaves `ttl_column` NULL, and `expire` still refuses it with `55000`, every year-old row kept. Seen red first under the #2136 review's mutant M3c (`!isnull &&` -> `isnull \|\|`): `ttl_column` became `created_at` |
 
-The shell twin is `test/ttl_expire.sh`, 104 checks since the #2136 review, all in the mutation ledger. The two halves share no code:
+The shell twin is `test/ttl_expire.sh`, 120 checks since #2174, all in the mutation ledger. The two halves share no code:
 different tables, different row counts, different retention windows, and the
 refusals asserted by SQLSTATE here (`55000` for no declared retention, `22023` for
 a non-positive interval) where the shell greps its message.
@@ -7239,7 +7302,7 @@ Written red first: on main the fixture raises `unrecognized configuration parame
 | `test_the_switch_exists_and_is_off_by_default` | the launcher runs; the switch reads `off` while the daemon is `on`; a manual `expire` on the same fixture retires its two aged groups |
 | `test_with_the_switch_off_the_daemon_expires_nothing` | the daemon compacts a deleted-heavy table in the window, so it is running passes, and the aged table keeps all 2000 aged rows |
 | `test_with_the_switch_on_the_daemon_expires_only_what_aged` | the aged rows go; the 500 fresh rows stay; a table with no retention keeps every row and is never named in a skipped line; the log names what was retired; later passes that retire nothing write no LOG line for the table |
-| `test_a_failing_expire_does_not_undo_the_compaction` | `expire` on a table whose retention column was dropped fails with `42703`, and the compaction due on that table still lands |
+| `test_a_failing_expire_does_not_undo_the_compaction` | `expire` on a table whose retention column was dropped fails with `42703`, and the compaction due on that table still lands. Since #2070 the drop clears the declaration, so the stale name an older build left is written back by hand first |
 | `test_the_daemon_yields_the_lock_it_holds_inside_expire` | the worker holds ShareUpdateExclusiveLock inside `expire`; a session's ACCESS EXCLUSIVE is granted within 8 s of a 30 s hold, and the log shows the cancel |
 | `test_a_table_dropped_mid_pass_is_skipped_and_the_pass_goes_on` | while the worker holds `ex_hold`, `ex_gone` is dropped; after the cancel the same pass logs `ex_gone` as skipped and still expires `ex_after` |
 | `test_the_daemon_cuts_a_date_retention_at_its_databases_time_zone` | one row group per day: the first surviving day is the daemon's cutoff in the server's TimeZone, then in a changed one after a reload, and in a database-level TimeZone, which overrides the server's; two zones 25 hours apart, read before and after the passes so a midnight between cannot flake it |
@@ -9306,7 +9369,7 @@ A module fixture on a private database builds the tables in the shell's order; e
 
 ## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
 
-The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child. The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review). On a private database, with serial planning as the shell's cluster runs.
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child, and the drop clears the run extent too, so sort_status reports no sorted group (#2174). A mark an older build left naming a dropped column is cleared by the rename that gives the name to another column, wherever the stale name sits in the key (#2175). ALTER TYPE ... RENAME ATTRIBUTE moves a typed table's mark and declared key, and its partition's mark (#2177). The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review), and so must a heap typed table's attribute rename. On a private database, with serial planning as the shell's cluster runs.
 
 ### Every test
 
@@ -9355,7 +9418,10 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
 | `test_vd_t_loaded_every_row` | premise: vd_t loaded every row |
 | `test_before_the_drop_the_mark_records_a` | premise: before the drop, the mark records key {a} |
+| `test_before_the_drop_sort_status_reports_every_group_sorted` | premise: before the drop, sort_status reports every group sorted |
 | `test_dropping_the_sort_key_column_clears_the_mark` | DROP COLUMN of the sort-key column clears the mark |
+| `test_dropping_the_sort_key_column_clears_the_run_extent` | the drop clears the run extent too (#2174) |
+| `test_after_the_key_is_dropped_sort_status_reports_no_sorted_group` | sort_status reports no sorted group once the key column is dropped (#2174) |
 | `test_the_column_that_took_the_name_is_not_ordered` | premise: the column that took the name a is NOT ordered |
 | `test_after_a_drop_and_rename_order_by_plans_a_sort` | after the drop and a rename onto the name, ORDER BY plans a Sort |
 | `test_after_a_drop_and_rename_order_by_limit_is_right` | THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values |
@@ -9369,12 +9435,40 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_dropping_one_zorder_column_clears_the_mark` | dropping one Z-order column clears the mark |
 | `test_the_inheritance_childs_mark_records_k` | premise: the inheritance child's mark records key {k} |
 | `test_a_drop_on_the_parent_clears_the_inheritance_childs_mark` | the inheritance CHILD's mark is cleared by a drop issued on the parent |
+| `test_vl_t_carries_an_older_builds_mark` | premise: vl_t carries the mark an older build left after the drop |
+| `test_vl_t_new_a_is_not_ordered` | premise: the column that took the name a in vl_t is NOT ordered |
+| `test_a_rename_onto_a_dropped_key_name_clears_an_older_builds_mark` | a rename onto a dropped key column's name clears a mark an older build left (#2175) |
+| `test_and_clears_that_marks_run_extent` | and clears that mark's run extent too (#2175) |
+| `test_older_build_order_by_plans_a_sort` | older build: ORDER BY on the column that took the name plans a Sort (#2175) |
+| `test_older_build_order_by_limit_is_right` | THE WRONG-ANSWER ARM, older build: ORDER BY ... LIMIT returns the five smallest values (#2175) |
+| `test_vl_k_carries_an_older_builds_two_column_mark` | premise: vl_k carries the mark {c,a} an older build left after dropping c |
+| `test_vl_k_new_c_is_not_ordered` | premise: the column renamed to c in vl_k is NOT ordered |
+| `test_a_rename_of_a_key_column_onto_a_stale_key_name_clears_the_mark` | a rename of a key column onto a stale key name clears the mark (#2175) |
+| `test_stale_key_holding_both_names_order_by_limit_is_right` | THE WRONG-ANSWER ARM, stale key holding both names: ORDER BY ... LIMIT returns the five smallest values (#2175) |
+| `test_vl_m_carries_an_older_builds_mark_with_a_stale_second_column` | premise: vl_m carries the mark {a,b} an older build left after dropping b |
+| `test_a_rename_onto_a_stale_second_key_name_clears_the_mark` | a rename onto a stale name that is not the key's first clears the mark (#2175) |
+| `test_stale_second_key_column_order_by_limit_is_right` | THE WRONG-ANSWER ARM, stale second key column: ORDER BY a, b ... LIMIT returns the five smallest pairs (#2175) |
+| `test_the_typed_tables_mark_records_a` | premise: the typed table's mark records key {a} |
+| `test_a_typed_tables_mark_follows_rename_attribute` | a typed table's mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177) |
+| `test_a_typed_tables_declared_sort_by_follows_rename_attribute` | and so does its declared sort_by (#2177) |
+| `test_typed_table_order_by_plans_a_sort` | typed table: ORDER BY on the column that took the old name plans a Sort (#2177) |
+| `test_typed_table_order_by_limit_is_right` | THE WRONG-ANSWER ARM, typed table: ORDER BY ... LIMIT returns the five smallest values (#2177) |
+| `test_the_typed_tables_partition_is_untyped_and_marked` | premise: the typed table's partition is not typed, and its mark records key {k} |
+| `test_a_typed_tables_partitions_mark_follows_rename_attribute` | the PARTITION of a typed table: its mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177) |
+| `test_both_typed_tables_of_one_type_are_marked` | premise: both typed tables of one type are marked {a} |
+| `test_both_typed_tables_marks_follow_rename_attribute` | both typed tables' marks follow ALTER TYPE ... RENAME ATTRIBUTE (#2177) |
+| `test_two_typed_tables_order_by_limit_is_right_on_each` | THE WRONG-ANSWER ARM, two typed tables: ORDER BY ... LIMIT on each returns the five smallest values (#2177) |
+| `test_vc_is_marked_on_upper_a` | premise: vc is marked on its upper-case column A |
+| `test_a_case_only_rename_onto_a_live_key_name_keeps_the_mark` | a rename onto a name that differs from a live key column only in case keeps the mark (#2175) |
+| `test_after_a_case_only_rename_order_by_needs_no_sort` | and ORDER BY on that key column still needs no Sort (#2175) |
 | `test_the_extension_is_absent_in_the_second_database` | premise: the extension is absent in the second database |
 | `test_the_library_is_loaded_in_the_second_database` | premise: and the library is loaded there, so its drop hook runs |
 | `test_an_empty_heap_tables_column_drops` | a column of an EMPTY heap table drops, in this database |
 | `test_a_populated_heap_tables_column_drops` | a column of a POPULATED heap table drops, in this database |
 | `test_an_empty_heap_tables_column_drops_without_the_extension` | a column of an EMPTY heap table drops, in a database without the extension |
 | `test_a_populated_heap_tables_column_drops_without_the_extension` | a column of a POPULATED heap table drops, in a database without the extension |
+| `test_a_heap_typed_tables_attribute_renames` | a HEAP typed table's attribute renames, in this database (#2177) |
+| `test_a_heap_typed_tables_attribute_renames_without_the_extension` | a HEAP typed table's attribute renames, in a database without the extension (#2177) |
 | `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
 | `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
 | `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |
@@ -12328,7 +12422,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A `CREATE INDEX` that queues between the loaders' locks on the table no longer hangs the load, a loader that exits before it opens the table fails the load, a cancelled load returns only once its prepared transactions are gone, and a single table with a trigger on INSERT is refused with more than one worker; a loader's refusal carries its HINT (#2187). On PostgreSQL 18 and later it refuses a temporal primary key too, whose one index is both unique and exclusion; the test needs btree_gist and declines before 18, which has no WITHOUT OVERLAPS (#2200). Into a partitioned target it reads the fields up to the key with COPY's text escapes, so a backslash and a TAB before the key, a key in octal or hex escapes, a `\N` key, a key that only starts with `\N`, `\x` with no hex digit, and a key that decodes to a NUL or a non-UTF-8 byte give heap `COPY`'s outcome and rows with 2 and 4 workers (#2202). A load into a table with a projection fills the projection (#2092). A load is refused with 55000, not left waiting, when the caller's transaction holds a lock that conflicts with the workers' ROW EXCLUSIVE on the target or a partition (#2183), or when it has already written to the target or a partition, whose storage-row lock the workers would wait on (#2211). A file that changes newline style (LF or CRLF), or has a `\.\r\n` line in a file with LF line ends, at a range start is refused with heap `COPY`'s SQLSTATE and message, and a file that keeps one style still loads (#2189). Probe files pin the first-line scan: a first line longer than one 64 KiB read, a CR or a backslash at the edge of a read, an escaped CR, and a style decided by the file's first byte (#2221 review). The workers read the file in the caller's `client_encoding`, and every split steps over whole characters in SJIS, BIG5, GBK and GB18030, where a character's second byte can be `0x5C`, so loads under those encodings, and under a database default `client_encoding` that is not the caller's, store what heap `COPY` stores; LATIN1, UTF8 and SJIS in a `SQL_ASCII` database, where such a byte is a backslash, still load as heap `COPY` does (#2188). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database..
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A heap table with a primary key gets 42809 before that refusal, and a missing file gets the refusal before the file is opened (#2209). A `CREATE INDEX` that queues between the loaders' locks on the table no longer hangs the load, a loader that exits before it opens the table fails the load, a cancelled load returns only once its prepared transactions are gone, and a single table with a trigger on INSERT is refused with more than one worker; a loader's refusal carries its HINT (#2187). On PostgreSQL 18 and later it refuses a temporal primary key too, whose one index is both unique and exclusion; the test needs btree_gist and declines before 18, which has no WITHOUT OVERLAPS (#2200). Into a partitioned target it reads the fields up to the key with COPY's text escapes, so a backslash and a TAB before the key, a key in octal or hex escapes, a `\N` key, a key that only starts with `\N`, `\x` with no hex digit, and a key that decodes to a NUL or a non-UTF-8 byte give heap `COPY`'s outcome and rows with 2 and 4 workers (#2202). A load into a table with a projection fills the projection (#2092). A load is refused with 55000, not left waiting, when the caller's transaction holds a lock that conflicts with the workers' ROW EXCLUSIVE on the target or a partition (#2183), or when it has already written to the target or a partition, whose storage-row lock the workers would wait on (#2211). A file that changes newline style (LF or CRLF), or has a `\.\r\n` line in a file with LF line ends, at a range start is refused with heap `COPY`'s SQLSTATE and message, and a file that keeps one style still loads (#2189). Probe files pin the first-line scan: a first line longer than one 64 KiB read, a CR or a backslash at the edge of a read, an escaped CR, and a style decided by the file's first byte (#2221 review). The workers read the file in the caller's `client_encoding`, and every split steps over whole characters in SJIS, BIG5, GBK and GB18030, where a character's second byte can be `0x5C`, so loads under those encodings, and under a database default `client_encoding` that is not the caller's, store what heap `COPY` stores; LATIN1, UTF8 and SJIS in a `SQL_ASCII` database, where such a byte is a backslash, still load as heap `COPY` does (#2188). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database..
 
 ### Every test
 
@@ -12443,6 +12537,10 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_gives_a_caller_without_insert_42501_before_the_unique_refusal` | a role with `pg_read_server_files` and SELECT but no INSERT on the primary-key table gets `42501 permission denied for table t_uk` with 2 workers, not the 0A000 refusal (#2080, #563) |
 | `test_parallel_copy_refuses_a_url_before_the_unique_refusal` | an `s3://` URL into the primary-key table with 2 workers gets the #1886 refusal, not the 0A000 unique-index refusal (#2080) |
 | `test_parallel_copy_refuses_a_primary_key_table_with_dedup` | `dedup => true` with 2 workers into the primary-key table still gets the calling backend's 0A000 and the hint (#2080) |
+| `test_parallel_copy_heap_target_has_a_primary_key` | premise: `t_heaptgt`, the heap target, has a primary key (#2209) |
+| `test_parallel_copy_gives_a_heap_target_with_a_primary_key_42809_before_the_unique_refusal` | `parallel_copy` with 2 workers into that heap table gets `42809 "t_heaptgt" is not a pgcolumnar table or a partitioned table` with no hint, not the 0A000 refusal whose hint says `workers => 1` (#2209) |
+| `test_parallel_copy_refuses_a_missing_file_for_a_primary_key_table_before_opening_it` | a missing file into the primary-key table with 2 workers gets the 0A000 refusal and its hint, not `58P01`: the refusal comes before the file is opened (#2209) |
+| `test_parallel_copy_gives_a_missing_file_for_a_primary_key_table_with_one_worker_58P01` | control: the same call with 1 worker gets `58P01 could not open file "..." for reading: No such file or directory`, so the path is really missing (#2209) |
 | `test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index` | premise: `CREATE UNIQUE INDEX CONCURRENTLY` fails on a columnar table and leaves the index with `indisunique` t, `indisvalid` f and `indisready` t (#2080) |
 | `test_parallel_copy_refuses_an_invalid_unique_index_table_with_two_workers` | `parallel_copy` with 2 workers into that table is refused with 0A000 and the hint: an invalid but ready unique index still checks every insert (#2080) |
 | `test_parallel_copy_refuses_a_primary_key_table_with_the_default_worker_count` | `parallel_copy` with no worker count, under `max_parallel_workers=4` (so 2 workers), into a table with a primary key is refused by the calling backend with 0A000 and the hint (#2080) |

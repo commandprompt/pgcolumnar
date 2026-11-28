@@ -374,7 +374,22 @@
 # NO_CLUSTER: 899 tests collected.
 # guard_tests 899 -> 900 for #2201's test_the_subset_runs_export_sink in test_sanitizer_gate.py: the sanitizer
 # subset runs export_sink, by collection over NO_CLUSTER: 900 tests collected.
-guard_tests 900
+# guard_tests 899 -> 902 for #2165's three tests in test_runshape.py (four shell pickers with one seed get
+# four ports, two twin runs asking one slot get two, a shell suite and a twin never share one and reserve
+# in one directory), by collection over NO_CLUSTER (900 when written, on main 2e3fea7a plus #2195).
+# guard_tests 902 -> 908 for #2165's review (jdatcmd at b80617ac), six tests in test_runshape.py: three READY
+# waits on pgc_cluster.await_ready (a fixture that exits, one that says READY late, one that never says it) and
+# three on how long a port reservation holds (60 s and 121 s for a gone picker, any age for a live one), by
+# collection over NO_CLUSTER (906 when written, on main e000e095).
+# Both restated on main 3d2277c1 by the merge of it.
+# guard_tests 908 -> 909 for #2165's harness independence (jdatcmd on #2208: CI red in test_harness_deps.py),
+# by collection over NO_CLUSTER on main 3d2277c1: 909 tests collected. test_runshape.py no longer runs the
+# shell picker; it tests pick_port alone against the reservation protocol, and selftest 660 does the same for
+# the shell. Two tests out (four shell pickers from one seed; a shell suite and a twin), three in (a pick waits
+# for a picker that holds the lock; the reservation names the picker's pid and the time; the default
+# directory), and the twin collision arm now runs four pickers rather than two (renamed).
+# All of #2165's ten restated on main 0da8ea00 by the merge of it: 900 + 10 = 910, by collection.
+guard_tests 910
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2571,15 +2586,20 @@ guard_tests 900
 # the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
 # each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
 # not name, as ci.yml selects them.
-# cluster_tests 6239 -> 6256 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
+# cluster_tests 6239 -> 6243 for #2209's four tests in test_parallel_copy.py: a premise that the heap target has a
+# primary key, that heap target with 2 workers gets 42809 before the unique-index refusal, a missing file into a
+# primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
+# call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6277 -> 6294 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
 # target (LOCK TABLE, CREATE INDEX) and waiting for the caller's lock gets 40P01 on one side (2), the caller's
 # lock_timeout ends a wait for another session's SHARE on the target and on a partition (2), the caller waits in
 # the lock manager before any worker starts (2) and then loads (2 controls), #2183's and #2211's refusals come
 # before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
 # CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
 # lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
-# cluster_tests 6256 -> 6260 for the review of #2244 in test_parallel_copy.py: the second-loader row lock (a
+# cluster_tests 6294 -> 6298 for the review of #2244 in test_parallel_copy.py: the second-loader row lock (a
 # fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
 # step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
 # cluster files.
-cluster_tests 6260
+cluster_tests 6298
