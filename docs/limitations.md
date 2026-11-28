@@ -323,7 +323,8 @@ these constraints.
   triggers of a foreign key. A trigger on UPDATE or DELETE only does not count
   either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
   default `session_replication_role`. One worker still runs the trigger for every
-  row.
+  row. Like the unique-index refusal, this one comes before the function opens
+  the file, so a missing file gets `0A000`, not `58P01` (#2252).
 - The function does not look inside CHECK constraints or column defaults. Some
   of them call a VOLATILE function that writes to another table. Then the workers
   can wait on each other the same way, until `statement_timeout` or a deadlock
