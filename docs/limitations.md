@@ -3,7 +3,7 @@
 ## Release status
 
 pgColumnar is pre-release. The version marker is `1.0-alpha5`, recorded in `VERSION`.
-The latest published pre-release is `v1.0-alpha4`.
+The latest published pre-release is `v1.0-alpha5`.
 
 On PGXN the same release is `1.0.0-alpha.5`. The two differ because PGXN requires a
 semantic version. A semantic version has three integer components, and `1.0-alpha3`
