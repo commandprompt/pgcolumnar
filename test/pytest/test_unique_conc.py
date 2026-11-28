@@ -95,8 +95,26 @@ class _Race:
         self.sh = _Session(dsn, "cc_sh")
 
     def close(self):
-        for c in (self.sh.conn, self.s2.conn, self.s1.conn, self.watch):
-            c.close()
+        """Settle T1 and T2, then close (#2192). Closing a connection whose statement
+        still runs in its thread left that backend waiting, and the next test's
+        count of `cc_s2` lock waiters read it too, so a mutant's red leaked into a
+        later test as a bounded-wait failure. The holder goes first, which frees a
+        paused T1; a statement still running is cancelled and its thread joined;
+        and the watch connection waits until no session of this race is left."""
+        self.sh.conn.close()
+        for sess in (self.s2, self.s1):
+            if sess.thread is not None and sess.thread.is_alive():
+                cancel = getattr(sess.conn, "cancel_safe", None) or sess.conn.cancel
+                cancel()
+                sess.thread.join(WAIT)
+            sess.conn.close()
+        deadline = time.monotonic() + WAIT
+        while self.one("SELECT count(*) FROM pg_stat_activity "
+                       "WHERE application_name IN ('cc_s1', 'cc_s2', 'cc_sh')") != 0:
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+        self.watch.close()
 
     def one(self, sql):
         return self.watch.execute(sql).fetchone()[0]
@@ -404,6 +422,14 @@ def test_an_exclusion_constraint(race, expect):
                 "9 exclusion constraint: the overlapping inserter got an exclusion_violation")
     expect.num(race.one("SELECT count(*) FROM s_ex WHERE r && int4range(5, 15)"), 1,
                "9 exclusion constraint: exactly one row overlaps [5,15)")
+    # #2192: a NULL range overlaps nothing, so it takes no lock even on a coarse
+    # index. T1 stays paused: once its statement ends, any insert waits for it.
+    expect.text(race.no_conflict(1019, "s_ex", _paused("int4range(20, 30)", "cq_block(1019, int4range(200, 201))"),
+                                 "VALUES (NULL)"), "0|returned",
+                "9 exclusion constraint: a NULL range does not wait behind T1")
+    expect.text(race.one("SELECT count(*) FILTER (WHERE r IS NULL) || ',' || "
+                         "count(*) FILTER (WHERE r = int4range(20, 30)) FROM s_ex"), "1,1",
+                "9 exclusion constraint: the NULL range and T1's row are both kept")
 
 
 @pytest.mark.parametrize("num, tag, mode", [(10, "di", "IMMEDIATE"), (11, "dd", "DEFERRED")])
@@ -420,6 +446,12 @@ def test_a_deferrable_unique_constraint(race, expect, num, tag, mode):
                 f"{num} deferrable initially {mode} unique: the same-key inserter got a unique_violation")
     expect.num(race.one(f"SELECT count(*) FROM s_{tag} WHERE k = 1"), 1,
                f"{num} deferrable initially {mode} unique: exactly one row with key 1")
+    # #2192: a different key hashes to its own bucket, so T2 must not wait.
+    hkey = 1020 + num
+    expect.text(race.no_conflict(hkey, f"s_{tag}", _paused("2", f"cq_block({hkey}, -2)"), "VALUES (3)"),
+                "0|returned", f"{num} deferrable initially {mode} unique: a different-key inserter does not wait")
+    expect.text(race.one(f"SELECT string_agg(k::text, ',' ORDER BY k) FROM s_{tag} WHERE k IN (2, 3)"), "2,3",
+                f"{num} deferrable initially {mode} unique: both different keys are kept")
 
 
 def test_a_btree_exclusion_constraint(race, expect):
@@ -456,3 +488,35 @@ def test_a_deferrable_exclusion_constraint(race, expect, tag, mode, am, typ, op,
                 f"{name}: the conflicting inserter got an exclusion_violation")
     expect.num(race.one(f"SELECT count(*) FROM s_{tag} WHERE {hit}"), 1,
                f"{name}: exactly one conflicting row")
+
+
+def test_a_partial_exclusion_constraint(race, expect):
+    """#2192: a row inside the WHERE of a partial exclusion constraint takes the
+    index's one lock; a row outside it is not covered and must not wait."""
+    race.run(race.s1, "CREATE TABLE s_xp (r int4range, active boolean, CONSTRAINT s_xp_excl "
+                      "EXCLUDE USING gist (r WITH &&) WHERE (active)) USING pgcolumnar")
+    expect.num(race.conflict(1033, "s_xp", _paused("int4range(1, 10)", "cq_block(1033, int4range(100, 101))", ", true"),
+                             "VALUES (int4range(5, 15), true)"), 1,
+               "14 partial exclusion constraint: an overlapping row inside the predicate blocks")
+    err = _settle_by_commit(race, 1033)
+    expect.text(_refused(err, "23P01", "s_xp_excl"), "yes",
+                "14 partial exclusion constraint: the inside overlapping row got an exclusion_violation")
+    expect.num(race.one("SELECT count(*) FROM s_xp WHERE active AND r && int4range(5, 15)"), 1,
+               "14 partial exclusion constraint: exactly one active row overlaps [5,15)")
+    expect.text(race.no_conflict(1034, "s_xp", _paused("int4range(40, 50)", "cq_block(1034, int4range(200, 201))", ", true"),
+                                 "VALUES (int4range(45, 55), false)"), "0|returned",
+                "14 partial exclusion constraint: an overlapping row outside the predicate does not wait")
+    expect.text(race.one("SELECT count(*) FILTER (WHERE NOT active AND r && int4range(40, 50)) || ',' || "
+                         "count(*) FILTER (WHERE active AND r = int4range(40, 50)) FROM s_xp"), "1,1",
+                "14 partial exclusion constraint: the inactive overlapping row and T1's row are both kept")
+
+
+def test_a_non_unique_index(race, expect):
+    """#2192: a non-unique index checks no constraint, so it takes no key lock,
+    and a same-key T2 must not wait while T1's statement runs."""
+    race.run(race.s1, "CREATE TABLE s_nu (k int) USING pgcolumnar")
+    race.run(race.s1, "CREATE INDEX s_nu_idx ON s_nu (k)")
+    expect.text(race.no_conflict(1035, "s_nu", _paused("1", "cq_block(1035, -1)"), "VALUES (1)"), "0|returned",
+                "15 non-unique index: a same-key inserter does not wait")
+    expect.num(race.one("SELECT count(*) FROM s_nu WHERE k = 1"), 2,
+               "15 non-unique index: both same-key rows are kept")

@@ -2758,4 +2758,7 @@ guard_tests 910
 # (4 parametrized), test_parallel_copy_eod_marker_after_null_key_is_a_null_key and
 # test_parallel_copy_eod_marker_after_key_out_of_order_is_refused, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6647
+# cluster_tests 6647 -> 6649 for #2192 in test_unique_conc.py: test_a_partial_exclusion_constraint and
+# test_a_non_unique_index, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+cluster_tests 6649
