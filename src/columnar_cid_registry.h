@@ -29,6 +29,6 @@ extern void PgColumnarCidRegistryReset(void);
 
 /* the copy for parallel workers */
 extern void PgColumnarCidRegistryShmemRegister(void);
-extern void PgColumnarCidRegistryPublish(void);
+extern void PgColumnarCidRegistryPublish(Snapshot snapshot);
 
 #endif							/* PGCOLUMNAR_CID_REGISTRY_H */

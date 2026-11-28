@@ -327,4 +327,34 @@ for cs in off on; do
 		         SELECT count(*) || '|' || sum(pad) FROM %t; ROLLBACK;")" "same"
 done
 
+# ---- without shared_preload_libraries (review of #2269) --------------------------
+# The workers' copy of the registry lives in shared memory that exists only when
+# pgcolumnar is preloaded. Without the library preloaded, no session can load it:
+# it defines settings fixed at server start (unique_lock_buckets,
+# row_lock_buckets), and PostgreSQL refuses those after startup with a FATAL. So a
+# parallel plan cannot give a wrong answer for want of the copy: the session
+# ends first. If that ever changes, columnar_cid_registry.c refuses the plan
+# with SQLSTATE 0A000 instead. Last in the suite: the cluster is restarted
+# without the library preloaded.
+pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+pgc_pg "echo \"shared_preload_libraries=''\" >> '$PGC_PGDATA/postgresql.conf'" >/dev/null 2>&1
+pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
+check "premise: the server now runs without pgcolumnar in shared_preload_libraries" \
+	"$(q "SELECT current_setting('shared_preload_libraries') = ''")" "t"
+np_out() {	# np_out SQL -> everything psql prints for SQL, errors included, on one line
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAt -c "$SET $1" 2>&1 | tr '\n' ' '
+}
+NOPRELOAD_LOAD="cannot create PGC_POSTMASTER variables after startup"
+NOPRELOAD_REFUSAL="columnar: a parallel plan cannot read this transaction's own writes when pgcolumnar is not preloaded"
+np_c="$(np_out "BEGIN; $PARIDX UPDATE sv_pgcolumnar SET id = id + 1000000, pad = cnt_idx('sv_pgcolumnar') WHERE id % 1000 = 1;
+                SELECT count(*) || '|' || min(pad) || '|' || max(pad) FROM sv_pgcolumnar WHERE id > 1000000; ROLLBACK;")"
+np_h="$(np_out "BEGIN; $PARIDX UPDATE sv_heap SET id = id + 1000000, pad = cnt_idx('sv_heap') WHERE id % 1000 = 1;
+                SELECT count(*) || '|' || min(pad) || '|' || max(pad) FROM sv_heap WHERE id > 1000000; ROLLBACK;")"
+check "without shared_preload_libraries, the library refuses to load rather than run a columnar query" \
+	"$(grep -q "$NOPRELOAD_LOAD" <<<"$np_c" && echo refused || echo "not refused: $np_c")" "refused"
+check "without shared_preload_libraries, a STABLE function's parallel index scan inside an UPDATE is refused or answers as heap does" \
+	"$( { [ "$np_c" = "$np_h" ] || grep -qE "$NOPRELOAD_LOAD|$NOPRELOAD_REFUSAL" <<<"$np_c"; } && echo ok || echo "wrong: columnar=$np_c heap=$np_h")" "ok"
+
 pgc_summary

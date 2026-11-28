@@ -587,3 +587,70 @@ def test_guard_a_parallel_scan_after_flushed_writes(pgc_conn, expect, cs):
     _fresh_pk(pgc_conn)
     expect.text(_same_tx(pgc_conn, _cs(cs) + PARW + PAR + ["SELECT count(*), sum(pad) FROM %t"]), "same",
                 f"a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan {cs})")
+
+
+# Without shared_preload_libraries (review of #2269). The workers' copy of the
+# registry lives in shared memory that exists only when pgcolumnar is preloaded.
+# Without the library preloaded, no session can load it: it defines settings fixed
+# at server start, and PostgreSQL refuses those after startup with a FATAL. So a
+# parallel plan cannot give a wrong answer for want of the copy. If that ever
+# changes, columnar_cid_registry.c refuses the plan with SQLSTATE 0A000 instead.
+# A private cluster, started without the library preloaded.
+NOPRELOAD_LOAD = "cannot create PGC_POSTMASTER variables after startup"
+NOPRELOAD_REFUSAL = ("columnar: a parallel plan cannot read this transaction's own writes "
+                     "when pgcolumnar is not preloaded")
+
+
+def _np_tx(dsn, table, statements):
+    """Run `statements` on `table` in a fresh session, roll back, and return the last
+    row, or the error's text."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
+            _session(cur)
+            cur.execute("BEGIN")
+            for sql in statements:
+                cur.execute(sql.replace("%t", table))
+            return cur.fetchone()
+    except psycopg.Error as exc:
+        return str(exc)
+
+
+def test_without_preload_a_parallel_index_scan_is_refused_or_right(pgc_cluster, expect):
+    import pathlib
+    import shutil
+    import tempfile
+    from pgc_cluster import Cluster, pick_port
+
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-nopreload-"))
+    work.chmod(0o777)
+    datadir = work / "data"
+    datadir.mkdir()
+    cluster = Cluster(pgc_cluster.pg_config, "nopreload", datadir, pick_port(17))
+    try:
+        cluster.initdb()
+        cluster.start()
+        # the tables and functions, made while the library is preloaded
+        with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+            c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+            _fresh_pk(c)
+        cluster.stop()
+        with open(datadir / "postgresql.conf", "a") as fh:
+            fh.write("\nshared_preload_libraries=''\n")
+        cluster.start()
+        with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+            expect.text(str(c.execute("SELECT current_setting('shared_preload_libraries') = ''").fetchone()[0]),
+                        "True", "premise: the server now runs without pgcolumnar in shared_preload_libraries")
+        stmts = PARIDX + ["UPDATE %t SET id = id + 1000000, pad = cnt_idx('%t') WHERE id % 1000 = 1",
+                          "SELECT count(*) || '|' || min(pad) || '|' || max(pad) FROM %t WHERE id > 1000000"]
+        col = _np_tx(cluster.dsn(), "sv_pgcolumnar", stmts)
+        heap = _np_tx(cluster.dsn(), "sv_heap", stmts)
+        # the answer first: it is the claim, and the load refusal below is how it holds today
+        ok = col == heap or NOPRELOAD_LOAD in str(col) or NOPRELOAD_REFUSAL in str(col)
+        expect.text("ok" if ok else f"wrong: columnar={col} heap={heap}", "ok",
+                    "without shared_preload_libraries, a STABLE function's parallel index scan inside an "
+                    "UPDATE is refused or answers as heap does")
+        expect.text("refused" if NOPRELOAD_LOAD in str(col) else f"not refused: {col}", "refused",
+                    "without shared_preload_libraries, the library refuses to load rather than run a columnar query")
+    finally:
+        cluster.stop()
+        shutil.rmtree(work, ignore_errors=True)

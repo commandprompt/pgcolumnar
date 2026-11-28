@@ -35,8 +35,9 @@
  * and publishes the segment's handle in a shared-memory slot of its own. A
  * worker reads its lock-group leader's slot and loads the copy before it
  * consults the registry, so it filters exactly as the leader does. The slots
- * need shared_preload_libraries, which pgColumnar requires; without it nothing
- * is published and a worker sees an empty registry.
+ * need shared_preload_libraries, which pgColumnar requires; without it a
+ * leader refuses a parallel plan that would need the copy (see
+ * PgColumnarCidRegistryPublish).
  *
  * Written fresh for pgColumnar.
  *
@@ -485,7 +486,7 @@ cid_mark_payload(const CidMarkSet *m)
  *		workers will find it. An empty registry publishes no segment.
  */
 void
-PgColumnarCidRegistryPublish(void)
+PgColumnarCidRegistryPublish(Snapshot snapshot)
 {
 	int			slot = cid_slot_of(MyProc);
 	Size		len;
@@ -495,8 +496,31 @@ PgColumnarCidRegistryPublish(void)
 	uint32		nr = (uint32) list_length(CidRowRuns);
 	uint32		nm = (uint32) list_length(CidMarkSets);
 
-	if (slot < 0 || IsParallelWorker())
+	if (IsParallelWorker())
 		return;
+
+	/*
+	 * WITHOUT THE SLOTS THERE IS NO COPY, and a worker would see an empty
+	 * registry. That is harmless when nothing registered can be hidden from
+	 * this plan's snapshot; otherwise the worker would show this transaction's
+	 * own writes, so refuse rather than answer wrongly (review of #2269). The
+	 * slots exist only under shared_preload_libraries, which pgColumnar
+	 * requires. Today this cannot be reached: without preloading, no session
+	 * can load the library at all, because _PG_init defines settings fixed at
+	 * server start (unique_lock_buckets, row_lock_buckets) and PostgreSQL
+	 * refuses those after startup with a FATAL. This keeps the answer right if
+	 * that ever changes; statement_self_visibility pins the FATAL.
+	 */
+	if (slot < 0)
+	{
+		if (CidAny && (snapshot == NULL || !IsMVCCSnapshot(snapshot) ||
+					   CidMax >= snapshot->curcid))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("columnar: a parallel plan cannot read this transaction's own writes when pgcolumnar is not preloaded"),
+					 errhint("Add pgcolumnar to shared_preload_libraries and restart the server, or set max_parallel_workers_per_gather to 0.")));
+		return;
+	}
 	if (nr == 0 && nm == 0)
 	{
 		CidSharedState->slots[slot].handle = DSM_HANDLE_INVALID;

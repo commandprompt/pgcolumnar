@@ -210,7 +210,9 @@ see every write. A mark is stored as the rows it marked, not as its row group's
 bitmap. A parallel worker filters as the leader does: before workers can start,
 the leader copies the registry into a DSM segment and publishes its handle in a
 shared-memory slot of its own, and each worker loads its lock-group leader's
-copy before it first consults the registry.
+copy before it first consults the registry. The slots exist only under
+`shared_preload_libraries`; without them the leader refuses a parallel plan that
+would need the copy, with SQLSTATE 0A000.
 
 ### columnar_row_lock.c
 Serializes concurrent writers of the same row (issue #5). A columnar update is a

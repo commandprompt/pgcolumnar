@@ -26,6 +26,7 @@
  */
 #include "columnar.h"
 #include "columnar_cid_registry.h"
+#include "utils/snapmgr.h"
 
 #include "columnar_metadata.h"
 #include "columnar_customscan.h"
@@ -4405,7 +4406,7 @@ PgColumnarInitializeDSMCustomScan(CustomScanState *node, ParallelContext *pcxt,
 		PgColumnarReadSetParallelCounter(cstate->readState, counter);
 
 	/* the workers' copy of this backend's own-write registry (#2247) */
-	PgColumnarCidRegistryPublish();
+	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 static void
@@ -4417,7 +4418,7 @@ PgColumnarReInitializeDSMCustomScan(CustomScanState *node, ParallelContext *pcxt
 	pg_atomic_write_u32(counter, 0);
 
 	/* a rescan launches workers again: give them the registry as it is now (#2247) */
-	PgColumnarCidRegistryPublish();
+	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 static void

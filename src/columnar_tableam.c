@@ -1167,7 +1167,7 @@ pgcolumnar_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	pg_atomic_init_u64(&bpscan->phs_nallocated, 0);
 
 	/* the workers' copy of this backend's own-write registry (#2247) */
-	PgColumnarCidRegistryPublish();
+	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 
 	return sizeof(ParallelBlockTableScanDescData);
 }
@@ -1180,7 +1180,7 @@ pgcolumnar_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 	pg_atomic_write_u64(&bpscan->phs_nallocated, 0);
 
 	/* a rescan launches workers again: give them the registry as it is now (#2247) */
-	PgColumnarCidRegistryPublish();
+	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 /* -------------------------------------------------------------------------
@@ -3114,7 +3114,7 @@ pgcolumnar_executor_start(QueryDesc *queryDesc, int eflags)
 	 * publication.
 	 */
 	if (queryDesc->plannedstmt->parallelModeNeeded)
-		PgColumnarCidRegistryPublish();
+		PgColumnarCidRegistryPublish(queryDesc->snapshot);
 }
 
 /* -------------------------------------------------------------------------

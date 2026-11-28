@@ -7740,6 +7740,7 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 | `test_a_stable_function_parallel_sequential_scan_inside_an_update[setting]` | a STABLE function's parallel sequential scan inside an UPDATE answers as it does serially (the heap answer is #2267's) |
 | `test_a_stable_function_parallel_sequential_scan_inside_a_cte_delete[setting]` | the same inside a DELETE in a WITH clause |
 | `test_a_stable_function_parallel_sequential_scan_in_a_cursor[setting]` | the same in a cursor fetched after a later DELETE |
+| `test_without_preload_a_parallel_index_scan_is_refused_or_right` | review of #2269: on a private cluster started without pgcolumnar in `shared_preload_libraries`, the STABLE function's parallel index scan inside an UPDATE is refused or answers as heap does, never wrongly; today the library refuses to load with `cannot create PGC_POSTMASTER variables after startup` |
 | `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
 | `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
 | `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |
