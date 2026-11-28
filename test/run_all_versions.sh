@@ -306,6 +306,7 @@ SUITES=(
 	recovery_minimal_wal
 	replication
 	rewrite_group_scan
+	rewrite_snapshot
 	rewrite_storage_oid
 	rls_direct_storage
 	rls_query_paths

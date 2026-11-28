@@ -410,6 +410,7 @@ behaviour, the source of that number is named.
 - [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
+- [365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees](#365-test_rewrite_snapshotpy-a-rewrite-inside-a-repeatable-read-transaction-does-not-change-what-it-sees)
 
 ## 1. How to read a test in here
 
@@ -5711,24 +5712,24 @@ names the holder's pid.
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
 Port of `native_vacuum_race.sh` (#432). `pgcolumnar_compact_relation` used the caller's
-pre-lock statement snapshot, so a row group committed after that snapshot was invisible
-to the rewrite and was destroyed by the relfilenode swap (#295). Covered for `vacuum()`,
-`vacuum_sorted()` and `cluster()`.
+pre-lock statement snapshot, so a row group committed while it waited for its lock was
+invisible to the rewrite and was destroyed by the relfilenode swap (#295). Covered for
+`vacuum()`, `vacuum_sorted()` and `cluster()`.
 
-**The shell suite races on the clock; this one does not.** The original backgrounds a
-`psql` running `SELECT pg_sleep(5)` inside its transaction, sleeps 2 in the shell, and
-inserts during the gap — and redirects to `/dev/null` the one observation that would
-prove the race happened. If session B's snapshot were taken after A's commit, B would
-simply see all 150 rows, the maintenance call would keep them, and every check would
-pass having tested nothing.
+Session A inserts 100 rows and holds its transaction open. Session B runs one READ
+COMMITTED statement that counts the table and then calls the maintenance op. The count
+runs at once under the statement snapshot, and the op waits for its AccessExclusiveLock.
+Once B is seen waiting, A commits. No sleeps decide the order: the premise asserts that
+B's statement counted 50 and that B was waiting.
 
-The port uses two connections and no sleeps, and asserts the interleaving: B sees 50
-before A commits, and **still** sees 50 after. The second premise is the load-bearing
-one — it says A's rows are genuinely outside B's snapshot, which is the precondition for
-the defect and exactly what a timing slip destroys.
+Until #2167 this pinned B's snapshot at REPEATABLE READ before A's commit and ran the op
+inside that transaction. That is #2167's case, where the op made A's rows visible to B's
+old snapshot. The op now refuses there with 40001 (`test_rewrite_snapshot.py`), so this
+moved to the lock wait #295 describes.
 
-Removal proof: take the caller's transaction snapshot instead of a fresh post-lock one,
-and `vacuum()` destroys 100 of 150 rows — the arm reports `got 50 want 150`.
+Removal proof: read with the statement snapshot instead of a fresh post-lock one, and
+each op keeps 50 of 150 rows; the arm reports `got 50 want 150` (measured on PG 18, both
+harnesses).
 
 The three maintenance calls are driven from an inline literal loop table, because an
 f-string name would reach `compare_to_bash` as one template and could not match the
@@ -5738,7 +5739,7 @@ three literal names the shell suite states.
 
 | test | what it holds |
 | --- | --- |
-| `test_native_vacuum_race` | every arm: per maintenance call, that B pinned a snapshot of 50 and that A's commit stayed outside it, then that all 150 rows survive; and that `vacuum()` preserves the exact row set rather than only the count |
+| `test_native_vacuum_race` | every arm: per maintenance call, that B's statement counted 50 and B waited for its lock while A's transaction was open, then that all 150 rows survive; and that each op preserves the exact row set rather than only the count |
 
 ## 64. test_native_delete_vector_index.py: reading the delete vector uses its index
 
@@ -10034,11 +10035,11 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set.
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set. And an AFTER trigger of a DELETE or UPDATE that reads through an index-only scan, after a VACUUM ran inside the statement, counts what heap counts (#2169).
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit. For #2169, the writer pauses on its last target row, on an advisory lock the holder connection holds, and the VACUUM runs during that wait; the AFTER STATEMENT trigger then counts the 39 targets through an index-only scan joined to a heap list of them. Each case runs on a heap table too, and each count is checked against heap's. One case reads inside an EXCEPTION block that then fails and rolls back. Two more #2169 scenarios come from the review of #2241. A DELETE reads the table through an index-only scan in a nested statement on row 999, then fails with division by zero on row 1000. The writer's connection runs one more transaction, and fresh connections count the rows by seq, index and index-only scan, before and after a VACUUM. And a second deleter of the same rows runs while the first pauses inside its nested read: it waits, then gets serialization_failure, which is pinned against heap's outcome. The #2059 VACUUM hold is 15 s.
 
 | test | what it holds |
 | --- | --- |
@@ -10110,6 +10111,36 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_delete_over_three_row_groups_between_vacuum_steps_delete_committed_while_paused` | delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused |
 | `test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_visible_after` | delete over three row groups between vacuum's two steps: no target block all-visible after vacuum (#2059) |
 | `test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete over three row groups between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_trigger_of_delete_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger of a delete during vacuum: every target block all-visible before the writer starts |
+| `test_trigger_of_delete_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger of a delete during vacuum: vacuum ran while the writer was paused |
+| `test_trigger_of_delete_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger of a delete during vacuum: the vacuum set all 39 target blocks again |
+| `test_trigger_of_delete_during_vacuum_writer_deleted_39_rows` | an AFTER trigger of a delete during vacuum: the writer deleted 39 rows, as heap did |
+| `test_trigger_of_delete_during_vacuum_trigger_read_through_index_only_scan` | an AFTER trigger of a delete during vacuum: the trigger read through an index-only scan, as on heap |
+| `test_trigger_of_delete_during_vacuum_trigger_count_matches_heap` | an AFTER trigger of a delete during vacuum: the trigger counts none of the deleted rows, as heap does (#2169) |
+| `test_trigger_of_delete_during_vacuum_count_after_commit_matches_heap` | an AFTER trigger of a delete during vacuum: after commit none of them is counted, as on heap (#2169) |
+| `test_trigger_of_update_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger of an update during vacuum: every target block all-visible before the writer starts |
+| `test_trigger_of_update_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger of an update during vacuum: vacuum ran while the writer was paused |
+| `test_trigger_of_update_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger of an update during vacuum: the vacuum set all 39 target blocks again |
+| `test_trigger_of_update_during_vacuum_writer_updated_39_rows` | an AFTER trigger of an update during vacuum: the writer updated 39 rows, as heap did |
+| `test_trigger_of_update_during_vacuum_trigger_read_through_index_only_scan` | an AFTER trigger of an update during vacuum: the trigger read through an index-only scan, as on heap |
+| `test_trigger_of_update_during_vacuum_trigger_count_matches_heap` | an AFTER trigger of an update during vacuum: the trigger counts each updated row once, as heap does (#2169) |
+| `test_trigger_of_update_during_vacuum_count_after_commit_matches_heap` | an AFTER trigger of an update during vacuum: after commit each is counted once, as on heap (#2169) |
+| `test_trigger_in_exception_block_during_vacuum_every_target_block_all_visible_before` | an AFTER trigger reading in an EXCEPTION block during vacuum: every target block all-visible before the writer starts |
+| `test_trigger_in_exception_block_during_vacuum_vacuum_ran_while_writer_paused` | an AFTER trigger reading in an EXCEPTION block during vacuum: vacuum ran while the writer was paused |
+| `test_trigger_in_exception_block_during_vacuum_vacuum_set_all_39_target_blocks_again` | an AFTER trigger reading in an EXCEPTION block during vacuum: the vacuum set all 39 target blocks again |
+| `test_trigger_in_exception_block_during_vacuum_writer_deleted_39_rows` | an AFTER trigger reading in an EXCEPTION block during vacuum: the writer deleted 39 rows, as heap did |
+| `test_trigger_in_exception_block_during_vacuum_trigger_read_through_index_only_scan` | an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger read through an index-only scan, as on heap |
+| `test_trigger_in_exception_block_during_vacuum_trigger_count_matches_heap` | an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger counts none of the deleted rows, as heap does (#2169) |
+| `test_trigger_in_exception_block_during_vacuum_count_after_commit_matches_heap` | an AFTER trigger reading in an EXCEPTION block during vacuum: after commit none of them is counted, as on heap (#2169) |
+| `test_delete_that_fails_after_nested_read_writer_outcome_matches_heap` | a delete that fails after a nested read: the nested read ran, the delete failed with 22012 and the next transaction ran, as on heap (#2169) |
+| `test_delete_that_fails_after_nested_read_counts_use_three_scans` | a delete that fails after a nested read: the counts use a seq scan, an index scan and an index-only scan (#2169) |
+| `test_delete_that_fails_after_nested_read_every_row_live_in_new_transaction` | a delete that fails after a nested read: every row is live by each scan in a new transaction, as on heap (#2169) |
+| `test_delete_that_fails_after_nested_read_every_row_live_after_vacuum` | a delete that fails after a nested read: every row is live by each scan after vacuum, as on heap (#2169) |
+| `test_second_deleter_during_nested_read_first_paused` | a second deleter during the first's nested read: the first deleter was paused inside its nested read (#2169) |
+| `test_second_deleter_during_nested_read_waits_for_first` | a second deleter during the first's nested read: the second deleter waits for the first, as on heap (#2169) |
+| `test_second_deleter_during_nested_read_first_deletes_1000` | a second deleter during the first's nested read: the first deleter deletes its 1000 rows, as on heap (#2169) |
+| `test_second_deleter_during_nested_read_second_fails_40001` | a second deleter during the first's nested read: the second then fails with serialization_failure, where heap deletes the other 500 (#2169) |
+| `test_second_deleter_during_nested_read_rows_left` | a second deleter during the first's nested read: 19000 rows remain, where heap leaves 18500 (#2169) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 
@@ -12422,7 +12453,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A heap table with a primary key gets 42809 before that refusal, and a missing file gets the refusal before the file is opened (#2209). A `CREATE INDEX` that queues between the loaders' locks on the table no longer hangs the load, a loader that exits before it opens the table fails the load, a cancelled load returns only once its prepared transactions are gone, and a single table with a trigger on INSERT is refused with more than one worker; a loader's refusal carries its HINT (#2187). On PostgreSQL 18 and later it refuses a temporal primary key too, whose one index is both unique and exclusion; the test needs btree_gist and declines before 18, which has no WITHOUT OVERLAPS (#2200). Into a partitioned target it reads the fields up to the key with COPY's text escapes, so a backslash and a TAB before the key, a key in octal or hex escapes, a `\N` key, a key that only starts with `\N`, `\x` with no hex digit, and a key that decodes to a NUL or a non-UTF-8 byte give heap `COPY`'s outcome and rows with 2 and 4 workers (#2202). A load into a table with a projection fills the projection (#2092). A load is refused with 55000, not left waiting, when the caller's transaction holds a lock that conflicts with the workers' ROW EXCLUSIVE on the target or a partition (#2183), or when it has already written to the target or a partition, whose storage-row lock the workers would wait on (#2211). A file that changes newline style (LF or CRLF), or has a `\.\r\n` line in a file with LF line ends, at a range start is refused with heap `COPY`'s SQLSTATE and message, and a file that keeps one style still loads (#2189). Probe files pin the first-line scan: a first line longer than one 64 KiB read, a CR or a backslash at the edge of a read, an escaped CR, and a style decided by the file's first byte (#2221 review). The workers read the file in the caller's `client_encoding`, and every split steps over whole characters in SJIS, BIG5, GBK and GB18030, where a character's second byte can be `0x5C`, so loads under those encodings, and under a database default `client_encoding` that is not the caller's, store what heap `COPY` stores; LATIN1, UTF8 and SJIS in a `SQL_ASCII` database, where such a byte is a backslash, still load as heap `COPY` does (#2188). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database..
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A heap table with a primary key gets 42809 before that refusal, and a missing file gets the refusal before the file is opened (#2209). A `CREATE INDEX` that queues between the loaders' locks on the table no longer hangs the load, a loader that exits before it opens the table fails the load, a cancelled load returns only once its prepared transactions are gone, and a single table with a trigger on INSERT is refused with more than one worker; a loader's refusal carries its HINT (#2187). The trigger refusal also comes before the file is opened (#2252). On PostgreSQL 18 and later it refuses a temporal primary key too, whose one index is both unique and exclusion; the test needs btree_gist and declines before 18, which has no WITHOUT OVERLAPS (#2200). Into a partitioned target it reads the fields up to the key with COPY's text escapes, so a backslash and a TAB before the key, a key in octal or hex escapes, a `\N` key, a key that only starts with `\N`, `\x` with no hex digit, and a key that decodes to a NUL or a non-UTF-8 byte give heap `COPY`'s outcome and rows with 2 and 4 workers (#2202). A load into a table with a projection fills the projection (#2092). A load is refused with 55000, not left waiting, when the caller's transaction holds a lock that conflicts with the workers' ROW EXCLUSIVE on the target or a partition (#2183), or when it has already written to the target or a partition, whose storage-row lock the workers would wait on (#2211). A file that changes newline style (LF or CRLF), or has a `\.\r\n` line in a file with LF line ends, at a range start is refused with heap `COPY`'s SQLSTATE and message, and a file that keeps one style still loads (#2189). Probe files pin the first-line scan: a first line longer than one 64 KiB read, a CR or a backslash at the edge of a read, an escaped CR, and a style decided by the file's first byte (#2221 review). The workers read the file in the caller's `client_encoding`, and every split steps over whole characters in SJIS, BIG5, GBK and GB18030, where a character's second byte can be `0x5C`, so loads under those encodings, and under a database default `client_encoding` that is not the caller's, store what heap `COPY` stores; LATIN1, UTF8 and SJIS in a `SQL_ASCII` database, where such a byte is a backslash, still load as heap `COPY` does (#2188). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database..
 
 ### Every test
 
@@ -12562,6 +12593,8 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_an_after_row_trigger_with_two_workers` | a single table with an AFTER INSERT row trigger that inserts into a columnar table with a primary key is refused with 2 workers, with 0A000 and the hint; main failed with 40P01 (#2187) |
 | `test_parallel_copy_refuses_a_before_row_trigger_with_two_workers` | the same with a BEFORE INSERT row trigger (#2187) |
 | `test_parallel_copy_refuses_a_statement_trigger_with_four_workers` | the same with an AFTER INSERT statement trigger and 4 workers; main hung into 57014 (#2187) |
+| `test_parallel_copy_refuses_a_missing_file_for_a_trigger_table_before_opening_it` | a missing file into `t_tga`, the AFTER INSERT row trigger table, with 2 workers gets the 0A000 trigger refusal and its hint, not `58P01`: the refusal comes before the file is opened (#2252) |
+| `test_parallel_copy_gives_a_missing_file_for_a_trigger_table_with_one_worker_58P01` | control: the same call with 1 worker gets `58P01 could not open file "..." for reading: No such file or directory`, so the path is really missing (#2252) |
 | `test_parallel_copy_refuses_a_trigger_that_writes_a_fresh_columnar_table` | the same for an AFTER INSERT row trigger that writes a columnar table with no index and no storage row yet, which hung the load on the first loader's storage-row lock; nothing is loaded or written and no prepared transaction is left (#2187) |
 | `test_parallel_copy_trigger_refusals_load_and_write_nothing` | the three refused tables and the trigger's keyed table stay empty, and no prepared transaction is left (#2187) |
 | `test_parallel_copy_refuses_a_trigger_created_after_its_check` | a trigger created after the first check, while a second session holds SHARE on the table, is refused by the loaders with 0A000 and the hint; nothing is loaded or written through it (#2187) |
@@ -12612,6 +12645,20 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_loaders_read_the_callers_client_encoding` | (#2188) parametrized by the shell's two names: with the database default SJIS and the caller's UTF8, a load of UTF-8 text into a single table and 8 range partitions gives heap `COPY`'s outcome, rows and row hash with 2, 3 and 4 workers; before the fix the loaders read it as SJIS |
 | `test_parallel_copy_encoding_premise_controls` | (#2188) `premise: ...`: heap `COPY` loads 2000 rows each from `latin1` under LATIN1, `utf8` under UTF8 and, in the SQL_ASCII database, `ascii` under SJIS, storing row 1 as `61 c3 a9 0a 62`, `61 c3 a9 0a 62` and `61 83 0a 62` |
 | `test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so` | (#2188) parametrized by the shell's six names: where 0x5C after a high-bit byte is a backslash (LATIN1, UTF8, and SJIS in a SQL_ASCII database, which core does not convert), a high-bit byte before an escaped newline loads into a single table and 8 range partitions with heap `COPY`'s outcome, rows and row hash, 2, 3 and 4 workers |
+| `test_parallel_copy_share_holder_cycle_gets_40p01` | (#2229) another session holds SHARE on `t_dk` (`LOCK TABLE`), waits until a lock request on `t_dk` queues, then asks for SHARE on `t_dk4`, which the caller wrote before its 2-worker `parallel_copy` into `t_dk` (10 s statement_timeout): one side gets 40P01 and the other commits, both end within 5 s, `t_dk`/`t_dk4` hold the surviving side's rows, no prepared transaction. On main the caller waited on a latch for a coordinator queued behind the session: `A committed, B 57014 \| took 10012 ms` |
+| `test_parallel_copy_create_index_cycle_gets_40p01` | (#2229) the same cycle with the session's SHARE taken by `CREATE INDEX t_dk_id` in its transaction; the index is valid exactly when the session committed |
+| `test_parallel_copy_lock_timeout_bounds_the_wait` | (#2229) parametrized by the shell's two names: another session holds SHARE for 6 s on the target, and on a partition of a partitioned target; the caller's `lock_timeout = 1s` ends the load with 55P03 within 4 s, loading nothing. On main both loaded after 6 s |
+| `test_parallel_copy_waits_in_the_lock_manager_before_any_worker` | (#2229) parametrized by the shell's two names: while another session holds SHARE on the target (or a partition) for 6 s, the caller's `pg_stat_activity` wait is `Lock:relation` and no parallel_copy worker exists, and both stay so for a further second of samples (the review of #2244: a single sample let a caller that locked after starting the coordinator pass). On main the caller waited on `IPC:BgworkerShutdown` with the coordinator running |
+| `test_parallel_copy_waits_for_a_share_holder_then_loads` | (#2229) control, parametrized by the shell's two names: with no cycle and no lock_timeout, the same loads return 5000 once the lock is released, with no prepared transaction |
+| `test_parallel_copy_own_lock_refusal_before_the_wait` | (#2229) control: the caller's own SHARE on `t_dl` is refused with #2183's 55000 within 3 s while another session holds SHARE on `t_dl` for 5 s, so the refusal comes before the wait |
+| `test_parallel_copy_own_write_refusal_before_the_wait` | (#2229) control: the caller's own `INSERT` into `t_dlp` (reaching `t_dlp_1`) is refused with #2211's 55000 within 3 s while another session holds SHARE on `t_dlp_2` for 5 s |
+| `test_parallel_copy_index_queued_behind_the_callers_lock_does_not_hang_it` | (#2229) the caller holds ROW EXCLUSIVE on `t_dq` (`LOCK TABLE`) and waits until `CREATE INDEX t_dq_id` queues behind it, then runs a 2-worker load: it returns 5000 within 8 s, the index builds valid after it, no prepared transaction. On main the coordinator queued behind the index and the load hit its 10 s statement_timeout |
+| `test_parallel_copy_index_on_an_unreached_partition_does_not_hang_it` | (#2229) control: with the second loader held 3 s (`parallel_copy_open_hold_ms`), `CREATE INDEX` on `t_dpi_2` runs once the first loader has the parent; the load returns 5000 and the index builds valid after it. With the caller's lock but no wait on the run locks, the loader queued behind the index and the load hung |
+| `test_parallel_copy_run_lock_waits_are_not_lock_contention` | (#2229) a 2-worker load under `lock_timeout = 1ms`, `deadlock_timeout = 1ms` and `log_lock_waits = on` returns 5000, and the server log gains no `still waiting for ShareLock on advisory lock` line |
+| `test_parallel_copy_own_lock_on_a_reached_table_gets_40p01` | (#2216, #2229) parametrized by the shell's five names: in one transaction under a 10 s statement_timeout, a load after `LOCK TABLE ... IN EXCLUSIVE MODE` on the table a foreign key references (2 workers), after ACCESS EXCLUSIVE on the table an INSERT trigger writes (1 worker), after `ALTER SEQUENCE ... RESTART` on the sequence a BEFORE INSERT trigger calls (1 worker), after an `INSERT` into a fresh columnar table an INSERT trigger writes (1 worker), and with `FOR UPDATE` on `t_dfk_ref` row 4000, which only the second loader's rows reach (2 workers; a mutant that waited for loader 0 only hung here, review of #2244), gets 40P01 within 5 s, loads nothing and leaves no prepared transaction. On main each hit 57014 at 10 s |
+| `test_parallel_copy_fresh_target_cycle_never_gives_xx000` | (#2229, review of #2244) three runs of a cycle through the coordinator's storage-row step: A inserts into the fresh `t_df3`, waits until a class-102 storage-row lock request queues, then asks for SHARE on `t_df4`, which B wrote before its 2-worker load into `t_df3`. Each run gives 40P01 to exactly one of A and B, in under 5 s, with the tables holding the surviving side's rows and no prepared transaction. At 7d650b77 the coordinator was the victim in most runs and the caller read XX000 `coordinator exited without reporting a result` |
+| `test_parallel_copy_a_coordinator_victim_reports_40p01` | (#2229, review of #2244) the same cycle with `deadlock_timeout` at 5 s in A's and B's sessions, so the coordinator's 1 s check picks it: B reads `40P01 pgcolumnar.parallel_copy failed: deadlock detected` and A commits |
+| `test_parallel_copy_callers_storage_lock_gives_40p01` | (#2229, review of #2244) the caller holds ACCESS EXCLUSIVE on `pgcolumnar.storage` and loads the fresh `t_dsto` with 2 workers: 40P01 within 5 s, 0 rows, no prepared transaction; 7d650b77 gave XX000 |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 
@@ -13893,7 +13940,7 @@ Every test makes one check under the shell's name. Refusals are a SQLSTATE plus 
 
 ## 329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused
 
-The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA. A server that resets each kept-alive connection before any byte of an answer is read 30 times without a failure, because the reset is retried once on a new connection; a reset after part of a status line is refused (#2198).
+The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA. A server that resets each kept-alive connection before any byte of an answer is read 30 times without a failure, because the reset is retried once on a new connection; a reset after part of a status line is refused (#2198). A server that closes each kept-alive connection with a FIN and no `close_notify`, before any byte of an answer, is read 30 times without a failure too: OpenSSL 3 reports that close as an unexpected EOF, which is retried once on a new connection (#2246). The same EOF after half a body, the same EOF on a fresh connection, bytes that are not a TLS record on a kept-alive connection, and a record whose MAC does not verify on one, are each refused with 08006 and their own message, after one GET.
 
 ### Every test
 
@@ -13915,6 +13962,10 @@ Every test makes one check under the shell's name. A refusal is 08006, the modul
 | `test_the_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_reads_over_tls_from_a_server_that_resets_each_kept_alive_connection_all_succeed` | F: 30 reads over TLS from a server that resets each kept-alive connection all succeed |
 | `test_a_reset_over_tls_after_part_of_a_status_line_is_refused` | F: a reset over TLS after part of a status line is refused |
+| `test_reads_over_tls_from_a_server_that_closes_each_kept_alive_connection_all_succeed` | G: 30 reads over TLS from a server that closes each kept-alive connection without close_notify all succeed |
+| `test_the_server_closed_a_kept_alive_connection_on_each_read` | G: the server closed a kept-alive connection with no answer on each of the 30 reads |
+| `test_the_eof_or_tls_error_is_refused[...]` | G: {label} is refused: 08006 and the whole message, one test per label (an EOF over TLS after half a body, an EOF over TLS on a fresh connection, a TLS record error on a kept-alive connection, a bad record MAC on a kept-alive connection) |
+| `test_the_eof_or_tls_error_sent_one_get[...]` | G: {label} sent 1 GET, one test per label |
 | `test_ssl_cert_dir_alone_trusts_the_ca` | E: SSL_CERT_DIR alone trusts the CA (count(*) over https) |
 | `test_no_backend_was_terminated_by_a_signal` | survival: no backend was terminated by a signal |
 
@@ -15236,3 +15287,32 @@ Removal proof, each failing a test here:
 | --- | --- |
 | `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read, with or without a trailing comment; a comment line, a step's timeout and the next job's are not; a job without one, a missing job, and a job that gives the key twice read as none |
 | `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job has exactly one timeout of its own, between 1.5 and 2 times `MEASURED_MAX_MINUTES` |
+
+## 365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees
+
+`compact_rewrite`, `recluster`, `cluster`, `vacuum` and `vacuum_sorted` read the newest committed rows and write them as the calling transaction's own. On main before the fix, a REPEATABLE READ transaction that ran one counted a row another session inserted after its snapshot and lost a row another session deleted after it (#2167). Heap's `CLUSTER` keeps both as the snapshot saw them. At REPEATABLE READ and SERIALIZABLE the verb now raises 40001 when its read and the transaction's snapshot differ over the groups it rewrites, and runs when they agree. The maintenance daemon forces READ COMMITTED, as core's autovacuum does.
+
+### Every test
+
+Each arm reads `ok|<A's count|sum after the verb>|<count|sum after commit>`, or `<SQLSTATE>|<message>|<count|sum after the rollback>`. The table holds ids 1-50 (sum 1275), with 51-60 deleted. Session B commits its change after A's snapshot and before A's verb. Both sessions run with a statement_timeout and a lock_timeout.
+
+| test | what it holds |
+| --- | --- |
+| `test_heap_cluster_keeps_the_snapshot` | control: heap's `CLUSTER` at REPEATABLE READ, after B inserted row 70 and deleted row 3, still counts 50 rows summing 1275 |
+| `test_recluster_refuses_an_insert_after_the_snapshot` | `recluster` after B inserted row 70 raises 40001 with the message; on main A counted 51 rows summing 1345 |
+| `test_recluster_refuses_a_delete_after_the_snapshot` | `recluster` after B deleted row 3 raises 40001; on main A counted 49 rows summing 1272 |
+| `test_recluster_refuses_at_serializable` | the same insert arm at SERIALIZABLE raises 40001 |
+| `test_compact_rewrite_refuses_a_delete_in_its_group` | `compact_rewrite` after B deleted a row in the group it rewrites raises 40001 |
+| `test_cluster_refuses_an_insert_after_the_snapshot` | `cluster` after B inserted row 70 raises 40001 |
+| `test_cluster_refuses_a_delete_after_the_snapshot` | `cluster` after B deleted row 3 raises 40001 |
+| `test_cluster_refuses_groups_another_compact_rewrite_replaced` | `cluster` after B deleted five rows of a second group and its `compact_rewrite` replaced both groups raises 40001: both snapshots list two groups, with different numbers and no deleted rows in the new ones; on main A counted 55 of the 60 rows it saw |
+| `test_recluster_hilbert_refuses_an_insert_after_the_snapshot` | `recluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_cluster_hilbert_refuses_an_insert_after_the_snapshot` | `cluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_vacuum_refuses_a_change_after_the_snapshot` | `vacuum` after B's insert and delete raises 40001 |
+| `test_vacuum_sorted_refuses_a_change_after_the_snapshot` | `vacuum_sorted` after B's insert and delete raises 40001 |
+| `test_every_verb_runs_with_nothing_changed` | control: with nothing changed, all five verbs run at REPEATABLE READ, each in its own statement, and A still counts 50 rows summing 1275 |
+| `test_compact_rewrite_runs_past_an_insert_elsewhere` | `compact_rewrite` runs when B only inserted a row into a new group, which it does not rewrite, and A still does not see that row |
+| `test_recluster_runs_after_own_writes` | `recluster` runs after A's own insert and delete in the same transaction, and A sees both: 50 rows summing 1351 |
+| `test_cluster_runs_after_own_writes` | the same for `cluster` |
+| `test_read_committed_sees_what_its_statement_sees` | control: at READ COMMITTED, `recluster` runs and A sees B's insert and delete, as any statement would |
+| `test_the_daemon_runs_at_read_committed` | with `default_transaction_isolation = 'repeatable read'` set by ALTER SYSTEM, the daemon's `compact_rewrite` rewrites a group that a delete changed during its 3 s hold, and logs the rewrite, not a skip. Settings are reset at the end |

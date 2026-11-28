@@ -480,7 +480,18 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 void
 PgColumnarFlushDeleteVectorForRelation(Relation rel)
 {
-	Oid			relid = RelationGetRelid(rel);
+	PgColumnarFlushDeleteVectorForRelid(RelationGetRelid(rel));
+}
+
+/*
+ * PgColumnarFlushDeleteVectorForRelid
+ *		The same, by relation OID, for a caller that has a plan rather than an
+ *		open relation (the index-only-scan flush at executor start, #2169).
+ *		Does nothing when this backend holds no marks for the relation.
+ */
+void
+PgColumnarFlushDeleteVectorForRelid(Oid relid)
+{
 	SubTransactionId current = GetCurrentSubTransactionId();
 	ListCell   *lc;
 
