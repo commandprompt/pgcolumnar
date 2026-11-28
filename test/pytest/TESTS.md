@@ -411,6 +411,8 @@ behaviour, the source of that number is named.
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
 - [365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees](#365-test_rewrite_snapshotpy-a-rewrite-inside-a-repeatable-read-transaction-does-not-change-what-it-sees)
+- [366. test_vacuum_retire_visibility.py: a reader during lazy VACUUM's retirement does not bring back a deleted row as NULLs](#366-test_vacuum_retire_visibilitypy-a-reader-during-lazy-vacuums-retirement-does-not-bring-back-a-deleted-row-as-nulls)
+- [367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile](#367-test_vacuum_retire_snapshotpy-a-group-lazy-vacuum-retires-stays-retired-when-another-session-reads-it-meanwhile)
 
 ## 1. How to read a test in here
 
@@ -15408,3 +15410,111 @@ Each arm reads `ok|<A's count|sum after the verb>|<count|sum after commit>`, or 
 | `test_cluster_runs_after_own_writes` | the same for `cluster` |
 | `test_read_committed_sees_what_its_statement_sees` | control: at READ COMMITTED, `recluster` runs and A sees B's insert and delete, as any statement would |
 | `test_the_daemon_runs_at_read_committed` | with `default_transaction_isolation = 'repeatable read'` set by ALTER SYSTEM, the daemon's `compact_rewrite` rewrites a group that a delete changed during its 3 s hold, and logs the rewrite, not a skip. Settings are reset at the end |
+
+## 366. test_vacuum_retire_visibility.py: a reader during lazy VACUUM's retirement does not bring back a deleted row as NULLs
+
+The twin of `test/vacuum_retire_visibility.sh` (#2263). Core runs a lazy VACUUM with PROC_IN_VACUUM set, and other backends leave its xid out of their snapshots. The VACUUM's retirement of a fully deleted row group deletes catalog rows. Before the fix, a reader that met one of those rows while the VACUUM was open took the delete for aborted and set HEAP_XMAX_INVALID, so that delete was lost at commit: the group's `row_group` row survived without its `column_chunk` and `delete_vector` rows, and the deleted row came back with every column NULL.
+
+Part 1 makes the window by hand. A blocker connection holds an uncommitted `free_space` row with the key the retirement inserts last, so the VACUUM waits there after its catalog deletes. A transaction commits so the next snapshot covers the VACUUM's xid. A reader then runs a statement it prepared and planned before the VACUUM (`plan_cache_mode = force_generic_plan`), because planning reads every `delete_vector` row of the table and would keep those deletes too. Part 2 is the reader's guard: a group with data and no `column_chunk` rows (made by deleting them by hand) is refused with XX001 by the sequential scan and by the index fetch, a group in the same table without the damage still reads, a table with no stored column (groups with no chunks and no bytes) still reads, and an aborted insert's index entry returns no row. Part 3 holds a VACUUM in its visibility-map step (`pgcolumnar.vm_set_hold_ms`) and checks that a VACUUM of another table still retires a group deleted after the held one started, so the held VACUUM still has PROC_IN_VACUUM there. Part 2 also reads a table that got a column after its data was written, by seq, index and index-only scans (#2266, review B2). Part 4 (#2266, review B1) runs INSERT ... ON CONFLICT DO NOTHING and DO UPDATE on a key whose row another connection is flushing, held by `pgcolumnar.flush_hold_ms` just before the flush inserts its row_group row, which a flush now inserts last.
+
+Removal proof, PG 17 and PG 18, each in both harnesses with the same names:
+
+| mutant | shell | twin |
+| --- | --- | --- |
+| no fix: main's `src/` | 6 red: the four #2263 arms and the two refusals | the same 6 |
+| the leave call dropped (the guard kept) | 4 red: the four #2263 arms; the scans fail with XX001 instead of returning the NULL row | the same 4 |
+| PROC_IN_VACUUM left after the retirement | the same 4 | the same 4 |
+| cleared in `MyProc` only, not in the `ProcGlobal` mirror | the same 4 | the same 4 |
+| left at the start of `relation_vacuum`, before the visibility-map step | `a vacuum of vb retires its dead group while va's vacuum is held` | the same |
+| the sequential scan's guard call dropped | the sequential refusal (`NULL:NULL,2:two`) | the same |
+| the index fetch's guard call dropped | the fetch refusal (`NULL:NULL`) | the same |
+| the guard without its `byte_length` condition | the two no-column-table arms | the same 2 |
+| the guard refusing every group that has chunks | 23 red | the same 23 |
+| the flush inserting the row_group row first, with the hold before the chunks (#2266 review B1) | the four part-4 arms: the upserts never wait and fail with XX001 | the same 4 |
+| the guard refusing a group with fewer chunks than the table has columns (#2266 review B2) | the seq and index-fetch arms of the added-column table | the same 2 |
+
+Two mutants pass: the flag cleared in the `ProcGlobal` mirror but not in `MyProc` (snapshots and horizons read only the mirror, and core clears both at transaction end), and every status flag cleared instead of PROC_IN_VACUUM alone (for a VACUUM a statement runs the flags are exactly PROC_IN_VACUUM; only an autovacuum worker would also lose PROC_IS_AUTOVACUUM, and no test drives one into a retirement).
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_premise_two_row_groups` | premise: two one-row groups before the vacuum |
+| `test_premise_first_group_fully_deleted` | premise: the first group's delete_vector counts its one row deleted |
+| `test_premise_horizon` | premise: no session is older than the delete |
+| `test_premise_vacuum_waits` | premise: the VACUUM waits on the blocker's `free_space` key, after its catalog deletes |
+| `test_premise_reader_ran` | premise: the prepared reader returned id 2 while the VACUUM was open |
+| `test_premise_vacuum_finished` | premise: the VACUUM finished once the blocker rolled back |
+| `test_premise_group_retired` | premise: the retired group's range is in the free list, so the retirement ran |
+| `test_row_group_row_gone` | the retired group's `row_group` row is gone (#2263) |
+| `test_seq_scan_matches_heap` | a sequential scan returns heap's rows, no all-NULL row (#2263) |
+| `test_no_all_null_row` | no row reads with every column NULL (#2263) |
+| `test_index_scan_deleted_id` | an index scan for the deleted id returns no row (#2263) |
+| `test_premise_index_scan` | premise: that query is an Index Scan |
+| `test_premise_damaged_group` | premise: the damaged group has data and no `column_chunk` rows |
+| `test_damaged_seq_refused` | a sequential scan of that group fails with XX001 and names the group and table |
+| `test_damaged_fetch_refused` | an index fetch of a row in that group fails with XX001 and names the group and table |
+| `test_other_group_fetch` | an index fetch of a row in another group of that table returns the row |
+| `test_premise_no_column_shape` | premise: a table with no stored column has two groups with no chunks and no bytes |
+| `test_no_column_seq` | a sequential scan of that table reads both rows, after a column was added |
+| `test_no_column_fetch` | an index fetch from that table reads both rows |
+| `test_aborted_index_entry` | an index entry whose row no group covers (an aborted insert) returns no row |
+| `test_premise_va_held` | premise: the VACUUM of va is held in its visibility-map step |
+| `test_vb_retired_while_va_held` | a VACUUM of vb retires a group deleted after va's VACUUM started, while va's is held |
+| `test_premise_va_still_held` | premise: va's VACUUM was still held at that moment |
+| `test_no_crash` | no backend terminated by signal over the run |
+| `test_premise_added_column_chunks` | premise: a 1000-row table given a column after its data was written has chunks for two columns only; its index is built before the column is added, so the index exists whatever the reader does |
+| `test_added_column_seq` | a sequential scan of it reads every row with the added column's default (#2266 B2) |
+| `test_added_column_fetch` | an index fetch from it reads the row with the default (#2266 B2) |
+| `test_premise_added_column_ios_plan` | premise: the third read is an Index Only Scan |
+| `test_added_column_ios` | an index-only scan of it reads the row (#2266 B2) |
+| `test_premise_upsert_nothing_writer_held` | premise: the writer of id 1 is held by `pgcolumnar.flush_hold_ms` before its row_group row |
+| `test_upsert_nothing_waits` | an upsert DO NOTHING of id 1 waits on a lock while the writer is held (#2266 B1) |
+| `test_premise_upsert_nothing_still_held` | premise: the writer was still held while the upsert waited |
+| `test_upsert_nothing_skips` | the upsert then returns INSERT 0 0, as on main (#2266 B1) |
+| `test_premise_upsert_nothing_writer_committed` | premise: the writer's INSERT committed |
+| `test_upsert_nothing_row` | id 1 holds the writer's row |
+| `test_premise_upsert_update_writer_held` | premise: the writer of id 2 is held before its row_group row |
+| `test_upsert_update_waits` | an upsert DO UPDATE of id 2 waits on a lock while the writer is held (#2266 B1) |
+| `test_premise_upsert_update_still_held` | premise: the writer was still held while the upsert waited |
+| `test_upsert_update_0a000` | the upsert then fails with 0A000, main's row-locking limitation (#2266 B1) |
+| `test_premise_upsert_update_writer_committed` | premise: the writer's INSERT committed |
+| `test_upsert_update_row` | id 2 holds the writer's row |
+
+## 367. test_vacuum_retire_snapshot.py: a group lazy VACUUM retires stays retired when another session reads it meanwhile
+
+The twin of `test/vacuum_retire_snapshot.sh`, with the same 25 check names (#2264). Core sets PROC_IN_VACUUM for a lazy VACUUM, and GetSnapshotData leaves that backend's XID out of every other snapshot. pgColumnar's lazy VACUUM deletes a retired group's catalog rows and inserts its free_space row. A reader that saw those rows while the VACUUM ran took its XID for aborted and set a permanent hint bit. The group came back after the commit, while its range was also free, and the next VACUUM that retired it failed with 23505 on `free_space_pkey`.
+
+The race is ordered by locks. Three single-row inserts make three groups, and the first two are deleted. One connection locks the second group's row_group row FOR UPDATE and waits on advisory lock 2264. VACUUM retires the first group and waits on that row lock. `txid_current()` commits, and the reader reads the first group's rows. Variant `dv` reads its row_group and delete_vector rows; variant `rg` reads only row_group. Every wait is bounded.
+
+The fix is #2263's `pgcolumnar_leave_lazy_vacuum`. Removal proof: on main, and with each mutant of that fix (the call dropped, only `MyProc->statusFlags` cleared, the call after the retirement), the same six checks are red in both harnesses on PG 17 and PG 18.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_dv_premise_three_groups` | premise: three single-row inserts made three row groups |
+| `test_dv_premise_locker_waits` | premise: the connection holding the second group's row lock waits on advisory lock 2264 |
+| `test_dv_premise_vacuum_paused` | premise: VACUUM waits on that row lock, inside its retirement |
+| `test_dv_premise_xid_below_committed` | premise: the paused VACUUM's XID is below one that committed after it, so a new snapshot's xmax is above it |
+| `test_dv_premise_reader_saw_group` | premise: the reader saw the first group's row_group and delete_vector rows (`1|1`) |
+| `test_dv_premise_still_paused` | premise: VACUUM was still waiting after the read |
+| `test_dv_premise_vacuum_finished` | premise: the paused VACUUM finished with `VACUUM` |
+| `test_dv_group_stays_retired` | the first group's row_group row is gone after the VACUUM commits. On main it is live again (1) |
+| `test_dv_no_free_live_overlap` | no free_space range overlaps a live row group. On main 1 does |
+| `test_dv_free_space_sum` | control: free_space holds exactly the page footprints of the two retired groups |
+| `test_dv_next_vacuum_no_23505` | the next VACUUM returns `VACUUM`. On main it fails with 23505 on `free_space_pkey` |
+| `test_dv_table_rows` | the table returns only row `3:p3`. With #2263's reader check and no fix, the scan fails with XX001 (a live group with no column chunks) |
+| `test_rg_premise_three_groups` | as the dv premise, for the variant whose reader reads only row_group |
+| `test_rg_premise_locker_waits` | as the dv premise |
+| `test_rg_premise_vacuum_paused` | as the dv premise |
+| `test_rg_premise_xid_below_committed` | as the dv premise |
+| `test_rg_premise_reader_saw_group` | premise: the reader saw the first group's row_group row (`1`) |
+| `test_rg_premise_still_paused` | as the dv premise |
+| `test_rg_premise_vacuum_finished` | as the dv premise |
+| `test_rg_group_stays_retired` | the first group's row_group row is gone. On main it is live again (1) |
+| `test_rg_no_free_live_overlap` | no free_space range overlaps a live row group. On main 1 does |
+| `test_rg_free_space_sum` | control: free_space holds exactly the two retired groups' page footprints |
+| `test_rg_table_rows` | the table returns only row `3:p3`. On main before #2263 it also returns `NULL:NULL`, the retired group's deleted row with every column NULL; with #2263's reader check and no fix, the scan fails with XX001 |
+| `test_rg_next_vacuum_succeeds` | control: the next VACUUM returns `VACUUM` |
+| `test_no_backend_crashed` | no `terminated by signal` in the server log during the two races |
