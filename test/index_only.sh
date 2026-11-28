@@ -361,17 +361,19 @@ wait "$H_PID" 2>/dev/null || true
 # commits during the pause.
 # ---------------------------------------------------------------------------
 echo "-- phase 7: a delete commits between vacuum's computation and its set (#2059)"
-# vm_mid TABLE ROWS DML BEFORE AFTER IOS [CLEAN]: load ROWS rows into TABLE and
-# vacuum it; then start a VACUUM held by vm_set_hold_ms, run and commit DML
-# during the hold, and let the VACUUM finish. BEFORE, AFTER, IOS and the
-# optional CLEAN are queries run before the hold, and after the VACUUM. Sets
-# vm_before, vm_held, vm_still, vm_after, vm_ios and vm_clean.
+# vm_mid TABLE ROWS DML BEFORE AFTER IOS [CLEAN [SETUP]]: load ROWS rows into
+# TABLE and vacuum it, then run the optional SETUP; then start a VACUUM held by
+# vm_set_hold_ms, run and commit DML during the hold, and let the VACUUM
+# finish. BEFORE, AFTER, IOS and the optional CLEAN are queries run before the
+# hold, and after the VACUUM. Sets vm_before, vm_held, vm_still, vm_after,
+# vm_ios and vm_clean.
 vm_mid() {
-	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" clean="${7:-}" i vpid plan held
+	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" clean="${7:-}" setup="${8:-}" i vpid plan held
 	psql_run "CREATE TABLE $tbl (id int, pad int) USING pgcolumnar;"
 	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, $rows) g;"
 	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
 	psql_run "VACUUM $tbl;"
+	[ -n "$setup" ] && psql_run "$setup"
 	vm_before="$(q "$before")"
 	held="SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM $tbl;' AND wait_event_type = 'Extension';"
 
@@ -433,6 +435,84 @@ check "delete over three row groups between vacuum's two steps: the delete commi
 check "delete over three row groups between vacuum's two steps: no target block all-visible after vacuum" "$vm_after" "0"
 check "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
 
+# #2170: the second pass clears only the bits this VACUUM flipped from 0 to 1.
+# vr_keep's first 20,000 rows are row group 1, blocks 1..67, all set by the
+# load's VACUUM. A second INSERT of 20,000 rows after it starts row group 2 at
+# row 150001, and its blocks 516..583 are not set yet. During the hold a DELETE
+# takes ids 300..400 (block 1) and 1500..1600 (block 5), so group 1 leaves the
+# second computation while group 2 stays in it. The writer's clears run before
+# the set, so the set flips blocks 1 and 5 back, and only the second pass can
+# clear them. The other 65 blocks of group 1 hold no deleted row and were set
+# before the hold: they keep their bits. Blocks 516..583 are flipped by this
+# VACUUM and stay all-visible at the second computation: they keep theirs too.
+KEEP_G1="SELECT b FROM generate_series(1, 67) b"
+KEEP_DEL="SELECT b FROM (VALUES (1), (5)) v(b)"
+KEEP_CLEAN="SELECT b FROM generate_series(1, 67) b WHERE b NOT IN (1, 5)"
+KEEP_G2="SELECT b FROM generate_series(516, 583) b"
+keep_vis() { echo "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_keep', b)) FROM ($1) t"; }
+vm_mid vr_keep 20000 "DELETE FROM vr_keep WHERE id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600;" \
+	"SELECT ($(keep_vis "$KEEP_G1")) || '|' || ($(keep_vis "$KEEP_G2"));" \
+	"$(keep_vis "$KEEP_DEL");" \
+	"SELECT count(*) FROM vr_keep WHERE id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600;" \
+	"$(keep_vis "$KEEP_CLEAN");" \
+	"INSERT INTO vr_keep SELECT g, g FROM generate_series(20001, 40000) g;"
+vm_fresh="$(q "$(keep_vis "$KEEP_G2");")"
+plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000;")"
+case "$plan" in
+*'Index Only Scan'*)
+	vm_all="$(q "SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000;")" ;;
+*)
+	vm_all="no index-only scan was planned: $plan" ;;
+esac
+check "#2170 premise: delete between vacuum's two steps: group 1 set and group 2 not yet set before the hold" "$vm_before" "67|0"
+check "#2170 premise: delete between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "#2170 premise: delete between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "#2170 delete between vacuum's two steps: blocks 1 and 5 not all-visible after vacuum" "$vm_after" "0"
+check "#2170 delete between vacuum's two steps: the 65 clean blocks set before the hold keep their bits" "$vm_clean" "65"
+check "#2170 delete between vacuum's two steps: the 68 blocks this vacuum set in the clean group keep their bits" "$vm_fresh" "68"
+check "#2170 delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+check "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows" "$vm_all" "39798"
+
+# #2257 review, B1: the second pass must reach the LAST block of a run. In
+# vr_last's 20,000 rows, row group 1's run is blocks 1..67, and ids
+# 19500..19510 lie in block 67 (rows 19497..19787), its last block. The DELETE
+# commits during the hold, so the set flips block 67 back and only the second
+# pass can clear it.
+vm_mid vr_last 20000 "DELETE FROM vr_last WHERE id BETWEEN 19500 AND 19510;" \
+	"SELECT pgcolumnar.vm_is_visible('vr_last', 67);" "SELECT pgcolumnar.vm_is_visible('vr_last', 67);" \
+	"SELECT count(*) FROM vr_last WHERE id BETWEEN 19500 AND 19510;"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: block 67 all-visible before the writer starts" "$vm_before" "t"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "#2170 premise: delete in the last block of a run between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "#2170 delete in the last block of a run between vacuum's two steps: block 67 not all-visible after vacuum" "$vm_after" "f"
+check "#2170 delete in the last block of a run between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
+# #2257 review, B2: the set must stop at the end of a run. vr_edge holds three
+# contiguous 1000-row groups (stripe_row_limit 1000): rows 1..1000, 1001..2000
+# and 2001..3000. Block 3 (rows 873..1163) straddles groups 1 and 2. A committed
+# DELETE of id 1100 (group 2, block 3), then a plain VACUUM: groups 1 and 3 are
+# all-visible, their runs are blocks 1..2 and 7..9, and block 3, one past the
+# first run, must stay unset.
+psql_run "CREATE TABLE vr_edge (id int, pad int) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('vr_edge', stripe_row_limit => 1000);"
+psql_run "INSERT INTO vr_edge SELECT g, g FROM generate_series(1, 3000) g;"
+psql_run "CREATE INDEX vr_edge_id ON vr_edge (id);"
+psql_run "DELETE FROM vr_edge WHERE id = 1100;"
+psql_run "VACUUM vr_edge;"
+edge_blocks="$(q "SELECT string_agg((ctid::text::point)[0]::int::text, '|' ORDER BY id) FROM vr_edge WHERE id IN (1000, 1001, 1099, 1101);")"
+edge_set="$(q "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_edge', b)) FROM (VALUES (1), (2), (7), (8), (9)) v(b);")"
+edge_b3="$(q "SELECT pgcolumnar.vm_is_visible('vr_edge', 3);")"
+plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_edge WHERE id = 1100;")"
+case "$plan" in
+*'Index Only Scan'*)
+	edge_ios="$(q "SELECT count(*) FROM vr_edge WHERE id = 1100;")" ;;
+*)
+	edge_ios="no index-only scan was planned: $plan" ;;
+esac
+check "#2170 premise: a delete in a block shared by two row groups: ids 1000, 1001, 1099 and 1101 all lie in block 3" "$edge_blocks" "3|3|3|3"
+check "#2170 premise: a delete in a block shared by two row groups: vacuum set the five blocks of the clean groups' runs" "$edge_set" "5"
+check "#2170 a delete in a block shared by two row groups: block 3 not all-visible after vacuum" "$edge_b3" "f"
+check "#2170 a delete in a block shared by two row groups: index-only scan returns no deleted row" "$edge_ios" "0"
 
 # ---------------------------------------------------------------------------
 # Phase 8 (#2169): an AFTER STATEMENT trigger of a DELETE or UPDATE reads the

@@ -445,6 +445,19 @@ returning no rows.
   refused: storage-parameter validation belongs to PostgreSQL and is driven by the
   relation kind rather than by the access method. Setting it is harmless and
   pointless.
+- A lazy `VACUUM` stops hiding its transaction from other sessions' snapshots
+  (PostgreSQL's PROC_IN_VACUUM) before it retires row groups, because the
+  retirement deletes catalog rows (#2263). From then until it commits, it holds
+  back the horizon of other VACUUMs like any short transaction. It keeps the
+  flag while it sets the visibility map.
+- Before #2263 was fixed, a reader could keep a retired group's `row_group`
+  row while its other catalog rows were deleted. Reading such a table now fails
+  with SQLSTATE XX001, `columnar row group N of relation "t" has no column
+  chunks`, rather than returning the group's rows with every column NULL. Every
+  row of a retired group had been deleted. A superuser can remove the leftover
+  by hand: `DELETE FROM pgcolumnar.<catalog> WHERE storage_id =
+  pgcolumnar.get_storage_id('t') AND group_number = N` for `zone_map`, `bloom`,
+  `delete_vector` and then `row_group`.
 - `REPACK`, `VACUUM FULL` and `CLUSTER` are not supported on a columnar table; the
   copy-for-cluster path raises an error. `REPACK` arrives in PostgreSQL 19 and
   replaces the other two, and it dispatches through the same path, so it is

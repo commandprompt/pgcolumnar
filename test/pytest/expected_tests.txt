@@ -2663,7 +2663,25 @@ guard_tests 910
 # cluster_tests 6451 -> 6455 for the #2250 re-review's four tests in test_parallel_flush_optin.py: a column whose
 # enum type, or whose ICU collation, a savepoint created, released or still open, flushes serially with no worker
 # failure, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6455 -> 6468, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
+# cluster_tests 6455 -> 6472 for #2170's seventeen tests in test_index_only.py (test_2170_*): eight for a
+# DELETE between VACUUM's two steps (three premises, the deleted blocks cleared, the clean blocks an earlier
+# VACUUM set and the blocks this VACUUM set in a clean group keeping their bits, two index-only counts); five
+# for a DELETE in the last block of a run during the hold and four for a DELETE in a block shared by two
+# row groups (the #2257 review's B1 and B2), by collection of that file (98 on main dd4e2f6e, 115 here) and
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6472 -> 6496 for #2263's twenty-four tests in test_vacuum_retire_visibility.py (a reader during
+# lazy VACUUM's retirement, the reader's guard against a row group with data and no column chunks, and a VACUUM
+# held in its visibility-map step), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it).
+# cluster_tests 6496 -> 6521 for #2264's twenty-five tests in test_vacuum_retire_snapshot.py, the twin of the
+# new vacuum_retire_snapshot.sh (a row group lazy VACUUM retires stays retired when another session reads its
+# catalog rows meanwhile, with no 23505 on free_space_pkey and the free-space accounting intact: two variants
+# of premises, retirement, free_space overlap and sum, the next VACUUM and the table's rows, and a crash
+# count), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6521 -> 6538 for #2266's review: seventeen more tests in test_vacuum_retire_visibility.py, five
+# for a table given a column after its data (test_*added_column*) and twelve for an upsert during another
+# session's flush (test_*upsert_*), by collection over the cluster files.
+# cluster_tests 6538 -> 6551, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
 # test_parallel_copy_projection_ddl_premise,
 # test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
 # test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
@@ -2675,7 +2693,7 @@ guard_tests 910
 # test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
 # test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6468 -> 6469, still #2215, for the review of #2226 at d49f08e1:
+# cluster_tests 6551 -> 6552, still #2215, for the review of #2226 at d49f08e1:
 # test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6469
+cluster_tests 6552
