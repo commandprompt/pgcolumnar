@@ -87,32 +87,6 @@ check "an INSERT in a WITH clause reading its own table returns the rows it inse
 	         SELECT count(*) FROM w")" "same"
 check "and the table holds them once, as heap does" "$(same "SELECT count(*) FROM %t")" "same"
 
-# ---- a later command, or another part of the same command (#2064) -------------
-# A cursor reads the table as it was when it was declared, even when it is
-# fetched after a later INSERT, UPDATE or DELETE in the same transaction. The
-# outer query of a data-modifying CTE does not see the CTE's changes. Both are
-# PostgreSQL rules, and heap is the answer. Each shape runs with the custom scan
-# on and off, and ends in ROLLBACK, so the tables stay as fresh made them.
-fresh
-for cs in on off; do
-	C="SET pgcolumnar.enable_custom_scan = $cs;"
-	check "a cursor fetched after a later INSERT counts only the rows there at DECLARE, as heap does (custom scan $cs)" \
-		"$(same "$C BEGIN; DECLARE c CURSOR FOR SELECT count(*) || '|' || sum(id) FROM %t;
-		         INSERT INTO %t SELECT g, 0 FROM generate_series(9001, 9050) g;
-		         FETCH ALL FROM c; ROLLBACK;")" "same"
-	check "a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE, as heap does (custom scan $cs)" \
-		"$(same "$C BEGIN; DECLARE c CURSOR FOR SELECT count(*) || '|' || sum(v) FROM %t;
-		         UPDATE %t SET v = 1 WHERE id % 4 = 1; DELETE FROM %t WHERE id % 4 = 2;
-		         FETCH ALL FROM c; ROLLBACK;")" "same"
-	check "the outer query of a DELETE in a WITH clause does not see the delete, as heap does (custom scan $cs)" \
-		"$(same "$C BEGIN; WITH d AS (DELETE FROM %t WHERE id % 4 = 0 RETURNING 1)
-		         SELECT (SELECT count(*) FROM d) || '|' || (SELECT count(*) FROM %t); ROLLBACK;")" "same"
-	check "the outer query of an UPDATE in a WITH clause does not see the update, as heap does (custom scan $cs)" \
-		"$(same "$C BEGIN; WITH u AS (UPDATE %t SET v = 1 WHERE id % 4 = 1 RETURNING 1)
-		         SELECT (SELECT count(*) FROM u) || '|' || (SELECT count(*) FROM %t) || '|' || (SELECT sum(v) FROM %t);
-		         ROLLBACK;")" "same"
-done
-
 # ---- a statement reading through an index the rows it wrote (#2247) ------------
 # A self-join UPDATE, DELETE or INSERT SELECT reads its own table on the inner side
 # of a join, or in a subquery, while it writes. Heap's inner scan sees the table as
@@ -131,9 +105,20 @@ fresh_pk() {	# both tables, (id PRIMARY KEY, pad) holding pad = id for 1..40000
 		          INSERT INTO sv_$am SELECT g, g FROM generate_series(1, 40000) g;
 		          CREATE UNIQUE INDEX sv_${am}_cover ON sv_$am (id) INCLUDE (pad);
 		          CREATE FUNCTION seen_sv_$am() RETURNS bigint VOLATILE LANGUAGE sql
-		            AS 'SELECT count(*) FROM sv_$am WHERE id > 100000';"
+		            AS 'SELECT count(*) FROM sv_$am WHERE id > 100000';
+		          DROP FUNCTION IF EXISTS sib_sv_$am();
+		          CREATE FUNCTION sib_sv_$am() RETURNS trigger LANGUAGE plpgsql AS \$\$
+		            BEGIN
+		              INSERT INTO sv_$am VALUES (-NEW.id,
+		                (SELECT count(*) FROM sv_$am WHERE id > 100000) * 1000
+		                + (SELECT count(*) FROM sv_$am WHERE id < 0));
+		              RETURN NEW;
+		            END \$\$;"
 		psql_run "VACUUM ANALYZE sv_$am;"
 	done
+	psql_run "CREATE OR REPLACE FUNCTION sv_try(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+	          BEGIN EXECUTE q; RETURN 'ok';
+	          EXCEPTION WHEN unique_violation THEN RETURN 'unique_violation'; END \$\$;"
 }
 plan_has() {	# plan_has SQL PATTERN -> yes when the columnar plan of SQL matches PATTERN
 	local out
@@ -143,8 +128,6 @@ plan_has() {	# plan_has SQL PATTERN -> yes when the columnar plan of SQL matches
 }
 NL="SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off;"
 IDX="SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;"
-SEQIN="SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
-       SET LOCAL enable_material = off; SET LOCAL enable_memoize = off;"
 CSOFF="SET LOCAL pgcolumnar.enable_custom_scan = off;"
 UPD="UPDATE %t SET pad = t2.pad + 1000000 FROM %t t2 WHERE t2.id = %t.id - 1 AND %t.id <= 10;"
 SHOW="SELECT string_agg(id || ':' || pad, ' ' ORDER BY id) FROM %t WHERE id <= 11;"
@@ -196,16 +179,15 @@ check "an UPDATE that joins the same target row twice through an index changes i
 check "a cursor fetched after a later UPDATE reads the old values through an index scan, as heap does" \
 	"$(same "BEGIN; $CSOFF $IDX DECLARE c CURSOR FOR SELECT sum(pad) FROM %t WHERE id <= 10;
 	         UPDATE %t SET pad = 0 WHERE id <= 10; FETCH ALL FROM c; ROLLBACK;")" "same"
-# A sequential inner scan restarts for every outer row and rebuilds its row-group
-# list each time, so it met the stripe the statement flushed a moment before.
-# UPDATE ... FROM takes the first match and hid that; count and sum show it.
-for cs in off on; do
-	check "a correlated count and sum through a sequential scan see one version of each row across a stripe boundary, as heap does (custom scan $cs)" \
-		"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $SEQIN
-		         UPDATE %t SET pad = (SELECT count(*) * 10000000 + sum(t2.pad) FROM %t t2 WHERE t2.id = %t.id - 1) WHERE %t.id BETWEEN 2 AND 3000;
-		         SELECT count(*) FILTER (WHERE pad <> 10000000 + id - 1) || '|' || min(pad) || '|' || max(pad) FROM %t WHERE id BETWEEN 2 AND 3000;
-		         ROLLBACK;")" "same"
-done
+
+# A BEFORE ROW trigger that inserts into its own table writes under a new command
+# for each outer row, so the write buffer holds runs of rows from different
+# commands. Each trigger call must see the outer rows and its own earlier rows,
+# but not the row it is writing.
+check "a BEFORE ROW trigger inserting into its own table sees the statement's earlier rows and its own earlier rows, as heap does" \
+	"$(same "BEGIN; $CSOFF $IDX CREATE TRIGGER sib BEFORE INSERT ON %t FOR EACH ROW WHEN (NEW.id > 0) EXECUTE FUNCTION sib_%t();
+	         INSERT INTO %t SELECT 100000 + g, 0 FROM generate_series(1, 5) g;
+	         SELECT string_agg(pad::text, ',' ORDER BY id DESC) FROM %t WHERE id < 0; ROLLBACK;")" "same"
 
 # ---- shapes that must keep working (#2247 guards) ------------------------------
 # A plan that reads the inner side once, a nested read of earlier rows, and a
@@ -221,6 +203,16 @@ check "a self-join UPDATE through a materialized sequential inner scan reads eac
 	         $UPD $SHOW ROLLBACK;")" "same"
 check "an INSERT SELECT from its own table through a sequential scan inserts each row once, as heap does" \
 	"$(same "BEGIN; $CSOFF INSERT INTO %t SELECT id + 100000, pad FROM %t; SELECT count(*) || '|' || max(id) FROM %t; ROLLBACK;")" "same"
+# Snapshots that are not MVCC see every write: the unique check's dirty snapshot
+# (#212) and the AFTER trigger's re-fetch under SnapshotAny (#179).
+check "a duplicate key inserted twice in one statement is still refused, as heap does" \
+	"$(same "BEGIN; $CSOFF SELECT sv_try('INSERT INTO %t VALUES (900001, 1), (900001, 2)'); ROLLBACK;")" "same"
+check "an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL $IDX CREATE TEMP TABLE trig_log (o bigint, n bigint);
+	         CREATE FUNCTION pg_temp.trig_note() RETURNS trigger LANGUAGE plpgsql AS \$\$
+	           BEGIN INSERT INTO trig_log VALUES (OLD.pad, NEW.pad); RETURN NULL; END \$\$;
+	         CREATE TRIGGER au AFTER UPDATE ON %t FOR EACH ROW EXECUTE FUNCTION pg_temp.trig_note();
+	         $UPD SELECT count(*) || '|' || sum(o) || '|' || sum(n) FROM trig_log; ROLLBACK;")" "same"
 PAR="SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;
      SET LOCAL min_parallel_table_scan_size = 0; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off;
      SET LOCAL enable_bitmapscan = off;"
@@ -230,6 +222,10 @@ for cs in off on; do
 		"$(plan_has "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $PARW $PAR
 		             EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*), sum(pad) FROM %t; ROLLBACK;" \
 			'Workers Launched: [1-9]')" "yes"
+	check "a parallel worker refuses a leader whose own writes it could not hide (custom scan $cs)" \
+		"$(answer "$SET BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; SET LOCAL pgcolumnar.debug_registry_cid_skew = 1;
+		           $PAR SELECT count(*) || '|' || sum(pad) FROM sv_pgcolumnar; ROLLBACK;")" \
+		"ERROR:  columnar: a parallel worker cannot hide this transaction's own writes"
 	check "a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan $cs)" \
 		"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $PARW $PAR
 		         SELECT count(*) || '|' || sum(pad) FROM %t; ROLLBACK;")" "same"

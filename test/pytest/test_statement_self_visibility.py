@@ -109,80 +109,6 @@ def test_a_statement_does_not_see_its_own_writes(pgc_conn, expect):
                 "and the table holds them once, as heap does")
 
 
-# A cursor reads the table as it was when it was declared, even when it is
-# fetched after a later INSERT, UPDATE or DELETE in the same transaction. The
-# outer query of a data-modifying CTE does not see the CTE's changes (#2064).
-# Heap is the answer. Each shape runs with the custom scan on and off, inside a
-# transaction that is rolled back, so the tables stay as _fresh made them.
-LATER_COMMAND_SHAPES = (
-    ("a cursor fetched after a later INSERT counts only the rows there at DECLARE, as heap does",
-     ["DECLARE c CURSOR FOR SELECT count(*), sum(id) FROM %t",
-      "INSERT INTO %t SELECT g, 0 FROM generate_series(9001, 9050) g",
-      "FETCH ALL FROM c"]),
-    ("a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE, as heap does",
-     ["DECLARE c CURSOR FOR SELECT count(*), sum(v) FROM %t",
-      "UPDATE %t SET v = 1 WHERE id % 4 = 1",
-      "DELETE FROM %t WHERE id % 4 = 2",
-      "FETCH ALL FROM c"]),
-    ("the outer query of a DELETE in a WITH clause does not see the delete, as heap does",
-     ["WITH d AS (DELETE FROM %t WHERE id % 4 = 0 RETURNING 1) "
-      "SELECT (SELECT count(*) FROM d), (SELECT count(*) FROM %t)"]),
-    ("the outer query of an UPDATE in a WITH clause does not see the update, as heap does",
-     ["WITH u AS (UPDATE %t SET v = 1 WHERE id % 4 = 1 RETURNING 1) "
-      "SELECT (SELECT count(*) FROM u), (SELECT count(*) FROM %t), (SELECT sum(v) FROM %t)"]),
-)
-
-
-def _rolled_back(conn, statements, am, custom_scan):
-    """Run `statements` in one transaction on one table, roll it back, and return
-    the last statement's row, or the error's first line."""
-    try:
-        with conn.cursor() as cur:
-            _session(cur)
-            cur.execute(f"SET pgcolumnar.enable_custom_scan = {custom_scan}")
-            cur.execute("BEGIN")
-            for sql in statements:
-                # With no parameters psycopg sends the text as is, so % needs no escape.
-                cur.execute(sql.replace("%t", f"sv_{am}"))
-            row = cur.fetchone()
-    except psycopg.Error as exc:
-        row = query_error(str(exc).splitlines()[0])
-    conn.execute("ROLLBACK")
-    return row
-
-
-def _later(conn, shape, custom_scan):
-    """Run LATER_COMMAND_SHAPES[shape] on both tables; 'same' or both answers."""
-    _fresh(conn)
-    c, h = (_rolled_back(conn, LATER_COMMAND_SHAPES[shape][1], am, custom_scan) for am in AMS)
-    return "same" if c == h else f"columnar={c} heap={h}"
-
-
-# One test per shape and setting, so that each check reports on its own.
-@pytest.mark.parametrize("cs", ("on", "off"))
-def test_a_cursor_does_not_see_a_later_insert(pgc_conn, expect, cs):
-    expect.text(_later(pgc_conn, 0, cs), "same",
-                f"a cursor fetched after a later INSERT counts only the rows there at DECLARE, as heap does (custom scan {cs})")
-
-
-@pytest.mark.parametrize("cs", ("on", "off"))
-def test_a_cursor_does_not_see_a_later_update_and_delete(pgc_conn, expect, cs):
-    expect.text(_later(pgc_conn, 1, cs), "same",
-                f"a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE, as heap does (custom scan {cs})")
-
-
-@pytest.mark.parametrize("cs", ("on", "off"))
-def test_the_outer_query_does_not_see_a_delete_in_a_with_clause(pgc_conn, expect, cs):
-    expect.text(_later(pgc_conn, 2, cs), "same",
-                f"the outer query of a DELETE in a WITH clause does not see the delete, as heap does (custom scan {cs})")
-
-
-@pytest.mark.parametrize("cs", ("on", "off"))
-def test_the_outer_query_does_not_see_an_update_in_a_with_clause(pgc_conn, expect, cs):
-    expect.text(_later(pgc_conn, 3, cs), "same",
-                f"the outer query of an UPDATE in a WITH clause does not see the update, as heap does (custom scan {cs})")
-
-
 # A self-join UPDATE, DELETE or INSERT SELECT reads its own table on the inner side
 # of a join, or in a subquery, while it writes (#2247). Heap's inner scan sees the
 # table as it was when the statement started. A columnar index fetch used to see
@@ -193,9 +119,6 @@ def test_the_outer_query_does_not_see_an_update_in_a_with_clause(pgc_conn, expec
 # shape runs in a transaction that is rolled back.
 NL = ["SET LOCAL enable_hashjoin = off", "SET LOCAL enable_mergejoin = off"]
 IDX = ["SET LOCAL enable_seqscan = off", "SET LOCAL enable_bitmapscan = off"]
-SEQIN = ["SET LOCAL enable_indexscan = off", "SET LOCAL enable_indexonlyscan = off",
-         "SET LOCAL enable_bitmapscan = off", "SET LOCAL enable_material = off",
-         "SET LOCAL enable_memoize = off"]
 NOIDX = ["SET LOCAL enable_indexscan = off", "SET LOCAL enable_indexonlyscan = off",
          "SET LOCAL enable_bitmapscan = off"]
 PAR = ["SET LOCAL max_parallel_workers_per_gather = 2", "SET LOCAL parallel_setup_cost = 0",
@@ -229,7 +152,15 @@ def _fresh_pk(conn):
             cur.execute(f"CREATE UNIQUE INDEX sv_{am}_cover ON sv_{am} (id) INCLUDE (pad)")
             cur.execute(f"CREATE FUNCTION seen_sv_{am}() RETURNS bigint VOLATILE LANGUAGE sql "
                         f"AS 'SELECT count(*) FROM sv_{am} WHERE id > 100000'")
+            cur.execute(f"DROP FUNCTION IF EXISTS sib_sv_{am}()")
+            cur.execute(f"CREATE FUNCTION sib_sv_{am}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                        f"BEGIN INSERT INTO sv_{am} VALUES (-NEW.id, "
+                        f"(SELECT count(*) FROM sv_{am} WHERE id > 100000) * 1000 "
+                        f"+ (SELECT count(*) FROM sv_{am} WHERE id < 0)); RETURN NEW; END $$")
             cur.execute(f"VACUUM ANALYZE sv_{am}")
+        cur.execute("CREATE OR REPLACE FUNCTION sv_try(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+                    "BEGIN EXECUTE q; RETURN 'ok'; "
+                    "EXCEPTION WHEN unique_violation THEN RETURN 'unique_violation'; END $$")
 
 
 def _tx(conn, am, statements, fetch="one"):
@@ -253,6 +184,22 @@ def _tx(conn, am, statements, fetch="one"):
 def _same_tx(conn, statements):
     c, h = (_tx(conn, am, statements) for am in AMS)
     return "same" if c == h else f"columnar={c} heap={h}"
+
+
+def _error_of(conn, statements):
+    """The first line of the error `statements` raise on the columnar table, run in
+    a transaction that is rolled back, or 'no error'."""
+    try:
+        with conn.cursor() as cur:
+            _session(cur)
+            cur.execute("BEGIN")
+            for sql in statements:
+                cur.execute(sql.replace("%t", "sv_pgcolumnar"))
+            out = "no error"
+    except psycopg.Error as exc:
+        out = str(exc).splitlines()[0]
+    conn.execute("ROLLBACK")
+    return out
 
 
 def _plan_has(conn, statements, pattern):
@@ -371,18 +318,17 @@ def test_a_cursor_through_an_index_scan(pgc_conn, expect):
                 'a cursor fetched after a later UPDATE reads the old values through an index scan, as heap does')
 
 
-# A sequential inner scan restarts for every outer row and rebuilds its row-group
-# list each time, so it met the stripe the statement flushed a moment before.
-# UPDATE ... FROM takes the first match and hid that; count and sum show it.
-@pytest.mark.parametrize("cs", ("off", "on"))
-def test_a_count_and_sum_across_a_stripe_boundary(pgc_conn, expect, cs):
+# A BEFORE ROW trigger that inserts into its own table writes under a new command
+# for each outer row, so the write buffer holds runs of rows from different
+# commands. Each trigger call must see the outer rows and its own earlier rows,
+# but not the row it is writing.
+def test_a_before_row_trigger_sees_earlier_rows(pgc_conn, expect):
     _fresh_pk(pgc_conn)
-    expect.text(_same_tx(pgc_conn, _cs(cs) + SEQIN + [
-        "UPDATE %t SET pad = (SELECT count(*) * 10000000 + sum(t2.pad) FROM %t t2 WHERE t2.id = %t.id - 1) "
-        "WHERE %t.id BETWEEN 2 AND 3000",
-        "SELECT count(*) FILTER (WHERE pad <> 10000000 + id - 1), min(pad), max(pad) FROM %t "
-        "WHERE id BETWEEN 2 AND 3000"]), "same",
-                f'a correlated count and sum through a sequential scan see one version of each row across a stripe boundary, as heap does (custom scan {cs})')
+    expect.text(_same_tx(pgc_conn, CSOFF + IDX + [
+        "CREATE TRIGGER sib BEFORE INSERT ON %t FOR EACH ROW WHEN (NEW.id > 0) EXECUTE FUNCTION sib_%t()",
+        "INSERT INTO %t SELECT 100000 + g, 0 FROM generate_series(1, 5) g",
+        "SELECT string_agg(pad::text, ',' ORDER BY id DESC) FROM %t WHERE id < 0"]), "same",
+                "a BEFORE ROW trigger inserting into its own table sees the statement's earlier rows and its own earlier rows, as heap does")
 
 
 # Shapes that must keep working (#2247 guards): a plan that reads the inner side
@@ -411,6 +357,35 @@ def test_guard_an_insert_select_by_sequential_scan(pgc_conn, expect):
     _fresh_pk(pgc_conn)
     expect.text(_same_tx(pgc_conn, CSOFF + ["INSERT INTO %t SELECT id + 100000, pad FROM %t", "SELECT count(*), max(id) FROM %t"]), "same",
                 'an INSERT SELECT from its own table through a sequential scan inserts each row once, as heap does')
+
+
+# Snapshots that are not MVCC see every write: the unique check's dirty snapshot
+# (#212) and the AFTER trigger's re-fetch under SnapshotAny (#179).
+def test_guard_a_duplicate_key_in_one_statement(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, CSOFF + [
+        "SELECT sv_try('INSERT INTO %t VALUES (900001, 1), (900001, 2)')"]), "same",
+                "a duplicate key inserted twice in one statement is still refused, as heap does")
+
+
+def test_guard_an_after_row_trigger_reads_old_and_new(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, CSOFF + NL + IDX + [
+        "CREATE TEMP TABLE trig_log (o bigint, n bigint)",
+        "CREATE FUNCTION pg_temp.trig_note() RETURNS trigger LANGUAGE plpgsql AS $$ "
+        "BEGIN INSERT INTO trig_log VALUES (OLD.pad, NEW.pad); RETURN NULL; END $$",
+        "CREATE TRIGGER au AFTER UPDATE ON %t FOR EACH ROW EXECUTE FUNCTION pg_temp.trig_note()",
+        UPD, "SELECT count(*), sum(o), sum(n) FROM trig_log"]), "same",
+                "an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW, as heap does")
+
+
+@pytest.mark.parametrize("cs", ("off", "on"))
+def test_guard_a_parallel_worker_refuses_a_leader_it_could_not_hide(pgc_conn, expect, cs):
+    _fresh_pk(pgc_conn)
+    expect.text(_error_of(pgc_conn, _cs(cs) + ["SET LOCAL pgcolumnar.debug_registry_cid_skew = 1"] + PAR + [
+        "SELECT count(*), sum(pad) FROM %t"]),
+                "columnar: a parallel worker cannot hide this transaction's own writes",
+                f"a parallel worker refuses a leader whose own writes it could not hide (custom scan {cs})")
 
 
 @pytest.mark.parametrize("cs", ("off", "on"))

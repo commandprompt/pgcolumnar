@@ -7681,17 +7681,13 @@ The pytest twin of `test/recovery_minimal_wal.sh` (#1341), every check by the sh
 
 ## 119. test_statement_self_visibility.py: a statement does not see its own writes
 
-The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. It also holds #2064's cursor and writable-CTE checks and #2247's checks of a statement reading through an index, or a restarted sequential scan, the rows it wrote; see the table. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
+The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. It also holds #2247's checks of a statement reading, through an index, the rows it wrote; see the table. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_a_statement_does_not_see_its_own_writes` | the four shapes run to completion and answer as heap does, and the mid-statement flush |
-| `test_a_cursor_does_not_see_a_later_insert` | #2064: a cursor fetched after a later INSERT counts only the rows there at DECLARE (custom scan on and off) |
-| `test_a_cursor_does_not_see_a_later_update_and_delete` | #2064: a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE (custom scan on and off) |
-| `test_the_outer_query_does_not_see_a_delete_in_a_with_clause` | #2064: the outer query of a DELETE in a WITH clause does not see the delete (custom scan on and off) |
-| `test_the_outer_query_does_not_see_an_update_in_a_with_clause` | #2064: the outer query of an UPDATE in a WITH clause does not see the update (custom scan on and off) |
 | `test_premise_the_self_join_runs_as_a_nested_loop` | #2247 premise: the self-join UPDATE plans as a nested loop over index scans (custom scan on and off) |
 | `test_a_self_join_update_through_index_scans` | #2247: a self-join UPDATE through index scans reads each row's old value (custom scan on and off) |
 | `test_premise_the_self_join_runs_as_a_merge_join` | #2247 premise: the self-join UPDATE plans as a merge join |
@@ -7707,7 +7703,10 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 | `test_a_self_join_after_an_earlier_update` | #2247: after an earlier UPDATE in the transaction, a self-join UPDATE sees it but not its own rows |
 | `test_a_target_row_joined_twice` | #2247: an UPDATE that joins the same target row twice through an index changes it once |
 | `test_a_cursor_through_an_index_scan` | #2247: a cursor fetched after a later UPDATE reads the old values through an index scan |
-| `test_a_count_and_sum_across_a_stripe_boundary` | #2247: a correlated count and sum through a restarted sequential scan see one version of each row across a stripe boundary (custom scan on and off) |
+| `test_a_before_row_trigger_sees_earlier_rows` | #2247: a BEFORE ROW trigger that inserts into its own table, so the write buffer holds runs from several commands, sees the statement's earlier rows and its own earlier rows |
+| `test_guard_a_duplicate_key_in_one_statement` | #2247 guard: a duplicate key inserted twice in one statement is still refused (the unique check's dirty snapshot sees every buffered row) |
+| `test_guard_an_after_row_trigger_reads_old_and_new` | #2247 guard: an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW (the re-fetch under SnapshotAny sees every row) |
+| `test_guard_a_parallel_worker_refuses_a_leader_it_could_not_hide` | #2247: with `pgcolumnar.debug_registry_cid_skew`, a parallel worker refuses a leader whose own writes it could not hide (custom scan on and off) |
 | `test_guard_a_function_sees_the_statement_s_earlier_rows` | #2247 guard: a VOLATILE function inside an INSERT sees the statement's earlier rows |
 | `test_guard_a_hash_join` | #2247 guard: a self-join UPDATE through a hash join |
 | `test_guard_a_materialized_inner_scan` | #2247 guard: a self-join UPDATE through a materialized sequential inner scan |

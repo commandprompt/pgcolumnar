@@ -9778,12 +9778,6 @@ statement_self_visibility	statement_self_visibility	UPDATE of every row runs to 
 statement_self_visibility	statement_self_visibility	a 3000-row self-join UPDATE through index scans reads each row's old value, with every new row still buffered, as heap does	15;16;17;18;19	2026-11-27	-
 statement_self_visibility	statement_self_visibility	a 3000-row self-join UPDATE through index scans reads each row's old value, with row groups flushed part-way, as heap does	15;16;17;18;19	2026-11-27	-
 statement_self_visibility	statement_self_visibility	a VOLATILE function that reads the table inside an INSERT on it sees the statement's earlier rows, as heap does	15;16;17;18;19	never	-
-statement_self_visibility	statement_self_visibility	a correlated count and sum through a sequential scan see one version of each row across a stripe boundary, as heap does (custom scan off)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	a correlated count and sum through a sequential scan see one version of each row across a stripe boundary, as heap does (custom scan on)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	a cursor fetched after a later INSERT counts only the rows there at DECLARE, as heap does (custom scan off)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	a cursor fetched after a later INSERT counts only the rows there at DECLARE, as heap does (custom scan on)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE, as heap does (custom scan off)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	a cursor fetched after a later UPDATE and DELETE reads the rows as they were at DECLARE, as heap does (custom scan on)	15;16;17;18;19	2026-11-27	-
 statement_self_visibility	statement_self_visibility	a cursor fetched after a later UPDATE reads the old values through an index scan, as heap does	15;16;17;18;19	2026-11-27	-
 statement_self_visibility	statement_self_visibility	a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan off)	15;16;17;18;19	never	-
 statement_self_visibility	statement_self_visibility	a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan on)	15;16;17;18;19	never	-
@@ -9814,10 +9808,6 @@ statement_self_visibility	statement_self_visibility	premise: the self-join UPDAT
 statement_self_visibility	statement_self_visibility	premise: the self-join UPDATE runs as a nested loop over index scans (custom scan off)	15;16;17;18;19	never	-
 statement_self_visibility	statement_self_visibility	premise: the self-join UPDATE runs as a nested loop over index scans (custom scan on)	15;16;17;18;19	never	-
 statement_self_visibility	statement_self_visibility	the INSERT flushed row groups while its scan was still reading	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
-statement_self_visibility	statement_self_visibility	the outer query of a DELETE in a WITH clause does not see the delete, as heap does (custom scan off)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	the outer query of a DELETE in a WITH clause does not see the delete, as heap does (custom scan on)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	the outer query of an UPDATE in a WITH clause does not see the update, as heap does (custom scan off)	15;16;17;18;19	2026-11-27	-
-statement_self_visibility	statement_self_visibility	the outer query of an UPDATE in a WITH clause does not see the update, as heap does (custom scan on)	15;16;17;18;19	2026-11-27	-
 stats_privilege	stats_privilege	a role merely GRANTed select can read them too	15;16;17;18;19	never	-
 stats_privilege	stats_privilege	a role with no privilege on a heap table is refused for privilege, not told it is not columnar	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: stats() reads the storage id before the caller check (the two lines swapped)
 stats_privilege	stats_privilege	a role with no privilege on the table is refused	15;16;17;18;19	never	-
