@@ -13,11 +13,9 @@
  *
  * The serialization happens at delete-vector FLUSH time, not per row in the
  * table-AM callbacks, so the row-identity locks can be acquired in a single
- * sorted batch. This mirrors the issue #4 discipline in delete_vector_flush_buffer
- * (list_sort before taking the chunk-group locks): every transaction acquires in
- * the same order, so no AB-BA cycle forms. Acquiring incrementally per row (in
- * scan order) would take the bucketed locks in a transaction-dependent order and
- * deadlock two transactions touching unrelated rows that share a bucket.
+ * sorted batch. Sorting orders one flush only, though, and a transaction
+ * flushes more than once, so a flush takes no bucket it would have to wait for
+ * (#2184); the chunk-group locks, taken first, do the waiting.
  *
  * The flow, gated by pgcolumnar.enable_row_update_lock:
  *   1. PgColumnarRowWriteConflict, called by pgcolumnar_tuple_update and
@@ -27,14 +25,16 @@
  *      a heap. This runs even with the GUC off; it is a deterministic correctness
  *      fix independent of concurrency.
  *   2. PgColumnarSerializeFlushRows, called from delete_vector_flush_buffer before
- *      the delete-vector upsert, sorts the flushed rows by lock key, takes a
- *      transaction-scoped advisory lock on each (all held to commit), then re-reads
- *      the LATEST committed state (GetLatestSnapshot, not the caller snapshot,
- *      which PgColumnarCatalogSnapshot only copies) and raises a retryable
- *      serialization_failure if any of these rows was committed-deleted by a
- *      concurrent transaction. The lock waits out the competitor; the committed
- *      re-read decides whether a conflict actually happened, so a hash-bucket
- *      collision can only add waiting, never a false failure.
+ *      the delete-vector upsert and after the flush has taken the chunk-group lock
+ *      of every group it marks, sorts the flushed rows by lock key, takes each
+ *      one's transaction-scoped advisory lock if it is free (held to commit), then
+ *      re-reads the LATEST committed state (GetLatestSnapshot, not the caller
+ *      snapshot, which PgColumnarCatalogSnapshot only copies) and raises a
+ *      retryable serialization_failure if any of these rows was committed-deleted
+ *      by a concurrent transaction. The chunk-group locks wait out the competitor;
+ *      the committed re-read decides whether a conflict actually happened. The
+ *      flush never waits on a row-identity lock: a transaction flushes more than
+ *      once, and two that share buckets deadlocked on them (#2184).
  *
  * A conflict is a row whose COMMITTED group still EXISTS and whose bit is set. A
  * row whose group is gone (retired by a concurrent rewrite) is left to the
@@ -221,12 +221,13 @@ committedgroup_cmp(const void *a, const void *b)
  * PgColumnarSerializeFlushRows
  *		Serialize the rows about to be flushed as deleted (the delete half of every
  *		UPDATE and every DELETE in this flush) against concurrent writers of the
- *		same rows. Acquire a transaction-scoped advisory lock on each row IN SORTED
- *		KEY ORDER (deadlock-free, as every transaction acquires in the same order),
- *		then raise a retryable serialization_failure if any of these rows was
- *		committed-deleted by another transaction. Called from
- *		delete_vector_flush_buffer before the delete-vector upsert, so it runs
- *		inside the same flush that already serializes the chunk-group writes.
+ *		same rows. Take each row's transaction-scoped advisory lock, in sorted
+ *		bucket order, where it is free, then raise a retryable
+ *		serialization_failure if any of these rows was committed-deleted by
+ *		another transaction. Called from delete_vector_flush_buffer before the
+ *		delete-vector upsert and after it has taken the chunk-group lock of every
+ *		group in the flush, which is what waits out a concurrent writer of these
+ *		rows (#2184).
  */
 void
 PgColumnarSerializeFlushRows(uint64 storageId, const uint64 *rows, int nrows)
@@ -267,6 +268,18 @@ PgColumnarSerializeFlushRows(uint64 storageId, const uint64 *rows, int nrows)
 	}
 	qsort(ents, nrows, sizeof(RowLockEntry), rowlockentry_cmp);
 
+	/*
+	 * Take each bucket only if it is free, and never wait for one (#2184). A
+	 * transaction flushes more than once (a DELETE, then an UPDATE), and each
+	 * flush's buckets are held to commit, so sorting orders one batch only. Two
+	 * transactions whose rows do not overlap still share buckets, and waiting
+	 * here let the second flush of each wait for a bucket the other's first
+	 * flush held: deadlock_detected between writers of unrelated rows
+	 * (concurrent_diff). Nothing needs this wait: the caller already holds the
+	 * chunk-group lock of every row's group, so a writer of these rows has
+	 * committed and the read below sees it. A bucket taken here is what an
+	 * UPDATE's PgColumnarSerializeRowNow waits on.
+	 */
 	for (i = 0; i < nrows; i++)
 	{
 		LOCKTAG		tag;
@@ -276,7 +289,7 @@ PgColumnarSerializeFlushRows(uint64 storageId, const uint64 *rows, int nrows)
 							 (uint32) storageId, ents[i].bucket,
 							 PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY);
 		(void) LockAcquire(&tag, ExclusiveLock, false /* transaction lock */ ,
-						   false /* wait */ );
+						   true /* dontWait */ );
 	}
 
 	/*
