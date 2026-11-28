@@ -120,9 +120,9 @@ def test_writers_concurrent_aborted_and_prepared(pgc_own_db, pgc_cluster, expect
     _small_groups(conn, "cw")
     _run(conn, "INSERT INTO cw SELECT '2025-09-09'::timestamptz + g * interval '2 s', g FROM generate_series(1, 1500) g")
 
-    # Ordinary writers are serialized by the storage-row lock from first flush to
-    # commit; parallel_copy's loaders are the ones that flush into one storage at
-    # once, each through PREPARE. The first and last rows of the file are far apart.
+    # Ordinary writers share the storage-row lock since #2184, so they can overlap
+    # too; parallel_copy's loaders flush into one storage at once, each through
+    # PREPARE. The first and last rows of the file are far apart.
     path = _one(conn, "SELECT current_setting('data_directory')") + "/ce_py_cw.txt"
     _run(conn, "COPY (SELECT '2018-03-03'::timestamptz + g * interval '13 hours', g"
                f" FROM generate_series(1, 5200) g) TO '{path}' WITH (FORMAT text)")

@@ -36,6 +36,9 @@
 #       body, the same EOF on a fresh connection, and a TLS error of another
 #       reason on a kept-alive connection (bytes that are not a record, or a
 #       record whose MAC does not verify) each fail 08006 and are not retried.
+#       So does the EOF after a whole 103 interim head, since the server had
+#       begun to answer; after reads answered 103 first, the EOF before any
+#       answer is still retried (#2258).
 #   No arm may crash a backend: the server log's "terminated by signal" count
 #   is read at the end, and every refusal waits for the server to answer
 #   SELECT 1 again, so a crash fails its own checks and not the next arm's.
@@ -285,6 +288,16 @@ check "G: 30 reads over TLS from a server that closes each kept-alive connection
 check "G: the server closed a kept-alive connection with no answer on each of the 30 reads" \
 	"$(G_FIN1="$(grep -c '^FINKA' "$LOG")"; [ $((G_FIN1 - G_FIN0)) -ge 30 ] && echo yes || echo "no ($((G_FIN1 - G_FIN0)) closes)")" "yes"
 wait_up
+# Control (#2258): one response's interim head does not carry over to the
+# next. After reads whose every answer follows a 103 head (/hint103/), a
+# kept-alive connection closed with no answer (/finka/) is still the race.
+G_FIN0="$(grep -c '^FINKA' "$LOG")"
+check "G: after reads over TLS answered 103 Early Hints first, reads from a server that closes each kept-alive connection without close_notify all succeed" \
+	"$(verr "SET statement_timeout = '60s'; SELECT pgc_reads('https://127.0.0.1:${PORT[good]}/hint103/$BUCKET/fixture.parquet', 3) || ' then ' || pgc_reads('https://127.0.0.1:${PORT[good]}/finka/$BUCKET/fixture.parquet', 3)")" \
+	"ok=3 failed=0 then ok=3 failed=0"
+check "G: the server closed a kept-alive connection with no answer on each of those 3 reads" \
+	"$(G_FIN1="$(grep -c '^FINKA' "$LOG")"; [ $((G_FIN1 - G_FIN0)) -ge 3 ] && echo yes || echo "no ($((G_FIN1 - G_FIN0)) closes)")" "yes"
+wait_up
 # g_arm <label> <mode> <SQLSTATE: message> <GETs>: one read through /<mode>/
 # fails with exactly that error, after exactly that many GETs of the object.
 g_arm() {
@@ -311,6 +324,10 @@ g_arm "a TLS record error on a kept-alive connection" garbka \
 # A record whose MAC does not verify: another SSL_ERROR_SSL reason that is
 # not the race, the one closest to an EOF in what it says about the peer.
 g_arm "a bad record MAC on a kept-alive connection" badmac \
+	'08006: columnar: TLS read from "@URL@" failed' 1
+# A whole 103 Early Hints head, then the EOF with no close_notify (#2258): the
+# server had begun to answer, so this is not the race and is not retried.
+g_arm "an EOF over TLS after a 103 interim head on a kept-alive connection" fin103 \
 	'08006: columnar: TLS read from "@URL@" failed' 1
 
 # ---- arm E: the CA from SSL_CERT_DIR alone ---------------------------------

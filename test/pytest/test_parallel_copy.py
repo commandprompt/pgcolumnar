@@ -599,6 +599,249 @@ class _Db:
                 f"retry {'skipped' if skip else f'not skipped ({again})'} | "
                 f"{self.value(f'SELECT count(*) FROM {table}')} rows")
 
+    # ---- #2229: the caller takes the workers' lock, and waits in the lock manager ----
+
+    def _session(self, app, stmts):
+        """Run `stmts` in order on one connection named `app`, as psql -c does: an error
+        is recorded and the rest still run, so a failed transaction rolls back at its
+        COMMIT. -> ("SQLSTATE message" of the first error or "", the last value read)."""
+        err, last = "", None
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, application_name=app) as conn:
+                for stmt in stmts:
+                    try:
+                        cur = conn.execute(stmt)
+                        if cur.description:
+                            row = cur.fetchone()
+                            last = row[0] if row else None
+                    except psycopg.Error as exc:
+                        if not exc.sqlstate:
+                            return query_error(_message(exc)), last
+                        err = err or f"{exc.sqlstate} {exc.diag.message_primary}"
+        except psycopg.Error as exc:
+            return query_error(_message(exc)), last
+        return err, last
+
+    def _wait_lock(self, app, table, mode):
+        """Return once the session named `app` holds `mode` on `table` (up to 5 s)."""
+        self._poll("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                   f"WHERE a.application_name = '{app}' AND l.relation = '{table}'::regclass "
+                   f"AND l.mode = '{mode}' AND l.granted", lambda g: g == 1)
+
+    def _holder(self, table, seconds):
+        """-> a started thread in which another session holds SHARE on `table` for
+        `seconds`; returns once it holds it."""
+        t = threading.Thread(target=lambda: self._session("pcopy_dk_h", [
+            "BEGIN", f"LOCK TABLE {table} IN SHARE MODE", f"SELECT pg_sleep({seconds})", "COMMIT"]))
+        t.start()
+        self._wait_lock("pcopy_dk_h", table, "ShareLock")
+        return t
+
+    @staticmethod
+    def _under(took, limit):
+        return f"under {limit} s" if took < limit else f"took {int(took * 1000)} ms"
+
+    @staticmethod
+    def _queued(table, mode=None):
+        """A DO block that returns once a lock request on `table` (in `mode`) queues."""
+        cond = f" AND mode = '{mode}'" if mode else ""
+        return ("DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks "
+                f"WHERE relation = '{table}'::regclass{cond} AND NOT granted); "
+                "PERFORM pg_sleep(0.02); END LOOP; END $$")
+
+    def dk_cycle(self, path, hold, index):
+        """-> "outcome | time | consistency | prepared": A runs `hold` on t_dk, waits until
+        a lock request on t_dk queues, then asks for SHARE on t_dk4, which B wrote before
+        its parallel_copy into t_dk. `index` is true when `hold` builds an index."""
+        self.run("DROP TABLE IF EXISTS t_dk, t_dk4; CREATE TABLE t_dk (id int, txt text) USING pgcolumnar; "
+                 "CREATE TABLE t_dk4 (id int, txt text) USING pgcolumnar; INSERT INTO t_dk4 VALUES (1, 'a')")
+        out = {}
+        a = threading.Thread(target=lambda: out.setdefault("a", self._session("pcopy_dk_a", [
+            "SET statement_timeout = '20s'", "BEGIN", hold, self._queued("t_dk"),
+            "LOCK TABLE t_dk4 IN SHARE MODE", "COMMIT"])))
+        a.start()
+        self._wait_lock("pcopy_dk_a", "t_dk", "ShareLock")
+        t0 = time.monotonic()
+        out["b"] = self._session("pcopy_dk_b", [
+            "BEGIN", "INSERT INTO t_dk4 VALUES (2, 'b')", "SET statement_timeout = '10s'",
+            f"SELECT pgcolumnar.parallel_copy('t_dk'::regclass, '{path}', 2)", "COMMIT"])
+        a.join()
+        took = time.monotonic() - t0
+        ea, eb = (str(out[k][0]).split(" ")[0] for k in ("a", "b"))
+        if (ea == "40P01" and not eb) or (eb == "40P01" and not ea):
+            outcome = "one side 40P01, the other committed"
+        else:
+            outcome = f"A {ea or 'committed'}, B {eb or 'committed'}"
+        got = (self.value("SELECT count(*) FROM t_dk"), self.value("SELECT count(*) FROM t_dk4"),
+               self.value("SELECT count(*) FROM pg_index WHERE indrelid = 't_dk'::regclass AND indisvalid"))
+        want = ((5000, 2) if not eb else (0, 1)) + ((1,) if index and not ea else (0,))
+        same = "consistent" if got == want else f"rows {got[0]}, t_dk4 {got[1]}, index {got[2]}; want {want}"
+        return f"{outcome} | {self._under(took, 5)} | {same} | {self.value(LEAK)} prepared"
+
+    def dk_lock_timeout(self, path, target, locked):
+        """-> "error | time | rows | prepared": another session holds SHARE on `locked`
+        for 6 s; the caller's lock_timeout is 1 s."""
+        holder = self._holder(locked, 6)
+        t0 = time.monotonic()
+        got = self.remote_refusal(f"SELECT pgcolumnar.parallel_copy('{target}'::regclass, '{path}', 2)",
+                                  timeout="10s", options="-c lock_timeout=1s")
+        took = time.monotonic() - t0
+        holder.join()
+        return (f"{str(got).split(' | ')[0]} | {self._under(took, 4)} | "
+                f"{self.value(f'SELECT count(*) FROM {target}')} rows | {self.value(LEAK)} prepared")
+
+    def dk_early(self, path, target, locked):
+        """-> (what the caller waited on, "load | rows | prepared"): another session holds
+        SHARE on `locked` for 6 s, with no cycle; the caller has no lock_timeout. The
+        reading must hold for a second after it is first seen."""
+        self.run(f"TRUNCATE {target}")
+        holder = self._holder(locked, 6)
+        out = {}
+
+        def load():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True, application_name="pcopy_dk_e",
+                                     **_timeout("15s")) as conn:
+                    sql = f"SELECT pgcolumnar.parallel_copy('{target}'::regclass, '{path}', 2)"
+                    out["load"] = f"no error ({conn.execute(sql).fetchone()[0]})"
+            except psycopg.Error as exc:
+                out["load"] = (f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
+                               if exc.sqlstate else query_error(_message(exc)))
+
+        def sample():
+            return self.value(
+                "SELECT 'caller ' || coalesce((SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') "
+                "FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'), '') || ', workers ' || "
+                "(SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%')")
+
+        t = threading.Thread(target=load)
+        t.start()
+        want = "caller Lock:relation, workers 0"
+        seen = None
+        for _ in range(40):
+            seen = sample()
+            if seen == want:
+                break
+            time.sleep(0.05)
+        if seen == want:
+            t1 = time.monotonic()
+            while time.monotonic() - t1 < 1.0:
+                now = sample()
+                if now != seen:
+                    seen = f"then {now}"
+                    break
+                time.sleep(0.05)
+        t.join()
+        holder.join()
+        return seen, (f"{out.get('load', 'no result')} | {self.value(f'SELECT count(*) FROM {target}')} rows | "
+                      f"{self.value(LEAK)} prepared")
+
+    def dk_refusal(self, path, setup, target, locked):
+        """-> "error | time": the caller runs `setup`, then parallel_copy into `target`,
+        while another session holds SHARE on `locked` for 5 s."""
+        holder = self._holder(locked, 5)
+        t0 = time.monotonic()
+        err, _ = self._session("pcopy_dk_r", [
+            "BEGIN", setup, "SET statement_timeout = '10s'",
+            f"SELECT pgcolumnar.parallel_copy('{target}'::regclass, '{path}', 2)", "ROLLBACK"])
+        took = time.monotonic() - t0
+        holder.join()
+        return f"{err} | {self._under(took, 3)}"
+
+    def dk_queue(self, path):
+        """-> "load | ddl | rows | index valid | prepared | time": the caller holds ROW
+        EXCLUSIVE on t_dq and waits until CREATE INDEX queues behind it, then loads."""
+        self.run("DROP TABLE IF EXISTS t_dq; CREATE TABLE t_dq (id int, txt text) USING pgcolumnar")
+        out = {}
+        t0 = time.monotonic()
+        b = threading.Thread(target=lambda: out.setdefault("b", self._session("pcopy_dk_q", [
+            "BEGIN", "LOCK TABLE t_dq IN ROW EXCLUSIVE MODE", self._queued("t_dq", "ShareLock"),
+            "SET statement_timeout = '10s'", f"SELECT pgcolumnar.parallel_copy('t_dq'::regclass, '{path}', 2)",
+            "COMMIT"])))
+        b.start()
+        self._wait_lock("pcopy_dk_q", "t_dq", "RowExclusiveLock")
+        ddl = self.ddl_outcome("CREATE INDEX t_dq_id ON t_dq (id)", timeout="20s")
+        b.join()
+        took = time.monotonic() - t0
+        err, last = out["b"]
+        valid = self.value("SELECT indisvalid::text FROM pg_index WHERE indexrelid = 't_dq_id'::regclass")
+        valid = {"true": "t", "false": "f"}.get(valid, valid)
+        return (f"{err or f'no error ({last})'} | {ddl} | {self.value('SELECT count(*) FROM t_dq')} | "
+                f"valid {valid} | {self.value(LEAK)} prepared | {self._under(took, 8)}")
+
+    def dk_part_index(self, path):
+        """-> "load | ddl | rows | index valid | prepared": the second loader is held 3 s;
+        once the first has the parent, CREATE INDEX on the second partition runs."""
+        out = {}
+        self._hold(3000)
+        try:
+            load = threading.Thread(target=lambda: out.setdefault("load", self.remote_refusal(
+                f"SELECT pgcolumnar.parallel_copy('t_dpi'::regclass, '{path}', 2)", timeout="15s")))
+            load.start()
+            for _ in range(100):
+                got = self._loaders_on("t_dpi")
+                if isinstance(got, str) and not got.startswith("0 held"):
+                    break
+                time.sleep(0.05)
+            ddl = self.ddl_outcome("CREATE INDEX t_dpi_2_id ON t_dpi_2 (id)", timeout="20s")
+            load.join()
+        finally:
+            self._hold(0)
+        valid = self.value("SELECT indisvalid::text FROM pg_index WHERE indexrelid = 't_dpi_2_id'::regclass")
+        valid = {"true": "t", "false": "f"}.get(valid, valid)
+        return (f"{out.get('load', 'no result')} | {ddl} | {self.value('SELECT count(*) FROM t_dpi')} | "
+                f"valid {valid} | {self.value(LEAK)} prepared")
+
+    def dk_own(self, path, setup, table, workers):
+        """-> "SQLSTATE | time | rows | prepared": the caller runs `setup`, then
+        parallel_copy into `table` under a 10 s statement_timeout (#2216)."""
+        t0 = time.monotonic()
+        err, _ = self._session("pcopy_dk_o", [
+            "BEGIN", setup, "SET statement_timeout = '10s'",
+            f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})", "ROLLBACK"])
+        took = time.monotonic() - t0
+        return (f"{str(err).split(' ')[0]} | {self._under(took, 5)} | "
+                f"{self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared")
+
+    def dk_fresh(self, path, caller_deadlock_timeout):
+        """-> "B's error | A's error | time | consistency | prepared": A inserts into the
+        fresh t_df3, waits until a storage-row lock request (class 102) queues, then
+        asks for SHARE on t_df4, which B wrote before its 2-worker load into t_df3."""
+        self.run("DROP TABLE IF EXISTS t_df3, t_df4; CREATE TABLE t_df3 (id int, txt text) USING pgcolumnar; "
+                 "CREATE TABLE t_df4 (id int, txt text) USING pgcolumnar; INSERT INTO t_df4 VALUES (1, 'a')")
+        out = {}
+        a = threading.Thread(target=lambda: out.setdefault("a", self._session("pcopy_dk_f", [
+            "SET statement_timeout = '20s'", f"SET deadlock_timeout = '{caller_deadlock_timeout}'", "BEGIN",
+            "INSERT INTO t_df3 VALUES (0, 'a')",
+            "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+            "AND objsubid = 102 AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END $$",
+            "LOCK TABLE t_df4 IN SHARE MODE", "COMMIT"])))
+        a.start()
+        self._poll("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                   "WHERE a.application_name = 'pcopy_dk_f' AND l.locktype = 'advisory' AND l.objsubid = 102 "
+                   "AND l.granted", lambda g: isinstance(g, int) and g >= 1)
+        t0 = time.monotonic()
+        out["b"] = self._session("pcopy_dk_g", [
+            "BEGIN", "INSERT INTO t_df4 VALUES (2, 'b')", f"SET deadlock_timeout = '{caller_deadlock_timeout}'",
+            "SET statement_timeout = '10s'", f"SELECT pgcolumnar.parallel_copy('t_df3'::regclass, '{path}', 2)",
+            "COMMIT"])
+        a.join()
+        took = time.monotonic() - t0
+        ea, eb = str(out["a"][0]), str(out["b"][0])
+        got = (self.value("SELECT count(*) FROM t_df3"), self.value("SELECT count(*) FROM t_df4"))
+        same = "consistent" if got == ((5000, 2) if not eb else (1, 1)) else f"t_df3 {got[0]}, t_df4 {got[1]}"
+        return f"B {eb or 'committed'} | A {ea or 'committed'} | {self._under(took, 5)} | {same} | {self.value(LEAK)} prepared"
+
+    def dk_fresh_runs(self, path):
+        """-> one word per run of dk_fresh at the default deadlock_timeout: ok, or what it read."""
+        res = []
+        for _ in range(3):
+            got = self.dk_fresh(path, "1s")
+            ok = (got == "B committed | A 40P01 deadlock detected | under 5 s | consistent | 0 prepared"
+                  or (got.startswith("B 40P01 ") and got.endswith(" | A committed | under 5 s | consistent | 0 prepared")))
+            res.append("ok" if ok else f"[{got}]")
+        return " ".join(res)
+
     def copy_in(self, table, data):
         try:
             with psycopg.connect(self.dsn, autocommit=True) as conn:
@@ -682,6 +925,16 @@ def _double_closes(cluster):
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count(
             "CloseTransientFile was not obtained")
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
+
+
+def _lock_waits_logged(cluster):
+    """-> how many times the server log says a process still waits for SHARE on an
+    advisory lock, which is what a logged wait on a run lock reads (#2229)."""
+    try:
+        return (cluster.datadir / "server.log").read_text(errors="replace").count(
+            "still waiting for ShareLock on advisory lock")
     except OSError as exc:
         return query_error(f"server log unreadable: {exc}")
 
@@ -990,6 +1243,7 @@ def _nl_same(db, path, target, cols):
 # ---- #2188: the caller's client_encoding, and characters that hold 0x5C ----------
 ENC_DB = "pgc_pcopy_enc"
 ENC_ASCII = "pgc_pcopy_ascii"
+MAL_SORTED = "22000|input file is not sorted ascending by the partition key|0 rows|0 prepared"
 
 
 def _enc_rows(kind, n):
@@ -1995,6 +2249,13 @@ def pcopy(pgc_cluster, server_dir):
         r["trigger after"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '{f}', 2)", timeout="10s")
         r["trigger before"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgb'::regclass, '{f}', 2)", timeout="10s")
         r["trigger stmt"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_tgs'::regclass, '{f}', 4)", timeout="10s")
+        # The trigger refusal comes before the file is opened, like the
+        # unique-index one (#2252, #2209), so a missing file on a table with an
+        # INSERT trigger gets 0A000. With 1 worker the same call gets 58P01.
+        r["trigger missing"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '{d / 'nope.txt'}', 2)", timeout="10s")
+        r["trigger missing 1"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '{d / 'nope.txt'}', 1)", timeout="10s")
         # A trigger that writes a columnar table with no index and no storage row yet.
         db.run("CREATE TABLE t_tgn_log (id int) USING pgcolumnar; "
                "CREATE FUNCTION t_tg_fresh() RETURNS trigger LANGUAGE plpgsql "
@@ -2147,6 +2408,57 @@ def pcopy(pgc_cluster, server_dir):
         r["record caller lock"] = db.caller_lock_record_probe(f, "t_rb")
         r["record other lock"] = db.other_lock_record_probe(f, "t_ra")
 
+        # ---- #2229: the caller takes the workers' lock, and waits in the lock manager ----
+        r["2229 cycle share"] = db.dk_cycle(f, "LOCK TABLE t_dk IN SHARE MODE", False)
+        r["2229 cycle index"] = db.dk_cycle(f, "CREATE INDEX t_dk_id ON t_dk (id)", True)
+        db.run("DROP TABLE IF EXISTS t_dl, t_dlp; CREATE TABLE t_dl (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_dlp (id int, txt text) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_dlp_1 PARTITION OF t_dlp FOR VALUES FROM (MINVALUE) TO (2501) USING pgcolumnar; "
+               "CREATE TABLE t_dlp_2 PARTITION OF t_dlp FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar")
+        r["2229 lock_timeout"] = db.dk_lock_timeout(f, "t_dl", "t_dl")
+        r["2229 lock_timeout partition"] = db.dk_lock_timeout(f, "t_dlp", "t_dlp_2")
+        r["2229 early"] = db.dk_early(f, "t_dl", "t_dl")
+        r["2229 early partition"] = db.dk_early(f, "t_dlp", "t_dlp_2")
+        r["2229 refusal lock"] = db.dk_refusal(f, "LOCK TABLE t_dl IN SHARE MODE", "t_dl", "t_dl")
+        r["2229 refusal write"] = db.dk_refusal(f, "INSERT INTO t_dlp VALUES (1, 'pre')", "t_dlp", "t_dlp_2")
+        r["2229 queue"] = db.dk_queue(f)
+        db.run("DROP TABLE IF EXISTS t_dpi; CREATE TABLE t_dpi (id int, txt text) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_dpi_1 PARTITION OF t_dpi FOR VALUES FROM (MINVALUE) TO (2501) USING pgcolumnar; "
+               "CREATE TABLE t_dpi_2 PARTITION OF t_dpi FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar")
+        r["2229 partition index"] = db.dk_part_index(f)
+        db.run("DROP TABLE IF EXISTS t_dlt; CREATE TABLE t_dlt (id int, txt text) USING pgcolumnar")
+        lw_before = _lock_waits_logged(pgc_cluster)
+        dlt = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_dlt'::regclass, '{f}', 2)", timeout="30s",
+                                options="-c lock_timeout=1ms -c deadlock_timeout=1ms -c log_lock_waits=on")
+        lw_after = _lock_waits_logged(pgc_cluster)
+        logged = lw_after - lw_before if isinstance(lw_before, int) and isinstance(lw_after, int) else "?"
+        r["2229 run lock waits"] = f"{dlt} | {db.value('SELECT count(*) FROM t_dlt')} rows | {logged} lock waits logged"
+        db.run("DROP TABLE IF EXISTS t_dfk, t_dfk_ref, t_dtg, t_dtg_log, t_dsq, t_dcw, t_dcw_log CASCADE; "
+               "DROP SEQUENCE IF EXISTS t_dsq_seq; "
+               "CREATE TABLE t_dfk_ref (id int PRIMARY KEY); INSERT INTO t_dfk_ref SELECT generate_series(0, 5000); "
+               "CREATE TABLE t_dfk (id int REFERENCES t_dfk_ref, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_dtg_log (id int); CREATE TABLE t_dtg (id int, txt text) USING pgcolumnar; "
+               "CREATE FUNCTION t_dtg_row() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN INSERT INTO t_dtg_log VALUES (NEW.id); RETURN NEW; END $$; "
+               "CREATE TRIGGER t_dtg_k AFTER INSERT ON t_dtg FOR EACH ROW EXECUTE FUNCTION t_dtg_row(); "
+               "CREATE SEQUENCE t_dsq_seq; CREATE TABLE t_dsq (id int, txt text) USING pgcolumnar; "
+               "CREATE FUNCTION t_dsq_row() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN NEW.txt := NEW.txt || ':' || nextval('t_dsq_seq'); RETURN NEW; END $$; "
+               "CREATE TRIGGER t_dsq_k BEFORE INSERT ON t_dsq FOR EACH ROW EXECUTE FUNCTION t_dsq_row(); "
+               "CREATE TABLE t_dcw_log (id int) USING pgcolumnar; CREATE TABLE t_dcw (id int, txt text) USING pgcolumnar; "
+               "CREATE FUNCTION t_dcw_row() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN INSERT INTO t_dcw_log VALUES (NEW.id); RETURN NEW; END $$; "
+               "CREATE TRIGGER t_dcw_k AFTER INSERT ON t_dcw FOR EACH ROW EXECUTE FUNCTION t_dcw_row()")
+        r["2216 fk"] = db.dk_own(f, "LOCK TABLE t_dfk_ref IN EXCLUSIVE MODE", "t_dfk", 2)
+        r["2216 trigger"] = db.dk_own(f, "LOCK TABLE t_dtg_log IN ACCESS EXCLUSIVE MODE", "t_dtg", 1)
+        r["2216 sequence"] = db.dk_own(f, "ALTER SEQUENCE t_dsq_seq RESTART", "t_dsq", 1)
+        r["2216 fresh columnar"] = db.dk_own(f, "INSERT INTO t_dcw_log VALUES (0)", "t_dcw", 1)
+        r["2216 loader 1 row"] = db.dk_own(f, "SELECT 1 FROM t_dfk_ref WHERE id = 4000 FOR UPDATE", "t_dfk", 2)
+        r["2229 fresh runs"] = db.dk_fresh_runs(f)
+        r["2229 fresh coordinator"] = db.dk_fresh(f, "5s")
+        db.run("DROP TABLE IF EXISTS t_dsto; CREATE TABLE t_dsto (id int, txt text) USING pgcolumnar")
+        r["2229 storage lock"] = db.dk_own(f, "LOCK pgcolumnar.storage IN ACCESS EXCLUSIVE MODE", "t_dsto", 2)
+
         # ---- #2189: every range keeps the file's newline style ---------------------
         # The shell gives the layout: each file puts its event on a range start of the
         # single-table split and of the partitioned one, at the range the check names.
@@ -2280,6 +2592,107 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2188 control latin1 {target}"] = _enc_same(edb, "LATIN1", ef["latin1"], target)
             r[f"2188 control utf8 {target}"] = _enc_same(edb, "UTF8", ef["utf8"], target)
             r[f"2188 control ascii {target}"] = _enc_same(adb, "SJIS", ef["ascii"], target)
+
+        # ---- #2222: a row core COPY refuses before it reads a value -------------
+        # Core COPY checks the raw bytes' encoding, the end-of-data marker \. and the
+        # field count before it reads any value. A row that breaks one of them must
+        # get core's SQLSTATE and message, so the splitter leaves it in the current
+        # range for that range's loader. Each file is 2000 rows, kt or tk, with row
+        # 1200 replaced, compared with heap COPY in the UTF8 database with 1, 2 and 4
+        # workers. Then controls: files COPY loads whole, sorted but for one row, key
+        # 0, in place of row 1200; the splitter must read that row's key and refuse the
+        # order (22000), 1 worker. The shell lists what each file holds.
+        srv = db.value("SHOW server_version_num")
+        pg18 = str(srv).isdigit() and int(srv) >= 180000
+
+        def mal_file(name, shape, row):
+            fmt = {"kt": b"%d\tx%d\n", "ktcrlf": b"%d\tx%d\r\n", "tk": b"a%d\t%d\n"}[shape]
+            path = d / f"mal_{name}.txt"
+            path.write_bytes(b"".join(row if i == 1200 else fmt % (i, i) for i in range(1, 2001)))
+            os.chmod(path, 0o644)
+            return path
+
+        mal = {
+            "bseol": ("tk", b"a\t1200\\\n"),
+            "extragk": ("kt", b"1200x\tx\textra\n"),
+            "eodkey": ("kt", b"1200\\.\tx\n"),
+            "mbraw": ("kt", b"12\xc300\tx\n"),
+            "mbsplit": ("kt", b"1200\\xc3\xa9\tx\n"),
+            "nulpre": ("tk", b"a\x00b\t1200\n"),
+            "nulkey": ("kt", b"12\x0000\tx\n"),
+            "toofew": ("tk", b"a\n"),
+            "eodgk": ("kt", b"12x\tfoo\\.\n"),
+        }
+        mf = {k: mal_file(k, shape, row) for k, (shape, row) in mal.items()}
+        mcols = {"kt": "id int, txt text", "tk": "txt text, id int"}
+        r["2222 premise"] = " ".join(
+            [str(_enc_heap(edb, "UTF8", mf[k], mcols[mal[k][0]])).split("|")[0] for k in mal]
+            + [_enc_str(edb.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                                  "WHERE datname = current_database()")),
+               _read(mf["nulkey"]).split(b"\n")[1199][:5].hex()])
+        r["2222 eodgk want"] = "22P04" if pg18 else "22P02"
+        for k in mal:
+            r[f"2222 {k}"] = _enc_same(edb, "UTF8", mf[k], "part", (1, 2, 4), mcols[mal[k][0]])
+
+        ctl = {
+            "cesctab": b"0\ta\\\tb\n",
+            "cbsdot": b"0\ta\\\\.b\n",
+            "ccont": b"0\ta\\\nb\n",
+            "clatin1": b"0\tcaf\xe9\n",
+            "cplain": b"0\tx\n",
+            "ceodlf": b"0\tx\\.\n",
+        }
+        cf = {k: mal_file(k, "kt", row) for k, row in ctl.items()}
+        cf["ceodcrlf"] = mal_file("ceodcrlf", "ktcrlf", b"0\tx\\.\r\n")
+        prem = []
+        for k, ce in (("cesctab", "UTF8"), ("cbsdot", "UTF8"), ("ccont", "UTF8"), ("clatin1", "LATIN1"),
+                      ("cplain", "UTF8")):
+            prem.append("|".join(str(_enc_heap(edb, ce, cf[k])).split("|")[:2]))
+            prem.append(_enc_rowhex(edb, 0))
+        prem.append(str(_enc_heap(edb, "UTF8", cf["ceodlf"])).split("|")[0])
+        prem.append(str(_enc_heap(edb, "UTF8", cf["ceodcrlf"])).split("|")[0])
+        r["2222 premise controls"] = " ".join(prem)
+        r["2222 premise controls want"] = ("loaded|2000 rows 610962 loaded|2000 rows 615c2e62 loaded|2000 rows 610a62"
+                                           " loaded|2000 rows 636166c3a9 loaded|2000 rows 78 "
+                                           + ("22P04 22P04" if pg18 else "loaded loaded"))
+
+        def mal_order(ce, path, cols="id int, txt text", sql=None):
+            _enc_target(edb, "part", cols)
+            if sql:
+                edb.run(sql)
+            return _enc_outcome(edb, ce, f"SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '{path}', 1)", "t_enc")
+
+        r["2222 cesctab"] = mal_order("UTF8", cf["cesctab"])
+        r["2222 cbsdot"] = mal_order("UTF8", cf["cbsdot"])
+        r["2222 ccont"] = mal_order("UTF8", cf["ccont"])
+        r["2222 clatin1"] = mal_order("LATIN1", cf["clatin1"])
+        r["2222 cgen"] = mal_order("UTF8", cf["cplain"], "id int, txt text, g int GENERATED ALWAYS AS (id * 2) STORED")
+        r["2222 cdrop"] = mal_order("UTF8", cf["cplain"], "id int, gone int, txt text",
+                                    "ALTER TABLE t_enc DROP COLUMN gone")
+        r["2222 ceodlf"] = mal_order("UTF8", cf["ceodlf"])
+        r["2222 ceodcrlf"] = mal_order("UTF8", cf["ceodcrlf"])
+        # A row COPY refuses, then a row out of order (review of #2259, N4 there): the
+        # splitter must still refuse the order. 4 partitions at 500, 1000 and 1500, 1, 2
+        # and 4 workers; _enc_outcome's 60 s statement_timeout bounds a hang.
+        bu = d / "mal_badunsorted.txt"
+        bu.write_bytes(b"".join(b"1200\n" if i == 1200 else b"0\tx\n" if i == 1600 else b"%d\tx%d\n" % (i, i)
+                                for i in range(1, 2001)))
+        os.chmod(bu, 0o644)
+        r["2222 badunsorted premise"] = " ".join([
+            "|".join(str(_enc_heap(edb, "UTF8", bu)).split("|")[:2]),
+            bu.read_bytes().split(b"\n")[1599][:3].hex()])
+        res = []
+        for w in (1, 2, 4):
+            edb.run("DROP TABLE IF EXISTS t_bu CASCADE; CREATE TABLE t_bu (id int, txt text) PARTITION BY RANGE (id); "
+                    "CREATE TABLE t_bu_a PARTITION OF t_bu FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_b PARTITION OF t_bu FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_c PARTITION OF t_bu FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_d PARTITION OF t_bu FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+            res.append(f"{w}:" + str(_enc_outcome(
+                edb, "UTF8", f"SELECT pgcolumnar.parallel_copy('t_bu'::regclass, '{bu}', {w})", "t_bu")))
+        r["2222 badunsorted"] = " ".join(res)
+        r["2222 ceodlf want"] = ("22P04|end-of-copy marker is not alone on its line|0 rows|0 prepared" if pg18
+                                 else MAL_SORTED)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -3181,6 +3594,19 @@ def test_parallel_copy_refuses_a_statement_trigger_with_four_workers(pcopy, expe
                 "not a hang (#2187)")
 
 
+def test_parallel_copy_refuses_a_missing_file_for_a_trigger_table_before_opening_it(pcopy, expect):
+    expect.text(pcopy["trigger missing"], _want_trigger("t_tga", "t_tga_k"),
+                "parallel_copy refuses a missing file for a single table with an INSERT row trigger and 2 workers "
+                "with 0A000, before it opens the file (#2252)")
+
+
+def test_parallel_copy_gives_a_missing_file_for_a_trigger_table_with_one_worker_58P01(pcopy, expect):
+    expect.text(pcopy["trigger missing 1"],
+                f'58P01 could not open file "{pcopy["missing path"]}" for reading: No such file or directory | no hint',
+                "control: parallel_copy gives a missing file for a single table with an INSERT row trigger and 1 worker "
+                "58P01 (#2252)")
+
+
 def test_parallel_copy_refuses_a_trigger_that_writes_a_fresh_columnar_table(pcopy, expect):
     expect.text(pcopy["trigger fresh"], f"{_want_trigger('t_tgn', 't_tgn_k')} | 0 0 | leak 0",
                 "parallel_copy refuses a single table whose AFTER INSERT row trigger writes a fresh columnar table "
@@ -3523,6 +3949,144 @@ def test_parallel_copy_dedup_record_waits_out_a_long_lock(pcopy, expect):
                 "57014 canceling statement due to statement timeout | under 6 s | 1 fingerprint | retry skipped | 5000 rows",
                 "a dedup load cancelled while another session holds load_fingerprint for 16 s returns within 6 s,"
                 " records the fingerprint when the lock frees, and its retry is skipped (#2187)")
+# ---- #2229: the caller takes the workers' lock, and waits in the lock manager -------
+
+def test_parallel_copy_share_holder_cycle_gets_40p01(pcopy, expect):
+    """Another session holds SHARE on the target, then waits for a lock the caller
+    holds. The coordinator waited for it in the lock manager and the caller for the
+    coordinator on a latch, which the deadlock detector cannot see; both waited until
+    statement_timeout. The caller now waits for the session itself."""
+    expect.text(pcopy["2229 cycle share"], "one side 40P01, the other committed | under 5 s | consistent | 0 prepared",
+                "a session holding SHARE on the target (LOCK TABLE) that then waits for a lock the parallel_copy"
+                " caller holds gets 40P01 on one side within 5 s, not a wait until statement_timeout, and both"
+                " tables stay consistent (#2229)")
+
+
+def test_parallel_copy_create_index_cycle_gets_40p01(pcopy, expect):
+    expect.text(pcopy["2229 cycle index"], "one side 40P01, the other committed | under 5 s | consistent | 0 prepared",
+                "a session in CREATE INDEX on the target that then waits for a lock the parallel_copy caller holds"
+                " gets 40P01 on one side within 5 s, not a wait until statement_timeout, and both tables stay"
+                " consistent (#2229)")
+
+
+@pytest.mark.parametrize("key,name", [
+    ("2229 lock_timeout",
+     "the caller's lock_timeout of 1 s ends a parallel_copy that waits for another session's SHARE on the target"
+     " with 55P03 within 4 s (#2229)"),
+    ("2229 lock_timeout partition",
+     "the caller's lock_timeout of 1 s ends a parallel_copy that waits for another session's SHARE on a partition"
+     " with 55P03 within 4 s (#2229)"),
+], ids=["target", "partition"])
+def test_parallel_copy_lock_timeout_bounds_the_wait(pcopy, expect, key, name):
+    expect.text(pcopy[key], "55P03 canceling statement due to lock timeout | under 4 s | 0 rows | 0 prepared", name)
+
+
+@pytest.mark.parametrize("key,name", [
+    ("2229 early",
+     "a parallel_copy waiting for another session's SHARE on the target waits in the lock manager, with no worker"
+     " started, for a second (#2229)"),
+    ("2229 early partition",
+     "a parallel_copy waiting for another session's SHARE on a partition waits in the lock manager, with no"
+     " worker started, for a second (#2229)"),
+], ids=["target", "partition"])
+def test_parallel_copy_waits_in_the_lock_manager_before_any_worker(pcopy, expect, key, name):
+    expect.text(pcopy[key][0], "caller Lock:relation, workers 0", name)
+
+
+@pytest.mark.parametrize("key,name", [
+    ("2229 early",
+     "control: a parallel_copy that only waits for another session's SHARE on the target, with no cycle, loads"
+     " once the lock is released (#2229)"),
+    ("2229 early partition",
+     "control: a parallel_copy that only waits for another session's SHARE on a partition, with no cycle, loads"
+     " once the lock is released (#2229)"),
+], ids=["target", "partition"])
+def test_parallel_copy_waits_for_a_share_holder_then_loads(pcopy, expect, key, name):
+    expect.text(pcopy[key][1], "no error (5000) | 5000 rows | 0 prepared", name)
+
+
+def test_parallel_copy_own_lock_refusal_before_the_wait(pcopy, expect):
+    expect.text(pcopy["2229 refusal lock"],
+                '55000 pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_dl" | under 3 s',
+                "control: the caller's own SHARE on the target is refused (55000, #2183) at once while another session"
+                " holds SHARE on it, not after waiting for that session (#2229)")
+
+
+def test_parallel_copy_own_write_refusal_before_the_wait(pcopy, expect):
+    expect.text(pcopy["2229 refusal write"],
+                '55000 pgcolumnar.parallel_copy cannot run after this transaction has written to "t_dlp_1" | under 3 s',
+                "control: the caller's own write to a partition is refused (55000, #2211) at once while another"
+                " session holds SHARE on another partition, not after waiting for that session (#2229)")
+
+
+def test_parallel_copy_index_queued_behind_the_callers_lock_does_not_hang_it(pcopy, expect):
+    """The caller holds ROW EXCLUSIVE and CREATE INDEX queues behind it. On main the
+    coordinator queued behind the index and the load waited until statement_timeout;
+    the caller's wait on the workers' run locks closes the cycle the detector resolves."""
+    expect.text(pcopy["2229 queue"],
+                "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | 0 prepared | under 8 s",
+                "a parallel_copy whose caller holds ROW EXCLUSIVE on the target, with CREATE INDEX queued behind it,"
+                " loads within 8 s instead of hanging behind the index, and the index builds after it (#2229)")
+
+
+def test_parallel_copy_index_on_an_unreached_partition_does_not_hang_it(pcopy, expect):
+    expect.text(pcopy["2229 partition index"], "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | 0 prepared",
+                "control: CREATE INDEX on a partition the loaders have not reached yet does not hang a parallel_copy"
+                " that holds ROW EXCLUSIVE on it, and builds after the load (#2229)")
+
+
+def test_parallel_copy_run_lock_waits_are_not_lock_contention(pcopy, expect):
+    expect.text(pcopy["2229 run lock waits"], "no error (5000) | 5000 rows | 0 lock waits logged",
+                "a parallel_copy under lock_timeout 1 ms, deadlock_timeout 1 ms and log_lock_waits on still loads,"
+                " and logs no wait for its workers (#2229)")
+
+
+@pytest.mark.parametrize("key,name", [
+    ("2216 fk",
+     "parallel_copy whose caller holds EXCLUSIVE on a table the target references gets 40P01 within 5 s, not a"
+     " wait until statement_timeout (#2216, #2229)"),
+    ("2216 trigger",
+     "parallel_copy whose caller holds ACCESS EXCLUSIVE on a table its INSERT trigger writes gets 40P01 within"
+     " 5 s, not a wait until statement_timeout (#2216, #2229)"),
+    ("2216 sequence",
+     "parallel_copy whose caller restarted the sequence its INSERT trigger calls gets 40P01 within 5 s, not a"
+     " wait until statement_timeout (#2216, #2229)"),
+    ("2216 fresh columnar",
+     "parallel_copy whose caller wrote a fresh columnar table its INSERT trigger writes gets 40P01 within 5 s,"
+     " not a wait until statement_timeout (#2216, #2229)"),
+    ("2216 loader 1 row",
+     "parallel_copy whose caller holds FOR UPDATE a referenced row only the second loader's rows reach gets 40P01"
+     " within 5 s, not a wait until statement_timeout (#2216, #2229)"),
+], ids=["foreign-key", "trigger", "sequence", "fresh-columnar", "second-loader-row"])
+def test_parallel_copy_own_lock_on_a_reached_table_gets_40p01(pcopy, expect, key, name):
+    """#2216: the loader waits for the caller in the lock manager, the caller for the
+    loader's run lock: a cycle of lock waits, so one side gets 40P01."""
+    expect.text(pcopy[key], "40P01 | under 5 s | 0 rows | 0 prepared", name)
+
+
+def test_parallel_copy_fresh_target_cycle_never_gives_xx000(pcopy, expect):
+    """The review of #2244: a cycle through the coordinator's storage-row step picks
+    the caller or the coordinator; the coordinator's error used to reach the caller as
+    XX000 "coordinator exited without reporting a result"."""
+    expect.text(pcopy["2229 fresh runs"], "ok ok ok",
+                "a cycle through the coordinator's storage-row step on a fresh target gives 40P01 on one side in each"
+                " of 3 runs, never XX000, and both tables stay consistent (#2229)")
+
+
+def test_parallel_copy_a_coordinator_victim_reports_40p01(pcopy, expect):
+    expect.text(pcopy["2229 fresh coordinator"],
+                "B 40P01 pgcolumnar.parallel_copy failed: deadlock detected | A committed | under 5 s | consistent"
+                " | 0 prepared",
+                "when the coordinator is the victim of that cycle (deadlock_timeout 5 s in both sessions), the caller"
+                " reports its 40P01, not XX000 (#2229)")
+
+
+def test_parallel_copy_callers_storage_lock_gives_40p01(pcopy, expect):
+    expect.text(pcopy["2229 storage lock"], "40P01 | under 5 s | 0 rows | 0 prepared",
+                "parallel_copy into a fresh target whose caller holds ACCESS EXCLUSIVE on pgcolumnar.storage gets"
+                " 40P01 within 5 s, not XX000 (#2229)")
+
+
 # ---- #2189: every range keeps the file's newline style -----------------------------
 
 def test_parallel_copy_newline_premise_marker_files(pcopy, expect):
@@ -3839,3 +4403,112 @@ def test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_cop
     and SJIS in a SQL_ASCII database, which core does not convert -- the load still
     gives heap COPY's outcome, rows and row hash."""
     expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+# ---- #2222: a row core COPY refuses before it reads a value ----------------------
+# The fixture and the shell list the files. Each refusal is compared with heap COPY in
+# the UTF8 database with 1, 2 and 4 workers: outcome, message (without "worker N
+# failed: "), rows, prepared transactions and row hash.
+
+def test_parallel_copy_malformed_row_premise(pcopy, expect):
+    """#2222 premise: heap COPY refuses each file, with the SQLSTATE the check names."""
+    expect.text(pcopy["2222 premise"],
+                f"22P04 22P04 22P04 22021 22021 22021 22021 22P04 {pcopy['2222 eodgk want']} UTF8 3132003030",
+                "#2222 premise: heap COPY in a UTF8 database refuses bseol, extragk and eodkey with 22P04, mbraw,"
+                " mbsplit, nulpre and nulkey with 22021, toofew with 22P04, and eodgk with 22P02 on PG 17 and older"
+                " and 22P04 on PG 18 and newer; the database is UTF8 and nulkey's row 1200 is 31 32 00 30 30")
+
+
+MALFORMED = (
+    ("2222 bseol", "#2222 a record that runs on into the next line and so has an extra field, its key unreadable"
+     " / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+    ("2222 extragk", "#2222 an extra field and a key that is not a number / partitioned, 1, 2 and 4 workers:"
+     " heap COPY's outcome, message, rows and content"),
+    ("2222 eodkey", "#2222 an end-of-data marker inside the key / partitioned, 1, 2 and 4 workers: heap COPY's"
+     " outcome, message, rows and content"),
+    ("2222 mbraw", "#2222 a raw byte that is not UTF-8 inside the key / partitioned, 1, 2 and 4 workers: heap"
+     " COPY's outcome, message, rows and content"),
+    ("2222 mbsplit", "#2222 a hex escape then a raw byte that is not UTF-8 in the key / partitioned, 1, 2 and 4"
+     " workers: heap COPY's outcome, message, rows and content"),
+    ("2222 nulpre", "#2222 a raw NUL in the field before the key / partitioned, 1, 2 and 4 workers: heap COPY's"
+     " outcome, message, rows and content"),
+    ("2222 nulkey", "#2222 a raw NUL inside the key, before which the key is out of order / partitioned, 1, 2 and"
+     " 4 workers: heap COPY's outcome, message, rows and content"),
+    ("2222 toofew", "#2222 a row with too few fields to reach the key / partitioned, 1, 2 and 4 workers: heap"
+     " COPY's outcome, message, rows and content"),
+    ("2222 eodgk", "#2222 an end-of-data marker then LF after the last field, the key not a number / partitioned,"
+     " 1, 2 and 4 workers: heap COPY's outcome, message, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", MALFORMED, ids=[k[5:] for k, _ in MALFORMED])
+def test_parallel_copy_malformed_row_gets_copys_error(pcopy, expect, key, name):
+    """#2222: a row core COPY refuses before it reads a value is refused with core's
+    SQLSTATE and message, as heap COPY refuses the file."""
+    expect.text(pcopy[key], "1:ok 2:ok 4:ok", name)
+
+
+def test_parallel_copy_malformed_row_controls_premise(pcopy, expect):
+    """#2222 premise: heap COPY loads each control file, storing row 0 as the shape says."""
+    expect.text(pcopy["2222 premise controls"], pcopy["2222 premise controls want"],
+                "#2222 premise: heap COPY loads cesctab, cbsdot, ccont, clatin1 (under LATIN1) and cplain 2000 rows"
+                " each, storing row 0's txt as 61 09 62, 61 5c 2e 62, 61 0a 62, 63 61 66 c3 a9 and 78; on ceodlf and"
+                " ceodcrlf it loads on PG 17 and older and refuses with 22P04 on PG 18 and newer")
+
+
+MALFORMED_CONTROLS = (
+    ("2222 cesctab", "#2222 control: an escaped TAB in the field after the key, on a row out of order /"
+     " partitioned, 1 worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 cbsdot", "#2222 control: an escaped backslash before a dot, on a row out of order / partitioned, 1"
+     " worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 ccont", "#2222 control: a record over two lines, out of order / partitioned, 1 worker: the splitter"
+     " reads the key and refuses the order (22000)"),
+    ("2222 clatin1", "#2222 control: a byte valid in the caller's LATIN1 but not in the UTF8 database, on a row"
+     " out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 cgen", "#2222 control: a stored generated column, which COPY skips, and a row out of order /"
+     " partitioned, 1 worker: the splitter reads the key and refuses the order (22000)"),
+    ("2222 cdrop", "#2222 control: a dropped column, which COPY skips, and a row out of order / partitioned, 1"
+     " worker: the splitter reads the key and refuses the order (22000)"),
+)
+
+
+@pytest.mark.parametrize("key,name", MALFORMED_CONTROLS, ids=[k[5:] for k, _ in MALFORMED_CONTROLS])
+def test_parallel_copy_row_copy_loads_is_not_left_for_core(pcopy, expect, key, name):
+    """#2222 controls: a row COPY loads keeps going through the splitter, which reads
+    its key and refuses the out-of-order row (22000). A row left for core by mistake
+    would load instead."""
+    expect.text(pcopy[key], MAL_SORTED, name)
+
+
+def test_parallel_copy_eod_marker_after_last_field_follows_the_major(pcopy, expect):
+    """#2222 control: \\. then LF after the last field. PG 17 and older end the line
+    there and load the row, so the splitter must read its key; PG 18 refuses it."""
+    expect.text(pcopy["2222 ceodlf"], pcopy["2222 ceodlf want"],
+                "#2222 control: an end-of-data marker then LF after the last field, on a row out of order /"
+                " partitioned, 1 worker: on PG 17 and older, where COPY loads the row, the splitter reads the key"
+                " and refuses the order (22000); on PG 18, COPY's 22P04")
+
+
+def test_parallel_copy_eod_marker_crlf_after_last_field_follows_the_major(pcopy, expect):
+    """#2222 control: \\. then CR LF after the last field, in a file with CRLF line ends.
+    PG 17 and older end the line there and load the row; PG 18 refuses it."""
+    expect.text(pcopy["2222 ceodcrlf"], pcopy["2222 ceodlf want"],
+                "#2222 control: an end-of-data marker then CR LF after the last field, in a file with CRLF line"
+                " ends, on a row out of order / partitioned, 1 worker: on PG 17 and older, where COPY loads the"
+                " row, the splitter reads the key and refuses the order (22000); on PG 18, COPY's 22P04")
+
+
+def test_parallel_copy_malformed_then_unsorted_premise(pcopy, expect):
+    """#2222 premise: heap COPY refuses badunsorted.txt on row 1200, and row 1600 is 0 TAB x."""
+    expect.text(pcopy["2222 badunsorted premise"], '22P04|missing data for column "txt" 300978',
+                "#2222 premise: heap COPY refuses badunsorted.txt with 22P04 missing data for column txt (row 1200"
+                " has no TAB); its row 1600 is 30 09 78")
+
+
+def test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core(pcopy, expect):
+    """#2222 (review of #2259, mutant N4): a row left for its loader must not stop the
+    sort check, so a later out-of-order row is still refused (22000) before any loader
+    runs. With 4 workers a missing check made two loaders write one partition."""
+    expect.text(pcopy["2222 badunsorted"], f"1:{MAL_SORTED} 2:{MAL_SORTED} 4:{MAL_SORTED}",
+                "#2222 a row COPY refuses, then a row out of order / partitioned at 500, 1000 and 1500, 1, 2 and 4"
+                " workers: the splitter still refuses the order (22000), 0 rows, no prepared transaction")
