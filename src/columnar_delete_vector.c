@@ -22,6 +22,7 @@
 #include "columnar.h"
 
 #include "columnar_delete_vector.h"
+#include "columnar_metadata.h"
 #include "access/relation.h"
 #include "access/xact.h"
 #include "utils/memutils.h"
@@ -356,13 +357,32 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 		pushedSnapshot = true;
 	}
 
+	/* before any lock below: see PgColumnarRaiseStorageRowBeforeDelete (#2184) */
+	PgColumnarRaiseStorageRowBeforeDelete(buf->storageId);
+
+	/*
+	 * The chunk-group lock (class 101) of every group in this flush, in the
+	 * sorted order (issue #4), BEFORE the same-row check below. It is held to
+	 * commit, and every flush that marks a row of a group takes it, so once a
+	 * flush holds them all, any other writer of these rows has committed or
+	 * aborted, and the check's committed read sees its marks. That wait is what
+	 * serializes two writers of one row, so the check never waits on a
+	 * row-identity lock (#2184): see PgColumnarSerializeFlushRows. The upsert
+	 * below takes each lock again, which the lock manager makes a no-op.
+	 */
+	foreach(lc, buf->chunks)
+	{
+		DeleteVectorChunkBuffer *chunk = (DeleteVectorChunkBuffer *) lfirst(lc);
+
+		PgColumnarLockChunkGroup(buf->storageId, chunk->stripeId);
+	}
+
 	/*
 	 * issue #5: before writing the delete marks, serialize the rows being flushed
-	 * as deleted against concurrent writers of the same rows, taking their
-	 * row-identity locks in one sorted batch (deadlock-free) and raising a
+	 * as deleted against concurrent writers of the same rows: raise a
 	 * serialization_failure on a committed conflict. Collect the row numbers from
 	 * the sorted chunks first, so the batch is ordered the same way for every
-	 * transaction, exactly like the chunk-group locks below.
+	 * transaction, exactly like the chunk-group locks above.
 	 */
 	{
 		uint64		nrows = 0;

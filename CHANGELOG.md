@@ -622,6 +622,36 @@ true until the next version shipped.
 
 ### Fixed
 
+- Two writers to one table no longer deadlock on the chunk-group and
+  storage-row locks (#2184). A writer holds the chunk-group lock of each row
+  group it deletes from and the storage-row lock, which every flush of new
+  rows took exclusively, both to commit, in whatever order its statements run.
+  A transaction that inserted and then deleted in a group, and one that deleted
+  in that group and then inserted, each waited for the other, and one failed
+  with `deadlock detected` (40P01). A writer whose table's storage row is
+  current now holds the storage-row lock in share mode, so writers do not wait
+  for each other on it. The first write to a table and a write that raises an
+  earlier build's format stamp still take it exclusively, and so do
+  `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite`, which still wait for
+  every open writer. A `DELETE` that finds an earlier build's stamp raises it
+  before it takes a chunk-group lock. As a result, a second `INSERT` into a
+  table no longer waits for an open transaction that inserted into it.
+  Writers that run at once also no longer deadlock on the row-identity locks
+  of unrelated rows. Those locks are bucketed, so unrelated rows share them,
+  and a transaction that ran a `DELETE` and then an `UPDATE` waited at its
+  second flush for a bucket another such transaction held from its first.
+  This had been possible all along for transactions without an `INSERT`, and
+  `concurrent_diff` met it once inserting writers stopped waiting for each
+  other. A flush now takes a row-identity lock only if it is free. It takes the
+  chunk-group lock of every row group it marks before it checks for a
+  committed conflict, and that wait is what serializes two writers of one row.
+  This fixes #2251. A `pgcolumnar.recluster` or `pgcolumnar.compact_rewrite`
+  in a transaction that has written to the table now stops with `55P03` while
+  another transaction that wrote to it is open, rather than wait for it and
+  risk a deadlock; before, that writer waited. A table that 1.0-alpha4 wrote
+  and this build only deleted from is now refused by 1.0-alpha4 (`0A000`),
+  as after any other write. docs/limitations.md. `test/concurrency.sh` and
+  `test_concurrency.py`, scenarios D to M.
 - At `REPEATABLE READ` and `SERIALIZABLE`, a rewrite verb inside the
   transaction no longer changes what the transaction sees (#2167). `recluster`,
   `recluster_hilbert`, `compact_rewrite`, `cluster`, `cluster_hilbert`, `vacuum`
