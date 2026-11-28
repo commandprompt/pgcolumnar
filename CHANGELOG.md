@@ -622,6 +622,34 @@ true until the next version shipped.
 
 ### Fixed
 
+- The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
+  transaction (#2194). It ran both in one transaction when both were due. The
+  recluster then waited for a busy row group while it held the storage-row lock
+  the compact_rewrite kept to commit. A writer that held that group's lock and
+  waited for the storage-row lock got 40P01, or, with a short
+  `pgcolumnar.rewrite_lock_timeout`, the recluster stopped with 55P03 and took
+  the compact_rewrite down with it. A verb that fails or is cancelled still ends
+  the table's pass. docs/limitations.md and docs/administration.md.
+  `test/autovacuum_verb_txn.sh` and `test_autovacuum_verb_txn.py` (new).
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` now finish under a
+  steady stream of short deletes (#2185). Since #2139 they take their locks
+  without waiting while they hold one, so writers never queued behind them, and
+  they stopped with 55P03 at `pgcolumnar.rewrite_lock_timeout`. A rewrite now
+  takes the table's rewrite turnstile (advisory lock class 109) before its
+  locks and keeps it to commit. A DELETE, UPDATE or MERGE planned in a
+  transaction that has not yet written to a columnar table polls the turnstile,
+  for at most `deadlock_timeout`. It waits before it takes its snapshot, so a
+  writer that waited reads the rewritten row groups and does not fail with
+  40001. The poll is not a lock wait, so it adds no deadlock and does not cancel
+  the maintenance daemon. With 8 clients each deleting one row and holding its
+  lock for 200 ms, both verbs now finish within a 2 s limit. A writer that read
+  a row group before the rewrite retired it still fails with 40001, as before.
+  Writers at REPEATABLE READ or SERIALIZABLE do not wait: their snapshot is
+  taken before the wait, so waiting could only make them fail. Steady deletes
+  at those levels can still keep a rewrite from its locks. The turnstile is held
+  until the rewrite's transaction commits. docs/limitations.md,
+  docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
+  and `test_native_rewrite_conc.py`.
 - `pgcolumnar.add_projection` now holds its SHARE lock until its transaction
   ends, as `CREATE INDEX` does, and `pgcolumnar.drop_projection` takes SHARE ROW
   EXCLUSIVE, held the same way (#2215). `add_projection` released its lock at the
