@@ -69,6 +69,7 @@ GEN_F = "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1,
 GEN_BIG = "SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
 GEN_NONL = "SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
 LEAK = "SELECT count(*) FROM pg_prepared_xacts WHERE database = current_database()"
+DK_RETRY_WANT = "retry 40P01 | after ROLLBACK 5000 | 5000 rows | 0 prepared | under 10 s"
 LOADER = "backend_type = 'pgcolumnar parallel_copy loader'"
 ROW_WAIT = f"SELECT count(*) FROM pg_stat_activity WHERE {LOADER} AND wait_event = 'transactionid'"
 REMOTE_S3 = "s3://pgc-test/f1886/data.txt"
@@ -802,6 +803,64 @@ class _Db:
         took = time.monotonic() - t0
         return (f"{str(err).split(' ')[0]} | {self._under(took, 5)} | "
                 f"{self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared")
+
+    def _lock_named(self, detail, reached):
+        """-> "MODE on TABLE": the first lock in a deadlock DETAIL that is not a run
+        lock (class 107). A relation by its name; a storage-row lock (class 102) as
+        "the storage of `reached`" when its key is `reached`'s storage id (#2216)."""
+        for m in re.finditer(r"waits for (\w+) on (?:relation (\d+)|advisory lock \[(\d+),(\d+),(\d+),(\d+)\])",
+                             detail or ""):
+            mode, rel, _db, hi, lo, cls = m.groups()
+            if rel:
+                name = self.value(f"SELECT coalesce((SELECT relname::text FROM pg_class WHERE oid = {rel}),"
+                                  f" 'relation {rel}')")
+                return f"{mode} on {name}"
+            if cls == "107":
+                continue
+            if cls == "102":
+                key = int(hi) * 4294967296 + int(lo)
+                sid = self.value(f"SELECT pgcolumnar.get_storage_id('{reached}')")
+                return f"{mode} on " + (f"the storage of {reached}" if sid == key else f"storage {key}")
+            return f"{mode} on advisory lock [{_db},{hi},{lo},{cls}]"
+        return "no lock named"
+
+    def dk_retry(self, path, setup, table, workers, reached, deadlock_timeout):
+        """-> ("names LOCK | first SQLSTATE", first message, "retry SQLSTATE | after ROLLBACK result |
+        rows | prepared | time"): in one transaction the caller runs `setup`, then
+        parallel_copy into `table` with its deadlock_timeout at `deadlock_timeout` (3 s
+        makes a lone loader, at 1 s, the victim, so the caller relays its DETAIL; with 2
+        workers at 1 s the caller is the victim), then again after ROLLBACK TO SAVEPOINT
+        with the default; after ROLLBACK it loads once more. Each load
+        under a 10 s statement_timeout (#2216)."""
+        load = f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})"
+        got = []    # per load: (SQLSTATE, message, DETAIL) or ("", value, "")
+        t0 = time.monotonic()
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, application_name="pcopy_dk_t") as conn:
+                for stmt in ["SET statement_timeout = '10s'", "BEGIN", setup, f"SET deadlock_timeout = '{deadlock_timeout}'",
+                             "SAVEPOINT s", load, "ROLLBACK TO SAVEPOINT s", "RESET deadlock_timeout", load,
+                             "ROLLBACK", load]:
+                    try:
+                        cur = conn.execute(stmt)
+                        if stmt == load:
+                            row = cur.fetchone()
+                            got.append(("", row[0] if row else None, ""))
+                    except psycopg.Error as exc:
+                        if not exc.sqlstate:
+                            raise
+                        if stmt == load:
+                            got.append((exc.sqlstate, exc.diag.message_primary, exc.diag.message_detail))
+        except psycopg.Error as exc:
+            return query_error(_message(exc)), "", query_error(_message(exc))
+        took = time.monotonic() - t0
+        if len(got) != 3:
+            return f"{len(got)} loads ran", "", f"{len(got)} loads ran"
+        (s1, _m1, d1), (s2, _m2, _d2), (s3, m3, _d3) = got
+        after = f"{s3} {m3}" if s3 else m3
+        msg = re.sub(r"worker \d+ failed", "worker N failed", str(_m1))
+        return (f"names {self._lock_named(d1, reached)} | {s1}", msg,
+                f"retry {s2} | after ROLLBACK {after} | {self.value(f'SELECT count(*) FROM {table}')} rows | "
+                f"{self.value(LEAK)} prepared | {self._under(took, 10)}")
 
     def dk_fresh(self, path, caller_deadlock_timeout):
         """-> "B's error | A's error | time | consistency | prepared": A inserts into the
@@ -2726,6 +2785,15 @@ def pcopy(pgc_cluster, server_dir):
         r["2216 sequence"] = db.dk_own(f, "ALTER SEQUENCE t_dsq_seq RESTART", "t_dsq", 1)
         r["2216 fresh columnar"] = db.dk_own(f, "INSERT INTO t_dcw_log VALUES (0)", "t_dcw", 1)
         r["2216 loader 1 row"] = db.dk_own(f, "SELECT 1 FROM t_dfk_ref WHERE id = 4000 FOR UPDATE", "t_dfk", 2)
+        r["2216 names fk2"], r["2216 msg fk2"], r["2216 retry fk2"] = db.dk_retry(
+            f, "LOCK TABLE t_dfk_ref IN EXCLUSIVE MODE", "t_dfk", 2, "t_dfk_ref", "1s")
+        db.run("TRUNCATE t_dfk")
+        r["2216 names fk1"], r["2216 msg fk1"], r["2216 retry fk1"] = db.dk_retry(
+            f, "LOCK TABLE t_dfk_ref IN EXCLUSIVE MODE", "t_dfk", 1, "t_dfk_ref", "3s")
+        r["2216 names tg"], r["2216 msg tg"], r["2216 retry tg"] = db.dk_retry(
+            f, "LOCK TABLE t_dtg_log IN ACCESS EXCLUSIVE MODE", "t_dtg", 1, "t_dtg_log", "3s")
+        r["2216 names sq"], r["2216 msg sq"], r["2216 retry sq"] = db.dk_retry(f, "ALTER SEQUENCE t_dsq_seq RESTART", "t_dsq", 1, "t_dsq_seq", "3s")
+        r["2216 names cw"], r["2216 msg cw"], r["2216 retry cw"] = db.dk_retry(f, "INSERT INTO t_dcw_log VALUES (0)", "t_dcw", 1, "t_dcw_log", "3s")
         r["2229 fresh runs"] = db.dk_fresh_runs(f)
         r["2229 fresh coordinator"] = db.dk_fresh(f, "5s")
         db.run("DROP TABLE IF EXISTS t_dsto; CREATE TABLE t_dsto (id int, txt text) USING pgcolumnar")
@@ -4499,6 +4567,73 @@ def test_parallel_copy_own_lock_on_a_reached_table_gets_40p01(pcopy, expect, key
     """#2216: the loader waits for the caller in the lock manager, the caller for the
     loader's run lock: a cycle of lock waits, so one side gets 40P01."""
     expect.text(pcopy[key], "40P01 | under 5 s | 0 rows | 0 prepared", name)
+
+
+def test_parallel_copy_reached_lock_40p01_fk2_names_the_lock(pcopy, expect):
+    """#2216 is answered by 40P01, not by a refusal: its DETAIL is the deadlock
+    report, which names the lock the loader waits for. With 2 workers either side
+    can be the victim; both DETAILs name the loader's wait."""
+    expect.text(pcopy["2216 names fk2"], "names RowShareLock on t_dfk_ref | 40P01",
+                "the 40P01 of a 2-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references"
+                " names a loader's RowShareLock on that table in its DETAIL, whichever side is the victim (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_fk2_retry(pcopy, expect):
+    """The caller keeps its lock to transaction end: a retry after ROLLBACK TO
+    SAVEPOINT fails the same way, and a load after ROLLBACK loads (#2216)."""
+    expect.text(pcopy["2216 retry fk2"], DK_RETRY_WANT,
+                "a 2-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references gets 40P01"
+                " again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_fk1_names_the_lock(pcopy, expect):
+    """The loader is made the victim (the caller's deadlock_timeout is 3 s), so the
+    DETAIL read is the one the caller relays."""
+    expect.text(f"{pcopy['2216 names fk1']} | {pcopy['2216 msg fk1']}", "names RowShareLock on t_dfk_ref | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected",
+                "the 40P01 of a 1-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references"
+                " names the loader's RowShareLock on that table in the DETAIL it relays from the loader (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_fk1_retry(pcopy, expect):
+    expect.text(pcopy["2216 retry fk1"], DK_RETRY_WANT,
+                "a 1-worker parallel_copy whose caller holds EXCLUSIVE on the table the target references gets 40P01"
+                " again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_trigger_names_the_lock(pcopy, expect):
+    expect.text(f"{pcopy['2216 names tg']} | {pcopy['2216 msg tg']}", "names RowExclusiveLock on t_dtg_log | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected",
+                "the 40P01 of a parallel_copy whose caller holds ACCESS EXCLUSIVE on the table its INSERT trigger writes"
+                " names the loader's RowExclusiveLock on that table in the DETAIL it relays from the loader (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_trigger_retry(pcopy, expect):
+    expect.text(pcopy["2216 retry tg"], DK_RETRY_WANT,
+                "a parallel_copy whose caller holds ACCESS EXCLUSIVE on the table its INSERT trigger writes gets 40P01"
+                " again after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_sequence_names_the_lock(pcopy, expect):
+    expect.text(f"{pcopy['2216 names sq']} | {pcopy['2216 msg sq']}", "names RowExclusiveLock on t_dsq_seq | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected",
+                "the 40P01 of a parallel_copy whose caller restarted the sequence its INSERT trigger calls names the"
+                " loader's RowExclusiveLock on that sequence in the DETAIL it relays from the loader (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_sequence_retry(pcopy, expect):
+    expect.text(pcopy["2216 retry sq"], DK_RETRY_WANT,
+                "a parallel_copy whose caller restarted the sequence its INSERT trigger calls gets 40P01 again after"
+                " ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_fresh_columnar_names_the_lock(pcopy, expect):
+    expect.text(f"{pcopy['2216 names cw']} | {pcopy['2216 msg cw']}", "names ExclusiveLock on the storage of t_dcw_log | 40P01 | pgcolumnar.parallel_copy worker N failed: deadlock detected",
+                "the 40P01 of a parallel_copy whose caller wrote the fresh columnar table its INSERT trigger writes"
+                " names the loader's wait for that table's storage-row lock in the DETAIL it relays from the loader (#2216)")
+
+
+def test_parallel_copy_reached_lock_40p01_fresh_columnar_retry(pcopy, expect):
+    expect.text(pcopy["2216 retry cw"], DK_RETRY_WANT,
+                "a parallel_copy whose caller wrote the fresh columnar table its INSERT trigger writes gets 40P01 again"
+                " after ROLLBACK TO SAVEPOINT, and loads after ROLLBACK (#2216)")
 
 
 def test_parallel_copy_fresh_target_cycle_never_gives_xx000(pcopy, expect):
