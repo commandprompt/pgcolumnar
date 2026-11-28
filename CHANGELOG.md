@@ -282,6 +282,17 @@ true until the next version shipped.
 
 ### Changed
 
+- A lock of the `parallel_copy` caller's own on a table its loaders reach
+  through a foreign key, a trigger or a sequence, or a write to a fresh
+  columnar table a trigger writes, ends with `40P01` within `deadlock_timeout`
+  since #2229. That is now the documented answer to #2216, not a refusal up
+  front. Those tables cannot be listed before the load, and PostgreSQL treats
+  an `INSERT` whose foreign key check or trigger waits on another transaction
+  the same way. `test/parallel_copy.sh` and `test_parallel_copy.py` pin, for
+  each of the issue's cases, that the error's DETAIL names the lock the loader
+  waits for and its relation, that a retry after `ROLLBACK TO SAVEPOINT` gets
+  `40P01` again, and that a load after `ROLLBACK` loads. docs/limitations.md
+  says so. Test and docs only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
   refusal for 2 or more workers (#2187) comes before the file is opened, as
   #2209 pinned for the unique-index refusal (#2252). A missing file on a table
@@ -622,6 +633,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` into a partitioned target on PostgreSQL 15 to 17
+  reads a key followed by `\.` and a line end as `COPY` does (#2260). `COPY`
+  ends the line at the `\.` and loads the row, so `a<TAB>1200\.` then LF has
+  key 1200. The splitter read the key as `1200.` and refused the file with
+  22P02. With the line end the rest of the file does not use, `COPY` refuses the
+  `\.` with 22P04, and the load now gives that error too. PostgreSQL 18 refuses
+  `\.` anywhere but alone on its line and is unchanged. docs/limitations.md.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- A column dropped by `ALTER TYPE ... DROP ATTRIBUTE ... CASCADE` or `DROP
+  DOMAIN ... CASCADE` now takes the projections that store it with it (#2240).
+  Only `ALTER TABLE ... DROP COLUMN` was checked, and it refuses with `2BP01`.
+  Through the other two the drop succeeded, and the projection kept the dropped
+  column: the next INSERT failed with `type with OID 0 does not exist`, and the
+  declaration still named the column. Each dropped projection is reported in a
+  NOTICE. Refusing these drops, as `ALTER TABLE` does, would also refuse
+  `DROP SCHEMA ... CASCADE` when a table was created before a domain one of its
+  columns uses: core drops that column on its own before the table.
+  docs/sql-reference.md. `test/projection_drop_column.sh` and
+  `test_projection_drop_column.py`.
 - The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
   transaction (#2194). It ran both in one transaction when both were due. The
   recluster then waited for a busy row group while it held the storage-row lock

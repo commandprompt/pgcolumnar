@@ -343,6 +343,10 @@ these constraints.
   when the key is not valid. On PostgreSQL 15 to 17, one is a `\.` followed by
   the line end the rest of the file does not use. The other is a character
   with no equivalent in the database encoding (`22P05` from `COPY`).
+  On PostgreSQL 15 to 17, a key followed by `\.` and a line end is read as
+  `COPY` reads it. The `\.` ends the line, so `1200\.` is the key 1200 (#2260).
+  With the line end the rest of the file does not use, such a row gets `COPY`'s
+  `22P04`.
   A file that also has a row out of order is refused for its order (`22000`).
   The order is checked before any worker starts.
 - The caller needs membership in the `pg_read_server_files` role and INSERT on
@@ -375,10 +379,27 @@ these constraints.
 - The check covers no other table. When the calling
   transaction locks another table the loaders need, the load fails with
   `deadlock_detected` (40P01) after `deadlock_timeout` (#2216). One example is a
-  table the target references through a foreign key. Others are a table a
-  trigger on the target writes to, and a sequence a trigger calls `nextval` on
-  after `ALTER SEQUENCE ... RESTART`. A retry in the same transaction fails the
-  same way. Run `parallel_copy` before taking such locks, or after `COMMIT`.
+  table the target references through a foreign key, or a referenced row the
+  caller holds `FOR UPDATE`. Others are a table a trigger on the target writes
+  to, and a sequence a trigger calls `nextval` on after `ALTER SEQUENCE ...
+  RESTART`. With 2 or more workers, a table with an INSERT trigger is refused
+  first (#2187). So the trigger cases reach this only with 1 worker.
+  The error's DETAIL is PostgreSQL's deadlock report. It names the lock the
+  loader waits for and the relation it is on, for example
+  `waits for RowShareLock on relation 16661`, whichever side the deadlock
+  detector picked. For a columnar table a trigger writes, the lock is the
+  table's storage-row lock (`advisory lock [db,hi,lo,102]`).
+  The caller keeps its lock until its transaction ends, so a retry after
+  `ROLLBACK TO SAVEPOINT` fails the same way. Run `parallel_copy` before taking
+  such locks, or after `COMMIT` or `ROLLBACK`.
+  This error is the intended answer, not a refusal up front. The relations a
+  trigger touches, the sequences it calls and the rows a foreign key check
+  locks are not known before the load. PostgreSQL treats an `INSERT` the same
+  way when its foreign key check or trigger needs another transaction's lock.
+  It waits, and the deadlock detector ends a cycle with 40P01. Core refuses up
+  front only for the statement's own table (`55006`, "is being used by active
+  queries in this session"). The `55000` refusals above do the same for the
+  target.
 - The caller takes ROW EXCLUSIVE on the target and on each of its partitions
   before any worker starts (#2229). It holds that lock to the end of its
   transaction, as an `INSERT` would. It waits there for another session's conflicting

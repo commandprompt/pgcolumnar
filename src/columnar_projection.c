@@ -718,6 +718,120 @@ pgcolumnar_drop_projection(PG_FUNCTION_ARGS)
 }
 
 /*
+ * declaration_names_column
+ *		Whether one text[] field of a declaration holds this column name.
+ *		Names compare exactly, as identifiers do: "BB" is not bb.
+ */
+static bool
+declaration_names_column(ArrayType *arr, const char *attname)
+{
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+	int			i;
+
+	if (arr == NULL)
+		return false;
+	deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT,
+					  &elems, &nulls, &nelems);
+	for (i = 0; i < nelems; i++)
+	{
+		if (!nulls[i] && strcmp(TextDatumGetCString(elems[i]), attname) == 0)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * PgColumnarDropProjectionsOnColumn
+ *		Drop every projection that stores a column being dropped (#2240).
+ *
+ * Called from the object-access hook for a column drop that did not come
+ * through ALTER TABLE ... DROP COLUMN, which refuses first (see
+ * pgcolumnar_reject_drop_projected_column). The other routes are a cascade:
+ * ALTER TYPE ... DROP ATTRIBUTE ... CASCADE on a typed table, DROP DOMAIN ...
+ * CASCADE, and any drop that reaches a column through pg_depend. Each of them
+ * needs CASCADE before core drops the column, so dropping the projection with it
+ * is what the caller asked for.
+ *
+ * Refusing here instead, as ALTER TABLE does, is not possible. Core sometimes
+ * drops a column on its own just before it drops the whole table: DROP SCHEMA
+ * ... CASCADE does this when the table was created before a domain one of its
+ * columns uses. The hook cannot tell that drop from any other, and a refusal
+ * made DROP SCHEMA fail.
+ *
+ * Left in place, the projection kept the dropped attnum. The next INSERT asked
+ * typcache for type OID 0 and the table became unwritable. The declaration kept
+ * the name, so a column later added under that name was taken for it.
+ *
+ * The materialized projection matches by attnum and the declaration by name.
+ * A declaration can exist with no materialized projection (a rewrite reports
+ * one that no longer resolves), so both are read, and each projection is
+ * reported once.
+ */
+void
+PgColumnarDropProjectionsOnColumn(Relation rel, AttrNumber attnum,
+								  const char *attname)
+{
+	Oid			relid = RelationGetRelid(rel);
+	uint64		storageId = PgColumnarStorageId(rel);
+	List	   *dropped = NIL;
+	ListCell   *lc;
+
+	foreach(lc, PgColumnarListProjections(storageId))
+	{
+		PgColumnarProjection *p = (PgColumnarProjection *) lfirst(lc);
+		int			i;
+
+		if (p->projectionId == 0)
+			continue;
+		for (i = 0; i < p->columnsLen; i++)
+		{
+			if (p->columns[i] != attnum)
+				continue;
+			if (p->projStorageId != storageId)
+				PgColumnarDeleteMetadata(p->projStorageId);
+			PgColumnarDeleteProjectionRow(storageId, p->projectionId);
+			dropped = lappend(dropped, pstrdup(p->name));
+			break;
+		}
+	}
+
+	foreach(lc, PgColumnarListProjectionDeclarations(relid))
+	{
+		PgColumnarProjectionDeclaration *d =
+			(PgColumnarProjectionDeclaration *) lfirst(lc);
+		bool		seen = false;
+		ListCell   *dc;
+
+		/* add_projection keeps every sort-key column in columns */
+		if (!declaration_names_column(d->columns, attname))
+			continue;
+		PgColumnarDeleteProjectionDeclaration(relid, d->name);
+
+		/* one notice per projection, materialized or only declared */
+		foreach(dc, dropped)
+		{
+			if (strcmp((char *) lfirst(dc), d->name) == 0)
+				seen = true;
+		}
+		if (!seen)
+			dropped = lappend(dropped, d->name);
+	}
+
+	/*
+	 * drop_projection also resets the relation's cached projection writers.
+	 * This needs none: a write, this drop and another write in one
+	 * transaction left no row group in the dropped storage without one
+	 * (#2240). Each delete above has already made itself visible.
+	 */
+	foreach(lc, dropped)
+		ereport(NOTICE,
+				(errmsg("drop cascades to projection \"%s\" on table \"%s\"",
+						(char *) lfirst(lc), RelationGetRelationName(rel))));
+}
+
+/*
  * pgcolumnar.read_projection(rel, name) -> setof text
  *		Debug/verification reader for a projection's storage (gap 26, phase 2).
  *		Scans the projection's stripes (in stored sort order), skips rows whose
