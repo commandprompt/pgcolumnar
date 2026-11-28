@@ -410,6 +410,7 @@ behaviour, the source of that number is named.
 - [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 - [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
+- [365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees](#365-test_rewrite_snapshotpy-a-rewrite-inside-a-repeatable-read-transaction-does-not-change-what-it-sees)
 
 ## 1. How to read a test in here
 
@@ -5711,24 +5712,24 @@ names the holder's pid.
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
 Port of `native_vacuum_race.sh` (#432). `pgcolumnar_compact_relation` used the caller's
-pre-lock statement snapshot, so a row group committed after that snapshot was invisible
-to the rewrite and was destroyed by the relfilenode swap (#295). Covered for `vacuum()`,
-`vacuum_sorted()` and `cluster()`.
+pre-lock statement snapshot, so a row group committed while it waited for its lock was
+invisible to the rewrite and was destroyed by the relfilenode swap (#295). Covered for
+`vacuum()`, `vacuum_sorted()` and `cluster()`.
 
-**The shell suite races on the clock; this one does not.** The original backgrounds a
-`psql` running `SELECT pg_sleep(5)` inside its transaction, sleeps 2 in the shell, and
-inserts during the gap — and redirects to `/dev/null` the one observation that would
-prove the race happened. If session B's snapshot were taken after A's commit, B would
-simply see all 150 rows, the maintenance call would keep them, and every check would
-pass having tested nothing.
+Session A inserts 100 rows and holds its transaction open. Session B runs one READ
+COMMITTED statement that counts the table and then calls the maintenance op. The count
+runs at once under the statement snapshot, and the op waits for its AccessExclusiveLock.
+Once B is seen waiting, A commits. No sleeps decide the order: the premise asserts that
+B's statement counted 50 and that B was waiting.
 
-The port uses two connections and no sleeps, and asserts the interleaving: B sees 50
-before A commits, and **still** sees 50 after. The second premise is the load-bearing
-one — it says A's rows are genuinely outside B's snapshot, which is the precondition for
-the defect and exactly what a timing slip destroys.
+Until #2167 this pinned B's snapshot at REPEATABLE READ before A's commit and ran the op
+inside that transaction. That is #2167's case, where the op made A's rows visible to B's
+old snapshot. The op now refuses there with 40001 (`test_rewrite_snapshot.py`), so this
+moved to the lock wait #295 describes.
 
-Removal proof: take the caller's transaction snapshot instead of a fresh post-lock one,
-and `vacuum()` destroys 100 of 150 rows — the arm reports `got 50 want 150`.
+Removal proof: read with the statement snapshot instead of a fresh post-lock one, and
+each op keeps 50 of 150 rows; the arm reports `got 50 want 150` (measured on PG 18, both
+harnesses).
 
 The three maintenance calls are driven from an inline literal loop table, because an
 f-string name would reach `compare_to_bash` as one template and could not match the
@@ -5738,7 +5739,7 @@ three literal names the shell suite states.
 
 | test | what it holds |
 | --- | --- |
-| `test_native_vacuum_race` | every arm: per maintenance call, that B pinned a snapshot of 50 and that A's commit stayed outside it, then that all 150 rows survive; and that `vacuum()` preserves the exact row set rather than only the count |
+| `test_native_vacuum_race` | every arm: per maintenance call, that B's statement counted 50 and B waited for its lock while A's transaction was open, then that all 150 rows survive; and that each op preserves the exact row set rather than only the count |
 
 ## 64. test_native_delete_vector_index.py: reading the delete vector uses its index
 
@@ -15265,3 +15266,32 @@ Removal proof, each failing a test here:
 | --- | --- |
 | `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read, with or without a trailing comment; a comment line, a step's timeout and the next job's are not; a job without one, a missing job, and a job that gives the key twice read as none |
 | `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job has exactly one timeout of its own, between 1.5 and 2 times `MEASURED_MAX_MINUTES` |
+
+## 365. test_rewrite_snapshot.py: a rewrite inside a REPEATABLE READ transaction does not change what it sees
+
+`compact_rewrite`, `recluster`, `cluster`, `vacuum` and `vacuum_sorted` read the newest committed rows and write them as the calling transaction's own. On main before the fix, a REPEATABLE READ transaction that ran one counted a row another session inserted after its snapshot and lost a row another session deleted after it (#2167). Heap's `CLUSTER` keeps both as the snapshot saw them. At REPEATABLE READ and SERIALIZABLE the verb now raises 40001 when its read and the transaction's snapshot differ over the groups it rewrites, and runs when they agree. The maintenance daemon forces READ COMMITTED, as core's autovacuum does.
+
+### Every test
+
+Each arm reads `ok|<A's count|sum after the verb>|<count|sum after commit>`, or `<SQLSTATE>|<message>|<count|sum after the rollback>`. The table holds ids 1-50 (sum 1275), with 51-60 deleted. Session B commits its change after A's snapshot and before A's verb. Both sessions run with a statement_timeout and a lock_timeout.
+
+| test | what it holds |
+| --- | --- |
+| `test_heap_cluster_keeps_the_snapshot` | control: heap's `CLUSTER` at REPEATABLE READ, after B inserted row 70 and deleted row 3, still counts 50 rows summing 1275 |
+| `test_recluster_refuses_an_insert_after_the_snapshot` | `recluster` after B inserted row 70 raises 40001 with the message; on main A counted 51 rows summing 1345 |
+| `test_recluster_refuses_a_delete_after_the_snapshot` | `recluster` after B deleted row 3 raises 40001; on main A counted 49 rows summing 1272 |
+| `test_recluster_refuses_at_serializable` | the same insert arm at SERIALIZABLE raises 40001 |
+| `test_compact_rewrite_refuses_a_delete_in_its_group` | `compact_rewrite` after B deleted a row in the group it rewrites raises 40001 |
+| `test_cluster_refuses_an_insert_after_the_snapshot` | `cluster` after B inserted row 70 raises 40001 |
+| `test_cluster_refuses_a_delete_after_the_snapshot` | `cluster` after B deleted row 3 raises 40001 |
+| `test_cluster_refuses_groups_another_compact_rewrite_replaced` | `cluster` after B deleted five rows of a second group and its `compact_rewrite` replaced both groups raises 40001: both snapshots list two groups, with different numbers and no deleted rows in the new ones; on main A counted 55 of the 60 rows it saw |
+| `test_recluster_hilbert_refuses_an_insert_after_the_snapshot` | `recluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_cluster_hilbert_refuses_an_insert_after_the_snapshot` | `cluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_vacuum_refuses_a_change_after_the_snapshot` | `vacuum` after B's insert and delete raises 40001 |
+| `test_vacuum_sorted_refuses_a_change_after_the_snapshot` | `vacuum_sorted` after B's insert and delete raises 40001 |
+| `test_every_verb_runs_with_nothing_changed` | control: with nothing changed, all five verbs run at REPEATABLE READ, each in its own statement, and A still counts 50 rows summing 1275 |
+| `test_compact_rewrite_runs_past_an_insert_elsewhere` | `compact_rewrite` runs when B only inserted a row into a new group, which it does not rewrite, and A still does not see that row |
+| `test_recluster_runs_after_own_writes` | `recluster` runs after A's own insert and delete in the same transaction, and A sees both: 50 rows summing 1351 |
+| `test_cluster_runs_after_own_writes` | the same for `cluster` |
+| `test_read_committed_sees_what_its_statement_sees` | control: at READ COMMITTED, `recluster` runs and A sees B's insert and delete, as any statement would |
+| `test_the_daemon_runs_at_read_committed` | with `default_transaction_isolation = 'repeatable read'` set by ALTER SYSTEM, the daemon's `compact_rewrite` rewrites a group that a delete changed during its 3 s hold, and logs the rewrite, not a skip. Settings are reset at the end |
