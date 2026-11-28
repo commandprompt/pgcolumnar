@@ -7429,7 +7429,7 @@ Independent of the shell suite: its own row counts, values, times and helpers. T
 
 WHAT WRITING IT FOUND:
 
-- **Ordinary writers never overlap.** Concurrent writers into one table are serialized by the storage-row lock (class 102) from their first flush to their commit. The concurrency arm therefore uses `parallel_copy`, whose loaders flush into one storage at once, each through PREPARE.
+- **Ordinary writers never overlapped.** Concurrent writers into one table were serialized by the storage-row lock (class 102) from their first flush to their commit, until #2184 made ordinary writers share it. The concurrency arm therefore uses `parallel_copy`, whose loaders flush into one storage at once, each through PREPARE.
 - **COMMIT PREPARED crashes in the preparing session.** On main, `COMMIT PREPARED` in the session that prepared a pgcolumnar write crashes the backend (#1323), so this file commits from another session.
 - **A transaction did not see its own groups in the extent.** Its extent row is written at pre-commit, but its groups are visible to it from the moment they flush. A plan made in between bounded the column by the committed rows alone, which is an under-estimate: 61 rows against the zone maps' 4500 in this file's fixture. The bound now adds the transaction's own pending fold.
 - **The xact scan counters carry over.** `pg_stat_get_xact_numscans` reports a backend's pending stats, flushed about once a second rather than at transaction end. A measurement in the same connection as the writes counts their zone-map reads too, so the planning arm measures on a fresh connection.
@@ -10162,11 +10162,11 @@ The fixture runs pg_isolation_regress once over all seven specs in a private dat
 
 ## 230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive
 
-The twin of `test/concurrency.sh` (#4). Two sessions deleting different rows of one chunk group serialize on the chunk-group lock, and both deletes survive -- with the group's delete_vector row present and absent; deletes into different chunk groups do not wait and finish in a live transaction.
+The twin of `test/concurrency.sh` (#4). Two sessions deleting different rows of one chunk group serialize on the chunk-group lock, and both deletes survive -- with the group's delete_vector row present and absent; deletes into different chunk groups do not wait and finish in a live transaction. Scenarios D, E and F (#2184): a transaction that inserts and then deletes in a group and one that deletes in that group and then inserts both commit, on a table whose storage row is current and on one an earlier build stamped, where the DELETE waits for the raising INSERT before it takes its group lock; a second first writer that waited for the first keeps only ShareLock, so a third writer does not wait for it. Writers of unrelated rows that share a row-identity bucket do not wait for each other at a flush (G), and two writers of one row still serialize, on the chunk-group locks a flush takes before its same-row check (H). A second first writer at REPEATABLE READ re-checks the storage row against the latest committed state (I). Six writers of their own rows, five rounds each, with and without an INSERT first, never fail (J, #2251). A rewrite verb in a transaction that wrote to the table refuses with 55P03 while another writer is open, and runs once it is alone (K). The group locks are held from before the same-row check to commit, so a writer of the same row that waits on one cannot slip in between check and upsert (L), and a flush takes them in group order rather than the order it visited rows (M).
 
 ### Every test
 
-One module fixture runs the three scenarios in a private database; session 2's blocking DELETE runs in a thread while the controller polls pg_stat_activity as the shell does, every wait bounded at 60s.
+One module fixture runs the thirteen scenarios in a private database; session 2's blocking DELETE runs in a thread while the controller polls pg_stat_activity as the shell does, every wait bounded at 60s. In D to M each session is a queue of statements run by its own thread, as the shell's psql reads a FIFO, so a statement that blocks never blocks the controller.
 
 | test | what it holds |
 | --- | --- |
@@ -10177,7 +10177,50 @@ One module fixture runs the three scenarios in a private database; session 2's b
 | `test_b_both_first_deletes_survived` | B both first deletes survived (ids 1,2 gone) |
 | `test_c_different_group_deleter_does_not_block` | C different-group deleter does not block |
 | `test_c_both_different_group_deletes_survived` | C both different-group deletes survived (ids 1,5 gone) |
-| `test_every_bounded_wait_completed` | a bounded wait for a session to reach idle-in-transaction completed -- the shell's four wait_timeout names, recorded only where a wait timed out; declines on a green run, where the shell records nothing |
+| `test_d_insert_and_scan_hold_share_lock_only` | D an INSERT and a scan leave s1 holding the storage-row lock in ShareLock only |
+| `test_d_premise_delete_holds_group_lock` | premise: D s2's DELETE holds the group lock of the row it deleted |
+| `test_d_delete_takes_no_storage_row_lock` | D that DELETE, on a table whose storage row is current, takes no storage-row lock |
+| `test_d_premise_delete_waits_on_group_lock` | premise: D s1's DELETE in that group waits on s2's group lock |
+| `test_d_insert_returns_while_s1_waits` | D s2's INSERT after its DELETE returns while s1 still waits on s2's group lock |
+| `test_d_both_commit` | D the inserting-then-deleting and the deleting-then-inserting transactions both commit |
+| `test_d_both_took_effect` | D both DELETEs and both INSERTs took effect |
+| `test_e_premise_older_stamp` | premise: E t5's storage row carries an earlier build's stamp |
+| `test_e_raiser_holds_exclusive` | E s1's INSERT raised the stamp and holds the storage-row lock in ExclusiveLock |
+| `test_e_delete_waits_before_group_lock` | E a DELETE first in its transaction waits on the raiser's storage-row lock before it takes a group lock |
+| `test_e_raiser_delete_returns` | E the raiser's DELETE in the waiting deleter's group returns at once |
+| `test_e_deleter_keeps_no_storage_row_lock` | E once the raiser commits, the deleter holds its group lock and no storage-row lock |
+| `test_e_both_commit` | E the raising and the deleting transactions both commit |
+| `test_e_both_took_effect` | E both DELETEs and both INSERTs took effect, and the stamp is raised |
+| `test_f_premise_no_storage_row` | premise: F t6 has no storage row before its first write |
+| `test_f_first_writer_exclusive` | F the first writer holds the storage-row lock in ExclusiveLock |
+| `test_f_second_writer_waits` | F a second first writer waits on the storage-row lock |
+| `test_f_second_writer_share_only` | F once the first writer commits, the second holds the storage-row lock in ShareLock only |
+| `test_f_third_writer_commits` | F a third writer's INSERT, with a 2 s lock_timeout, commits while the second is open |
+| `test_f_all_three_took_effect` | F all three INSERTs took effect |
+| `test_g_s1_holds_every_bucket` | G s1's DELETE of 39999 rows takes every row-identity bucket, all free, and holds them |
+| `test_g_delete_in_other_group_returns` | G s2's DELETE in another row group, with a 2 s lock_timeout, returns holding its group lock and no bucket |
+| `test_g_both_commit` | G both deleting-then-updating transactions commit |
+| `test_g_both_took_effect` | G both DELETEs and both UPDATEs took effect |
+| `test_h_premise_s2_waits_on_group_lock` | premise: H s2's UPDATE waits on a group lock while s1 is open |
+| `test_h_same_row_update_fails_40001` | H once s1 commits, s2's UPDATE of the same row fails with serialization_failure |
+| `test_h_one_version_of_the_row` | H the row s1 updated has one version, and s2 changed nothing |
+| `test_i_premise_no_storage_row` | premise: I t9 has no storage row before its first write |
+| `test_i_premise_second_waits` | premise: I the second first writer waits on the storage-row lock |
+| `test_i_second_first_writer_commits_at_rr` | I a second first writer at REPEATABLE READ commits once the first has, and the table has one storage row |
+| `test_j_inserting_writers_do_not_fail` | J six writers that each insert, delete and update their own rows, five rounds: no transaction fails |
+| `test_j_inserting_writers_rows` | J and their rows are what the rounds leave |
+| `test_j_existing_rows_writers_do_not_fail` | J six writers that each delete and update their own existing rows, five rounds: no transaction fails (#2251) |
+| `test_j_existing_rows_writers_rows` | J and those rows are what the rounds leave |
+| `test_k_rewrite_after_write_refuses_while_another_writer_is_open` | K {recluster, compact_rewrite} after s1's own INSERT, while s2's INSERT is open, refuses at once with 55P03 (2 parametrized) |
+| `test_k_rewrite_after_write_runs_alone` | K once s1 has rolled back, s2's {recluster, compact_rewrite} after its own INSERT commits, and the rows are kept (2 parametrized) |
+| `test_l_premise_s1_waits_holding_first_group` | premise: L s1's UPDATE holds its first group's lock and waits on the second's, which s3 holds |
+| `test_l_premise_s2_waits_on_group_lock` | premise: L s2's UPDATE of a row s1 is updating waits on that row's group lock |
+| `test_l_same_row_update_fails_40001` | L once s1 commits, s2's UPDATE of the same row fails with serialization_failure |
+| `test_l_one_version_of_the_row` | L the row both updated has one version, s1's |
+| `test_m_premise_index_nested_loop` | premise: M s1's DELETE is an index nested loop driven by the VALUES list |
+| `test_m_waits_holding_no_group_lock` | M s1's DELETE, which visits the third group first, waits for the first group holding no group lock |
+| `test_m_both_commit` | M both DELETE transactions commit, and the four rows are gone |
+| `test_every_bounded_wait_completed` | a bounded wait for a session to reach idle-in-transaction completed -- the shell's five wait_timeout names, recorded only where a wait timed out; declines on a green run, where the shell records nothing |
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
 

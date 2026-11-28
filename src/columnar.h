@@ -597,6 +597,8 @@ extern void PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid,
 											LOCKMODE workerlock);
 /* does this transaction hold the storage-row lock of storageId? (#2211) */
 extern bool PgColumnarStorageRowLockHeldByMe(uint64 storageId);
+/* raise an older storage row before a delete flush takes a group lock (#2184) */
+extern void PgColumnarRaiseStorageRowBeforeDelete(uint64 storageId);
 
 /*
  * Assert-only invariant: a storage's live row-group footprints and its

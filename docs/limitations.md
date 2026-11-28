@@ -97,7 +97,8 @@ produce a NULL where a value exists, unless the native format version also
 changes with it.
 
 **Do not downgrade the extension below the version that wrote a table.** After
-1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. It
+1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. A
+write includes a `DELETE` alone (#2184): a delete raises the stamp too. It
 reports an error rather than a wrong answer. Upgrading is safe and needs no
 conversion. A newer build reads every descriptor version it has ever written.
 Both guards are pinned by `test/native_format.sh`.
@@ -725,9 +726,12 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `pgcolumnar.enable_row_update_lock` (default on) controls this serialization.
   The GUC `pgcolumnar.row_lock_buckets` (default 1024) bounds the held locks per
   storage, so a bulk update cannot exhaust the lock table. Unrelated rows may
-  share a bucket, which only makes them wait when they need not. For the same
-  reason, two multi-statement transactions can rarely deadlock, even on disjoint
-  rows. This happens when their bucketed locks collide in opposite statement order.
+  share a bucket. At the end of a statement a writer skips a bucket another
+  transaction holds. It waits only on the row groups it deletes from, so writers
+  of disjoint row groups never wait for each other there (#2184). An `UPDATE` on a
+  table with a unique index waits on each row's bucket as it reaches it. So two
+  multi-statement transactions that run such `UPDATE`s can rarely deadlock, even
+  on disjoint rows, when their buckets collide in opposite statement order.
   Retry resolves it, as with any serialization failure.
 - A writer keeps its delete marks in memory until it writes them to the catalog.
   It writes them at the end of each statement. It also writes them when a nested
@@ -788,36 +792,47 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   transaction ends. While one insert statement into a table with an exclusion
   constraint runs, a second insert into that table waits for the first
   transaction. It waits even when its row does not overlap. A row whose key holds
-  a NULL takes no lock and does not wait at that point. After the first statement
-  ends, any second insert into a pgcolumnar table waits while the first
-  transaction is open. That holds for any key, with or without an index. So two transactions that insert into two pgcolumnar tables in opposite
-  order can deadlock even when no rows conflict. One of them then gets
-  `deadlock_detected` (40P01). On heap both would commit. Retry the transaction
-  on that error. A
+  a NULL takes no lock and does not wait at that point. Inserts of different
+  keys into one table do not wait for each other (#2184). Before, a second
+  insert waited while the first transaction was open. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
   `pgcolumnar.enable_unique_insert_lock = off`. The locks use the shared lock
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
-- Two writers can deadlock on one table with no maintenance running (#2184). A
-  writer holds two locks to commit. One is the delete lock of each row group it
-  deletes from. The other is the table's storage-row lock, which every flush of
-  new rows takes. It
-  can take them in either order. A transaction that deletes, scans and then
-  inserts takes the delete lock first; one that inserts, scans and then deletes
-  takes the storage-row lock first. When two such transactions meet, one gets
-  `deadlock_detected` (40P01). Retry it, as with any deadlock.
+- A writer holds the delete lock of each row group it deletes from until
+  commit. Two transactions can touch the same two row groups in opposite order,
+  in separate statements. They can then deadlock on those locks, and one gets
+  `deadlock_detected` (40P01). This happens even when no row is shared, because
+  the lock covers a whole row group. A heap locks rows, so it deadlocks only when
+  rows are shared. Within one statement a writer takes its row groups' locks in
+  group order, so a single statement does not close such a cycle. Retry on 40P01.
+- Writers no longer deadlock on the storage-row lock (#2184) or on the
+  row-identity locks of rows they do not share (#2251). A writer also holds the
+  table's storage-row lock, which every flush of new rows takes. Writers share
+  it, so a transaction that inserts and then deletes, and one that deletes and
+  then inserts, both commit. A rewrite verb in a transaction that has written to
+  the table is the exception below. The first write
+  to a table takes it alone. So do the write that raises an earlier build's
+  format stamp and the two rewrite verbs below. A
+  `DELETE` that finds the stamp of an earlier build raises it first, before it
+  takes any delete lock.
 - `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
   do not queue behind them. Before it writes, a rewrite needs the storage-row lock
   and every row group's delete lock at once. It waits for each busy lock alone,
-  holding none, and tries again, so it never closes a deadlock with a writer. It
-  can still get 40P01 when it waits inside a deadlock between two writers. A steady
+  holding none, and tries again, so it never closes a deadlock with a writer. A steady
   stream of short delete transactions can keep one lock busy at every try. After
   `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
   `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
   its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
   its row groups wait for it to commit.
+- A `pgcolumnar.recluster` or `pgcolumnar.compact_rewrite` in a transaction that
+  has already written to the table does not wait for the storage-row lock. It
+  stops at once with SQLSTATE `55P03` while another writer of the table is open,
+  and changes nothing. Waiting there could deadlock with that writer if it ran a
+  rewrite too (#2184). Before, the other writer's `INSERT`
+  waited instead. Run a rewrite in a transaction of its own.
 - Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
   transaction. The first verb keeps the storage-row lock until commit. A second
   verb in the same transaction then waits for a busy row group while it holds that

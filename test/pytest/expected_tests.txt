@@ -2643,4 +2643,12 @@ guard_tests 910
 # 103 first, a kept-alive connection closed unanswered is still retried, and the server closed one on each read), by
 # collection of those two files (112 and 41 on main b888a5ae, 116 and 45 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6394
+# cluster_tests 6394 -> 6432 for #2184's thirty-eight tests in test_concurrency.py (8 -> 46 by collection of that file:
+# scenarios D to K, two writers' chunk-group and storage-row locks form no cycle, writers of unrelated rows sharing
+# row-identity buckets, the same row on the chunk-group locks, two first writers at REPEATABLE READ, six writers of
+# their own rows over five rounds (#2251), and a rewrite after a write), restated on main dd4e2f6e, by collection over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6432 -> 6439 for #2184's scenarios L and M in test_concurrency.py (jdatcmd's review of 7b8cb54a): the
+# group locks held from before the same-row check to commit, and taken in group order, by collection of that file
+# (46 -> 53) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6439
