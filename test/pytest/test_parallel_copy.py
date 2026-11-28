@@ -2360,6 +2360,26 @@ def pcopy(pgc_cluster, server_dir):
                                     "ALTER TABLE t_enc DROP COLUMN gone")
         r["2222 ceodlf"] = mal_order("UTF8", cf["ceodlf"])
         r["2222 ceodcrlf"] = mal_order("UTF8", cf["ceodcrlf"])
+        # A row COPY refuses, then a row out of order (review of #2259, N4 there): the
+        # splitter must still refuse the order. 4 partitions at 500, 1000 and 1500, 1, 2
+        # and 4 workers; _enc_outcome's 60 s statement_timeout bounds a hang.
+        bu = d / "mal_badunsorted.txt"
+        bu.write_bytes(b"".join(b"1200\n" if i == 1200 else b"0\tx\n" if i == 1600 else b"%d\tx%d\n" % (i, i)
+                                for i in range(1, 2001)))
+        os.chmod(bu, 0o644)
+        r["2222 badunsorted premise"] = " ".join([
+            "|".join(str(_enc_heap(edb, "UTF8", bu)).split("|")[:2]),
+            bu.read_bytes().split(b"\n")[1599][:3].hex()])
+        res = []
+        for w in (1, 2, 4):
+            edb.run("DROP TABLE IF EXISTS t_bu CASCADE; CREATE TABLE t_bu (id int, txt text) PARTITION BY RANGE (id); "
+                    "CREATE TABLE t_bu_a PARTITION OF t_bu FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_b PARTITION OF t_bu FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_c PARTITION OF t_bu FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+                    "CREATE TABLE t_bu_d PARTITION OF t_bu FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+            res.append(f"{w}:" + str(_enc_outcome(
+                edb, "UTF8", f"SELECT pgcolumnar.parallel_copy('t_bu'::regclass, '{bu}', {w})", "t_bu")))
+        r["2222 badunsorted"] = " ".join(res)
         r["2222 ceodlf want"] = ("22P04|end-of-copy marker is not alone on its line|0 rows|0 prepared" if pg18
                                  else MAL_SORTED)
         yield r
@@ -4014,3 +4034,19 @@ def test_parallel_copy_eod_marker_crlf_after_last_field_follows_the_major(pcopy,
                 "#2222 control: an end-of-data marker then CR LF after the last field, in a file with CRLF line"
                 " ends, on a row out of order / partitioned, 1 worker: on PG 17 and older, where COPY loads the"
                 " row, the splitter reads the key and refuses the order (22000); on PG 18, COPY's 22P04")
+
+
+def test_parallel_copy_malformed_then_unsorted_premise(pcopy, expect):
+    """#2222 premise: heap COPY refuses badunsorted.txt on row 1200, and row 1600 is 0 TAB x."""
+    expect.text(pcopy["2222 badunsorted premise"], '22P04|missing data for column "txt" 300978',
+                "#2222 premise: heap COPY refuses badunsorted.txt with 22P04 missing data for column txt (row 1200"
+                " has no TAB); its row 1600 is 30 09 78")
+
+
+def test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core(pcopy, expect):
+    """#2222 (review of #2259, mutant N4): a row left for its loader must not stop the
+    sort check, so a later out-of-order row is still refused (22000) before any loader
+    runs. With 4 workers a missing check made two loaders write one partition."""
+    expect.text(pcopy["2222 badunsorted"], f"1:{MAL_SORTED} 2:{MAL_SORTED} 4:{MAL_SORTED}",
+                "#2222 a row COPY refuses, then a row out of order / partitioned at 500, 1000 and 1500, 1, 2 and 4"
+                " workers: the splitter still refuses the order (22000), 0 rows, no prepared transaction")

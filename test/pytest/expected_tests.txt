@@ -2604,4 +2604,8 @@ guard_tests 910
 # test_parallel_copy_row_copy_loads_is_not_left_for_core (6 parametrized controls), and
 # test_parallel_copy_eod_marker_after_last_field_follows_the_major and its CRLF twin, by collection of that file
 # (369 on main 0da8ea00, 388 here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6306
+# cluster_tests 6306 -> 6308, still #2222, for jdatcmd's review of #2259 at 2fc9283d (mutant N4 there): the premise
+# test_parallel_copy_malformed_then_unsorted_premise and test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core,
+# by collection of test_parallel_copy.py (388 at 2fc9283d, 390 here) and over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it).
+cluster_tests 6308

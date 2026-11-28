@@ -341,6 +341,8 @@ these constraints.
   when the key is not valid. On PostgreSQL 15 to 17, one is a `\.` followed by
   the line end the rest of the file does not use. The other is a character
   with no equivalent in the database encoding (`22P05` from `COPY`).
+  A file that also has a row out of order is refused for its order (`22000`).
+  The order is checked before any worker starts.
 - The caller needs membership in the `pg_read_server_files` role and INSERT on
   the target. The file is read on the server host.
 - Set `max_prepared_transactions` above the worker count. The load prepares one

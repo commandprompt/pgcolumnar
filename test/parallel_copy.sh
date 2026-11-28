@@ -2880,4 +2880,33 @@ check "#2222 control: an end-of-data marker then LF after the last field, on a r
 	"$(mal_order UTF8 "$MAL/ceodlf.txt")" "$_ceodlf_want"
 check "#2222 control: an end-of-data marker then CR LF after the last field, in a file with CRLF line ends, on a row out of order / partitioned, 1 worker: on PG 17 and older, where COPY loads the row, the splitter reads the key and refuses the order (22000); on PG 18, COPY's 22P04" \
 	"$(mal_order UTF8 "$MAL/ceodcrlf.txt")" "$_ceodlf_want"
+# A row COPY refuses must not stop the sort check for the rows after it (review of
+# #2259, mutant N4 there). badunsorted.txt: rows 1 to 2000 of id TAB x<id>, sorted,
+# but row 1200 is 1200 with no TAB (COPY refuses it before it reads a value) and
+# row 1600 is 0 TAB x, out of order. The splitter leaves row 1200 for its loader
+# and must still refuse row 1600 (22000), before any loader runs. Loaded with 1, 2
+# and 4 workers into 4 partitions at 500, 1000 and 1500. A splitter that stopped
+# checking would put row 1600 in a range that does not own its partition: with 4
+# workers two loaders then write one partition and the load waits on itself, so
+# enc_outcome's 60 s statement_timeout bounds it.
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "1200\n"; else if (i == 1600) printf "0\tx\n"; else printf "%d\tx%d\n", i, i }' >"$MAL/badunsorted.txt"
+chmod 644 "$MAL/badunsorted.txt"
+[ "$(id -u)" = "0" ] && chown postgres "$MAL/badunsorted.txt"
+mal_bu_target() {	# -> (re)creates t_bu (id int, txt text), 4 columnar partitions at 500, 1000 and 1500, empty
+	PGC_DB=$ENC_DB psql_run "DROP TABLE IF EXISTS t_bu CASCADE; CREATE TABLE t_bu (id int, txt text) PARTITION BY RANGE (id);
+	  CREATE TABLE t_bu_a PARTITION OF t_bu FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar;
+	  CREATE TABLE t_bu_b PARTITION OF t_bu FOR VALUES FROM (500) TO (1000) USING pgcolumnar;
+	  CREATE TABLE t_bu_c PARTITION OF t_bu FOR VALUES FROM (1000) TO (1500) USING pgcolumnar;
+	  CREATE TABLE t_bu_d PARTITION OF t_bu FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+}
+_bu_res=""
+for _w in 1 2 4; do
+	mal_bu_target
+	_bu_res="$_bu_res $_w:$(enc_outcome "$ENC_DB" UTF8 "SELECT pgcolumnar.parallel_copy('t_bu'::regclass, '$MAL/badunsorted.txt', $_w)" t_bu)"
+done
+check "#2222 premise: heap COPY refuses badunsorted.txt with 22P04 missing data for column txt (row 1200 has no TAB); its row 1600 is 30 09 78" \
+	"$(enc_heap "$ENC_DB" UTF8 "$MAL/badunsorted.txt" | cut -d'|' -f1,2) $(sed -n 1600p "$MAL/badunsorted.txt" | od -An -tx1 -N 3 | tr -d ' ')" \
+	"22P04|missing data for column \"txt\" 300978"
+check "#2222 a row COPY refuses, then a row out of order / partitioned at 500, 1000 and 1500, 1, 2 and 4 workers: the splitter still refuses the order (22000), 0 rows, no prepared transaction" \
+	"${_bu_res# }" "1:$_mal_sorted 2:$_mal_sorted 4:$_mal_sorted"
 pgc_summary
