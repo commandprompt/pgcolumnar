@@ -282,6 +282,15 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/native_param_pushdown.sh` and `test_native_param_pushdown.py` check that
+  a hash join's runtime range survives the keys a columnar scan freezes (#2173).
+  One arm adds a key frozen at Begin, `f.k <= $2`, beside the key frozen at the
+  first run: the scan must keep four skip predicates and the range must still
+  remove its groups. The other rescans the join once per outer row with a frozen
+  key that removes each loop's last group: each rescan must keep three skip
+  predicates and read no group. Before, copying the range from the start of the
+  predicate array lost its upper bound, so the scan read 7 groups instead of 1
+  with every answer still right, and passed both suites. Test-only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
   refusal for 2 or more workers (#2187) comes before the file is opened, as
   #2209 pinned for the unique-index refusal (#2252). A missing file on a table

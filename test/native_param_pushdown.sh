@@ -597,6 +597,40 @@ check "a hash-join rescan with a key frozen at the first run removes groups in e
 		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE r(19500)" \
 		| grep -E 'Chunk Groups Removed by Filter|Runtime Filter Groups Removed|Chunk Groups Read' | sed 's/.*: //' | tr '\n' '|' | sed 's/|$//')" "0|40|1"
 
+# #2173: the first run must carry the hash join's runtime range over from where it
+# sits, after any key frozen at Begin. f.k <= $2 is a bound parameter, so Begin
+# freezes it and the range lands after it; f.k >= same($1) waits for the first run.
+# With f.k >= 8150 and f.k <= 15000, the range of d (k 8001..8200) is all that
+# removes groups 10..15 (k 9001..15000), and one group (k 8001..9000) is read. The
+# reader moves a predicate that removes more groups ahead of the others, so the
+# range is credited with 11 of the 19 groups removed. Copying the range from the
+# array's start instead kept f.k <= $2 and the range's lower bound, and lost its
+# upper bound. "Usable Skip Predicates|Chunk Groups Read|Runtime Filter Groups
+# Removed", then the answer, which heap gives as 51|416925 (k 8150..8200) above.
+BK="$(psql_m "${JOIN_SET[@]}" \
+	"PREPARE jb(int, int) AS SELECT count(*)::text || '|' || sum(f.k) FROM f JOIN d ON f.k = d.k WHERE f.k >= same(\$1) AND f.k <= \$2" \
+	"EXECUTE jb(8150, 15000)" "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE jb(8150, 15000)")"
+check "a key frozen at Begin and one frozen at the first run under a hash join's runtime range count what heap counts (#2173)" \
+	"$(grep -xE '[0-9]+\|[0-9]+' <<<"$BK" | head -1)" "51|416925"
+check "the first run keeps the runtime range after a key frozen at Begin: four skip predicates, one group read, 11 groups removed by the range (#2173)" \
+	"$(grep -E 'Usable Skip Predicates|Chunk Groups Read|Runtime Filter Groups Removed' <<<"$BK" | sed 's/.*: //' | tr '\n' '|' | sed 's/|$//')" "4|1|11"
+
+# #2173: each rescan of the hash join must keep the key frozen at the first run
+# before the new runtime range. With f.k >= same(16001), loop 1's range (k
+# 8001..8200) and loop 2's (k 15001..15200) each leave one group, and the frozen
+# key removes it, so no group is read in either loop. A rescan that let the new
+# range overwrite the frozen key read loop 2's group. "Usable Skip
+# Predicates|Chunk Groups Read", then the two loops' answers: d2 holds no k at or above
+# 16001, so each loop counts 0.
+RK="$(psql_m "${JOIN_SET[@]}" \
+	"PREPARE r(int) AS SELECT g.g || '|' || (SELECT count(*)::text || '|' || coalesce(sum(f.k), 0) FROM f JOIN d2 ON f.k = d2.k AND d2.grp = g.g WHERE f.k >= same(\$1)) FROM generate_series(1, 2) g(g)" \
+	"EXECUTE r(16001)" "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE r(16001)")"
+check "a hash-join rescan whose key frozen at the first run removes each loop's group counts 0 (#2173)" \
+	"$(grep -xE '[0-9]+\|[0-9]+\|[0-9]+' <<<"$RK" | tr '\n' ' ' | sed 's/ $//')" "1|0|0 2|0|0"
+check "each rescan keeps the key frozen at the first run before the new runtime range: three skip predicates, no group read (#2173)" \
+	"$(grep -E 'Usable Skip Predicates|Chunk Groups Read' <<<"$RK" | sed 's/.*: //' | tr '\n' '|' | sed 's/|$//')" "3|0"
+check "the backend is alive after the #2173 arms" "$(survived "$CRASHES_BEFORE")" "1"
+
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

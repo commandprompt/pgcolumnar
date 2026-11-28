@@ -2750,4 +2750,9 @@ guard_tests 910
 # test_parallel_copy_storage_row_gone_during_the_load_premise and
 # test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6639
+# cluster_tests 6639 -> 6644 for #2173's five tests in test_native_param_pushdown.py: a key frozen at Begin and
+# one frozen at the first run under a hash join's runtime range (the answer, and four skip predicates, one group
+# read, 11 removed by the range), a hash-join rescan whose first-run key removes each loop's group (the answers,
+# and three skip predicates, no group read), and a crash count, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6644
