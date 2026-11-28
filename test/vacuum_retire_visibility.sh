@@ -22,12 +22,21 @@
 # column_chunk rows are gone, the state Part 1 leaves on a build without the
 # fix, is refused with XX001 by both read paths rather than read as NULLs. A
 # table with no stored column has groups with no chunks and no bytes, and
-# still reads. A row number no row group covers (an aborted insert's index
-# entry) is not visible, and an index scan skips it.
+# still reads, and so does a table that got a column after its data was
+# written (its groups have fewer chunks than the table has columns). A row
+# number no row group covers (an aborted insert's index entry) is not visible,
+# and an index scan skips it.
 #
 # Part 3 pins the fix's extent: the VACUUM keeps PROC_IN_VACUUM while it sets
 # the visibility map, so a VACUUM held there does not hold back the horizon of
 # a VACUUM on another table.
+#
+# Part 4 (#2266, review B1) runs INSERT ... ON CONFLICT on a key whose row
+# another session is flushing, held by pgcolumnar.flush_hold_ms just before the
+# flush inserts its row_group row. The flush inserts that row last, so the
+# upsert never sees a group without its column chunks: it waits for the
+# writer, as on main, and then DO NOTHING skips the row and DO UPDATE gets
+# main's 0A000 (columnar has no row locking).
 #
 # The pytest twin is test/pytest/test_vacuum_retire_visibility.py, with the
 # same check names.
@@ -210,6 +219,27 @@ check "a sequential scan of a table with no stored column reads its rows" \
 check "an index fetch from a table with no stored column reads its rows" \
 	"$(sql_out "$FETCH SELECT string_agg(coalesce(a::text, 'NULL'), ',') FROM z WHERE a IS NULL;")" "NULL,NULL"
 
+# A table that got a column after its data was written (#2266, review B2): its
+# row groups have chunks for the first two columns only.
+psql_run "CREATE TABLE ac (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false);"
+psql_run "INSERT INTO ac SELECT g, 'v' || g FROM generate_series(1, 1000) g;"
+psql_run "ALTER TABLE ac ADD COLUMN w int DEFAULT 5;"
+psql_run "CREATE INDEX ac_id ON ac (id);"
+psql_run "CREATE INDEX ac_id_w ON ac (id, w);"
+ACSID="$(q "SELECT pgcolumnar.get_storage_id('ac');")"
+check "premise: the table with an added column has fewer chunks than columns" \
+	"$(q "SELECT count(DISTINCT column_index) FROM pgcolumnar.column_chunk WHERE storage_id = $ACSID;")" "2"
+check "a sequential scan of a table with an added column reads its rows" \
+	"$(sql_out "$SCAN SELECT count(*), sum(w), max(v) FROM ac;")" "1000|5000|v999"
+check "an index fetch from a table with an added column reads its row" \
+	"$(sql_out "$FETCH SELECT id, v, w FROM ac WHERE id = 7;")" "7|v7|5"
+# enable_indexscan stays on: off, it disables index-only scans too
+IOS="SET enable_seqscan = off; SET enable_bitmapscan = off; SET pgcolumnar.enable_custom_scan = off;"
+check "premise: that read is an index-only scan" \
+	"$(sql_out "$IOS EXPLAIN (COSTS OFF) SELECT id, w FROM ac WHERE id = 7;" | grep -m1 -oE 'Index Only Scan|Index Scan|Seq Scan|Custom Scan|Bitmap Heap Scan')" "Index Only Scan"
+check "an index-only scan of a table with an added column reads its row" \
+	"$(sql_out "$IOS SELECT id, w FROM ac WHERE id = 7;")" "7|5"
+
 # An index entry whose row no row group covers: an aborted insert's.
 psql_run "BEGIN; INSERT INTO gd VALUES (3, 'three'); ROLLBACK;"
 check "an index entry no row group covers returns no row" \
@@ -252,6 +282,67 @@ check "a vacuum of vb retires its dead group while va's vacuum is held" "$retire
 check "premise: va's vacuum was still held when vb's group was retired" "$still" "yes"
 q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query = 'VACUUM va;';" >/dev/null
 wait "$VA_PID" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Part 4: an upsert of a key whose row another session is flushing (#2266)
+# ---------------------------------------------------------------------------
+echo "-- part 4: INSERT ... ON CONFLICT while another session flushes the same key"
+psql_run "CREATE TABLE u (id int, pad text) USING pgcolumnar WITH (autovacuum_enabled = false);"
+psql_run "CREATE UNIQUE INDEX u_id ON u (id);"
+psql_run "INSERT INTO u VALUES (0, 'z');"
+# upsert_race ID STATEMENT: a writer inserts (ID, 'a') held before its row_group
+# row; STATEMENT runs meanwhile. Sets ur_held, ur_waited, ur_still, ur_out,
+# ur_writer and ur_rows.
+upsert_race() {
+	local id="$1" stmt="$2" i wpid upid held
+	held="SELECT count(*) FROM pg_stat_activity WHERE query = 'INSERT INTO u VALUES ($id, ''a'');' AND wait_event_type = 'Extension';"
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS="-c pgcolumnar.flush_hold_ms=15000 -c statement_timeout=60s" \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "INSERT INTO u VALUES ($id, 'a');" \
+		> "$PGC_WORKDIR/u_writer_$id.out" 2>&1 &
+	wpid=$!
+	ur_held="no"
+	for i in $(seq 1 200); do
+		if [ "$(q "$held")" = "1" ]; then ur_held="yes"; break; fi
+		sleep 0.1
+	done
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS="-c statement_timeout=60s" \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate -c "$stmt" \
+		> "$PGC_WORKDIR/u_upsert_$id.out" 2>&1 &
+	upid=$!
+	ur_waited="never waited"
+	for i in $(seq 1 100); do
+		kill -0 "$upid" 2>/dev/null || break
+		if [ "$(q "SELECT wait_event_type FROM pg_stat_activity WHERE query = '$(printf '%s' "$stmt" | sed "s/'/''/g")';")" = "Lock" ]; then
+			ur_waited="Lock"; break
+		fi
+		sleep 0.1
+	done
+	ur_still="$( [ "$(q "$held")" = "1" ] && echo yes || echo no )"
+	for i in $(seq 1 300); do
+		kill -0 "$wpid" 2>/dev/null || kill -0 "$upid" 2>/dev/null || break
+		sleep 0.1
+	done
+	wait "$wpid" "$upid" 2>/dev/null || true
+	ur_out="$(head -1 "$PGC_WORKDIR/u_upsert_$id.out")"
+	ur_writer="$(head -1 "$PGC_WORKDIR/u_writer_$id.out")"
+	ur_rows="$(q "SELECT string_agg(id || ':' || pad, ',' ORDER BY id) FROM u WHERE id = $id;")"
+}
+
+upsert_race 1 "INSERT INTO u VALUES (1, 'b') ON CONFLICT DO NOTHING;"
+check "premise: the writer of id 1 is held before its row_group row" "$ur_held" "yes"
+check "an upsert DO NOTHING during the flush waits for the writer" "$ur_waited" "Lock"
+check "premise: the writer of id 1 was still held while the upsert waited" "$ur_still" "yes"
+check "the upsert DO NOTHING then skips the row, as on main" "$ur_out" "INSERT 0 0"
+check "premise: the writer of id 1 committed its row" "$ur_writer" "INSERT 0 1"
+check "id 1 holds the writer's row" "$ur_rows" "1:a"
+
+upsert_race 2 "INSERT INTO u VALUES (2, 'b') ON CONFLICT (id) DO UPDATE SET pad = 'c';"
+check "premise: the writer of id 2 is held before its row_group row" "$ur_held" "yes"
+check "an upsert DO UPDATE during the flush waits for the writer" "$ur_waited" "Lock"
+check "premise: the writer of id 2 was still held while the upsert waited" "$ur_still" "yes"
+check "the upsert DO UPDATE then fails with 0A000, as on main" "$ur_out" "ERROR:  0A000"
+check "premise: the writer of id 2 committed its row" "$ur_writer" "INSERT 0 1"
+check "id 2 holds the writer's row" "$ur_rows" "2:a"
 
 # Equal counts, both read from the log: an unreadable log reads empty on both
 # sides, which check refuses.

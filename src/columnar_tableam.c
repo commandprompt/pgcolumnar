@@ -106,6 +106,7 @@ bool		pgcolumnar_autovacuum_expire = false;
 int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
 int			pgcolumnar_rewrite_lock_timeout = 10000;	/* ms; 0 waits without limit (#2074) */
 int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
+int			pgcolumnar_flush_hold_ms = 0;	/* dev/test: #2266 flush catalog order */
 
 /* pgcolumnar.objstore_s3_addressing (#621, #2091) */
 static const struct config_enum_entry pgcolumnar_s3_addressing_options[] = {
@@ -5257,6 +5258,22 @@ _PG_init(void)
 							"the all-visible blocks and setting them.",
 							NULL,
 							&pgcolumnar_vm_set_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
+							NULL, NULL, NULL);
+
+	/*
+	 * A developer pause for the row-group flush (#2266): it waits this long after
+	 * the group's column_chunk, zone_map, bloom and sketch rows and before its
+	 * row_group row, so a test can run a reader in that window. Superuser-only
+	 * and off by default.
+	 */
+	DefineCustomIntVariable("pgcolumnar.flush_hold_ms",
+							"Dev/test: wait this many ms in a row-group flush before "
+							"its row_group catalog row is inserted.",
+							NULL,
+							&pgcolumnar_flush_hold_ms,
 							0, 0, 600000,
 							PGC_SUSET,
 							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,

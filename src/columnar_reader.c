@@ -2840,7 +2840,11 @@ pgcolumnar_native_qual_skipvec(PgColumnarReadState *rs, int vecCount)
  *
  * A flush writes the row_group row and its column_chunk rows in one
  * transaction, and every path that removes a group removes both in one
- * transaction, so under one snapshot a group with data has at least one chunk.
+ * transaction, so under one MVCC snapshot a group with data has at least one
+ * chunk. A dirty or SnapshotAny reader, such as the unique check of a
+ * concurrent INSERT ... ON CONFLICT, sees another transaction's catalog rows
+ * as they are inserted, so the flush inserts the row_group row after all the
+ * others (#2266): whoever finds the group finds its chunks too.
  * byte_length is the sum of the chunk lengths, so it is 0 exactly when the
  * group had no column to store (a table with no stored column). A group that
  * breaks this is what a lazy VACUUM left behind before #2263 was fixed: its

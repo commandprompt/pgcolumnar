@@ -13,10 +13,14 @@ Part 1 makes the window by hand: a blocker connection holds an uncommitted free_
 row with the key the retirement inserts last, so the VACUUM waits there after its
 catalog deletes, and a reader runs a statement it prepared (and planned) before the
 VACUUM. Part 2 is the reader's guard: a row group with data and no column_chunk rows
-is refused with XX001 on both read paths, a table with no stored column still reads,
-and an aborted insert's index entry returns no row. Part 3: a VACUUM held in its
+is refused with XX001 on both read paths, a table with no stored column still reads, a
+table that got a column after its data was written still reads by seq, index and
+index-only scans (#2266, B2), and an aborted insert's index entry returns no row. Part 3: a VACUUM held in its
 visibility-map step keeps PROC_IN_VACUUM, so it does not hold back another table's
-retirement.
+retirement. Part 4 (#2266, B1): INSERT ... ON CONFLICT on a key another connection is
+flushing, held by pgcolumnar.flush_hold_ms before the flush inserts its row_group row.
+The upsert waits for the writer, as on main: DO NOTHING skips the row, DO UPDATE gets
+main's 0A000.
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading.
@@ -244,6 +248,23 @@ def _part2(dsn, r):
     r["z seq"] = _value(dsn, "SELECT string_agg(coalesce(a::text, 'NULL'), ',') FROM z", SCAN)
     r["z fetch"] = _value(dsn, "SELECT string_agg(coalesce(a::text, 'NULL'), ',') FROM z WHERE a IS NULL", FETCH)
 
+    # A table that got a column after its data was written (#2266, B2).
+    _run(dsn, "CREATE TABLE ac (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false)")
+    _run(dsn, "INSERT INTO ac SELECT g, 'v' || g FROM generate_series(1, 1000) g")
+    _run(dsn, "ALTER TABLE ac ADD COLUMN w int DEFAULT 5")
+    _run(dsn, "CREATE INDEX ac_id ON ac (id)")
+    _run(dsn, "CREATE INDEX ac_id_w ON ac (id, w)")
+    acsid = _value(dsn, "SELECT pgcolumnar.get_storage_id('ac')")
+    r["ac chunks"] = _value(dsn, f"SELECT count(DISTINCT column_index) FROM pgcolumnar.column_chunk "
+                                 f"WHERE storage_id = {acsid}")
+    r["ac seq"] = _value(dsn, "SELECT count(*), sum(w), max(v) FROM ac", SCAN)
+    r["ac fetch"] = _value(dsn, "SELECT id, v, w FROM ac WHERE id = 7", FETCH)
+    ios = ("SET enable_seqscan = off", "SET enable_bitmapscan = off", "SET pgcolumnar.enable_custom_scan = off")
+    plan = _value(dsn, "EXPLAIN (COSTS OFF) SELECT id, w FROM ac WHERE id = 7", ios)
+    r["ac ios plan"] = next((n for n in ("Index Only Scan", "Index Scan", "Seq Scan", "Custom Scan", "Bitmap Heap Scan")
+                             if n in str(plan).splitlines()[0]), f"no scan node in: {plan}") if str(plan) else plan
+    r["ac ios"] = _value(dsn, "SELECT id, w FROM ac WHERE id = 7", ios)
+
     # An index entry whose row no row group covers: an aborted insert's.
     with psycopg.connect(dsn) as conn:
         conn.execute("INSERT INTO gd VALUES (3, 'three')")
@@ -287,6 +308,61 @@ def _part3(dsn, r):
         t.join(30)
 
 
+def _upsert_race(dsn, r, tag, key, stmt):
+    """A writer inserts (key, 'a'), held by pgcolumnar.flush_hold_ms before its
+    row_group row; `stmt` runs on a second connection meanwhile. Records whether the
+    writer was held, whether the upsert waited on a lock while it was, both outcomes,
+    and the row stored for the key."""
+    writer_sql = f"INSERT INTO u VALUES ({key}, 'a')"
+    held = ("SELECT count(*) FROM pg_stat_activity WHERE query = "
+            f"'{writer_sql.replace(chr(39), chr(39) * 2)}' AND wait_event_type = 'Extension'")
+    out = {}
+    r[f"{tag} held"] = r[f"{tag} waited"] = r[f"{tag} still"] = "the race did not run"
+    try:
+        with psycopg.connect(dsn, autocommit=True) as w, psycopg.connect(dsn, autocommit=True) as u:
+            w.execute("SET pgcolumnar.flush_hold_ms = 15000")
+            w.execute("SET statement_timeout = '60s'")
+            u.execute("SET statement_timeout = '60s'")
+            upid = u.info.backend_pid
+
+            def run(key2, conn, sql):
+                try:
+                    cur = conn.execute(sql)
+                    out[key2] = f"INSERT 0 {cur.rowcount}"
+                except psycopg.Error as exc:
+                    out[key2] = f"ERROR:  {exc.sqlstate}"
+
+            tw = threading.Thread(target=run, args=("writer", w, writer_sql))
+            tw.start()
+            r[f"{tag} held"] = _poll(dsn, held, "1")
+            tu = threading.Thread(target=run, args=("upsert", u, stmt))
+            tu.start()
+            r[f"{tag} waited"] = "never waited"
+            for _ in range(100):
+                if not tu.is_alive():
+                    break
+                if _value(dsn, f"SELECT wait_event_type FROM pg_stat_activity WHERE pid = {upid}") == "Lock":
+                    r[f"{tag} waited"] = "Lock"
+                    break
+                time.sleep(0.1)
+            r[f"{tag} still"] = "yes" if _value(dsn, held) == "1" else "no"
+            tw.join(30)
+            tu.join(30)
+    except psycopg.Error as exc:
+        r[f"{tag} held"] = query_error(_message(exc))
+    r[f"{tag} out"] = out.get("upsert", "the upsert did not finish")
+    r[f"{tag} writer"] = out.get("writer", "the writer did not finish")
+    r[f"{tag} rows"] = _value(dsn, f"SELECT string_agg(id || ':' || pad, ',' ORDER BY id) FROM u WHERE id = {key}")
+
+
+def _part4(dsn, r):
+    _run(dsn, "CREATE TABLE u (id int, pad text) USING pgcolumnar WITH (autovacuum_enabled = false)")
+    _run(dsn, "CREATE UNIQUE INDEX u_id ON u (id)")
+    _run(dsn, "INSERT INTO u VALUES (0, 'z')")
+    _upsert_race(dsn, r, "u1", 1, "INSERT INTO u VALUES (1, 'b') ON CONFLICT DO NOTHING")
+    _upsert_race(dsn, r, "u2", 2, "INSERT INTO u VALUES (2, 'b') ON CONFLICT (id) DO UPDATE SET pad = 'c'")
+
+
 @pytest.fixture(scope="module")
 def vr(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -299,6 +375,7 @@ def vr(pgc_cluster):
         _part1(dsn, r)
         _part2(dsn, r)
         _part3(dsn, r)
+        _part4(dsn, r)
         r["crashes after"] = _crashes(pgc_cluster)
         yield r
     finally:
@@ -403,3 +480,71 @@ def test_premise_va_still_held(vr, expect):
 
 def test_no_crash(vr, expect):
     expect.text(vr["crashes after"], vr["crashes before"], "no backend terminated by signal")
+
+
+def test_premise_added_column_chunks(vr, expect):
+    expect.text(vr["ac chunks"], "2", "premise: the table with an added column has fewer chunks than columns")
+
+
+def test_added_column_seq(vr, expect):
+    expect.text(vr["ac seq"], "1000|5000|v999", "a sequential scan of a table with an added column reads its rows")
+
+
+def test_added_column_fetch(vr, expect):
+    expect.text(vr["ac fetch"], "7|v7|5", "an index fetch from a table with an added column reads its row")
+
+
+def test_premise_added_column_ios_plan(vr, expect):
+    expect.text(vr["ac ios plan"], "Index Only Scan", "premise: that read is an index-only scan")
+
+
+def test_added_column_ios(vr, expect):
+    expect.text(vr["ac ios"], "7|5", "an index-only scan of a table with an added column reads its row")
+
+
+def test_premise_upsert_nothing_writer_held(vr, expect):
+    expect.text(vr["u1 held"], "yes", "premise: the writer of id 1 is held before its row_group row")
+
+
+def test_upsert_nothing_waits(vr, expect):
+    expect.text(vr["u1 waited"], "Lock", "an upsert DO NOTHING during the flush waits for the writer")
+
+
+def test_premise_upsert_nothing_still_held(vr, expect):
+    expect.text(vr["u1 still"], "yes", "premise: the writer of id 1 was still held while the upsert waited")
+
+
+def test_upsert_nothing_skips(vr, expect):
+    expect.text(vr["u1 out"], "INSERT 0 0", "the upsert DO NOTHING then skips the row, as on main")
+
+
+def test_premise_upsert_nothing_writer_committed(vr, expect):
+    expect.text(vr["u1 writer"], "INSERT 0 1", "premise: the writer of id 1 committed its row")
+
+
+def test_upsert_nothing_row(vr, expect):
+    expect.text(vr["u1 rows"], "1:a", "id 1 holds the writer's row")
+
+
+def test_premise_upsert_update_writer_held(vr, expect):
+    expect.text(vr["u2 held"], "yes", "premise: the writer of id 2 is held before its row_group row")
+
+
+def test_upsert_update_waits(vr, expect):
+    expect.text(vr["u2 waited"], "Lock", "an upsert DO UPDATE during the flush waits for the writer")
+
+
+def test_premise_upsert_update_still_held(vr, expect):
+    expect.text(vr["u2 still"], "yes", "premise: the writer of id 2 was still held while the upsert waited")
+
+
+def test_upsert_update_0a000(vr, expect):
+    expect.text(vr["u2 out"], "ERROR:  0A000", "the upsert DO UPDATE then fails with 0A000, as on main")
+
+
+def test_premise_upsert_update_writer_committed(vr, expect):
+    expect.text(vr["u2 writer"], "INSERT 0 1", "premise: the writer of id 2 committed its row")
+
+
+def test_upsert_update_row(vr, expect):
+    expect.text(vr["u2 rows"], "2:a", "id 2 holds the writer's row")
