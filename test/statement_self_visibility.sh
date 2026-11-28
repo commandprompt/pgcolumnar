@@ -115,10 +115,24 @@ fresh_pk() {	# both tables, (id PRIMARY KEY, pad) holding pad = id for 1..40000
 		              RETURN NEW;
 		            END \$\$;"
 		psql_run "VACUUM ANALYZE sv_$am;"
+		# the review of #2269: u for ON CONFLICT, r with a plain index for R4 and R5
+		psql_run "DROP TABLE IF EXISTS sv_${am}_u, sv_${am}_r CASCADE;
+		          CREATE TABLE sv_${am}_u (id int PRIMARY KEY) USING $am;
+		          CREATE TABLE sv_${am}_r (id int, pad int) USING $am;
+		          INSERT INTO sv_${am}_r SELECT g, g FROM generate_series(1, 3000) g;
+		          CREATE INDEX ON sv_${am}_r (id);
+		          CREATE OR REPLACE FUNCTION hr_sv_${am}_r() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN
+		            SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL pgcolumnar.enable_custom_scan = off;
+		            INSERT INTO sv_${am}_r SELECT id + 3000, 0 FROM sv_${am}_r WHERE id BETWEEN 1 AND 20000; RETURN NEW; END \$\$;"
+		psql_run "VACUUM ANALYZE sv_${am}_r;"
 	done
 	psql_run "CREATE OR REPLACE FUNCTION sv_try(q text) RETURNS text LANGUAGE plpgsql AS \$\$
 	          BEGIN EXECUTE q; RETURN 'ok';
-	          EXCEPTION WHEN unique_violation THEN RETURN 'unique_violation'; END \$\$;"
+	          EXCEPTION WHEN unique_violation THEN RETURN 'unique_violation'; END \$\$;
+	          CREATE OR REPLACE FUNCTION cnt_idx(t regclass) RETURNS bigint STABLE LANGUAGE plpgsql AS \$\$
+	          DECLARE n bigint; BEGIN EXECUTE format('SELECT count(pad) FROM %s WHERE id BETWEEN 1 AND 30000', t) INTO n; RETURN n; END \$\$;
+	          CREATE OR REPLACE FUNCTION cnt_seq(t regclass, c text) RETURNS bigint STABLE LANGUAGE plpgsql AS \$\$
+	          DECLARE n bigint; BEGIN EXECUTE format('SELECT count(*) FROM %s WHERE %I %% 7 <> 3', t, c) INTO n; RETURN n; END \$\$;"
 }
 plan_has() {	# plan_has SQL PATTERN -> yes when the columnar plan of SQL matches PATTERN
 	local out
@@ -196,6 +210,82 @@ check "a BEFORE ROW trigger inserting into its own table sees the statement's ea
 	         INSERT INTO %t SELECT 100000 + g, 0 FROM generate_series(1, 5) g;
 	         SELECT string_agg(pad::text, ',' ORDER BY id DESC) FROM %t WHERE id < 0; ROLLBACK;")" "same"
 
+# ---- the review of #2269: savepoints, ON CONFLICT, run boundaries ---------------
+# Each probe is the reviewer's SQL, on this suite's tables: t is the main table, r
+# a table with a plain index holding 1..3000, u an empty table with a primary key.
+PROBE="SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL pgcolumnar.enable_custom_scan = off;"
+check "a delete mark made under a savepoint that rolled back is forgotten, as heap does" \
+	"$(same "BEGIN; $PROBE SAVEPOINT a; DELETE FROM %t WHERE id = 5; ROLLBACK TO a;
+	         DECLARE c CURSOR FOR SELECT id || '|' || pad FROM %t WHERE id = 5;
+	         DELETE FROM %t WHERE id = 5; FETCH c; ROLLBACK;")" "same"
+check "a delete mark made under a released savepoint goes with its parent's rollback, as heap does" \
+	"$(same "BEGIN; $PROBE SAVEPOINT o; SAVEPOINT i; DELETE FROM %t WHERE id = 5; RELEASE i; ROLLBACK TO o;
+	         DECLARE c CURSOR FOR SELECT id || '|' || pad FROM %t WHERE id = 5;
+	         DELETE FROM %t WHERE id = 5; FETCH c; ROLLBACK;")" "same"
+for iso in "REPEATABLE READ" "SERIALIZABLE"; do
+	check "ON CONFLICT DO NOTHING with a duplicate in one statement keeps one row at $iso, as heap does" \
+		"$(same "TRUNCATE %t_u; BEGIN ISOLATION LEVEL $iso; INSERT INTO %t_u VALUES (1), (1) ON CONFLICT DO NOTHING;
+		         SELECT count(*) FROM %t_u; COMMIT;")" "same"
+done
+check "the first row a statement flushes, just after an earlier statement's run, is hidden from it, as heap does" \
+	"$(same "BEGIN; $PROBE SET LOCAL pgcolumnar.stripe_row_limit = 1000;
+	         INSERT INTO %t_r SELECT -g, 0 FROM generate_series(1, 1000) g;
+	         INSERT INTO %t_r SELECT id + 3000, 0 FROM %t_r WHERE id BETWEEN -5000 AND 100000;
+	         SELECT count(*) || '|' || max(id) FROM %t_r; ROLLBACK;")" "same"
+check "a trigger's INSERT does not read rows it wrote into the outer statement's buffer, as heap does" \
+	"$(same "BEGIN; $PROBE CREATE TRIGGER hr BEFORE INSERT ON %t_r FOR EACH ROW WHEN (NEW.id = 100002) EXECUTE FUNCTION hr_%t_r();
+	         INSERT INTO %t_r VALUES (100001, 0), (100002, 0);
+	         SELECT count(*) || '|' || max(id) FROM %t_r WHERE id < 100000; ROLLBACK;")" "same"
+
+# ---- a STABLE function's parallel query inside a writing statement (#2269 review) -
+# The function's query runs under the caller's snapshot and may get a parallel
+# plan, so the workers must hide the caller's writes as the leader does. Through
+# an index the answer is heap's. Through a sequential scan the answer is still
+# wrong (#2267), but it must be the same in parallel as serially, and no error.
+PARIDX="$CSOFF SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;
+        SET LOCAL min_parallel_index_scan_size = 0; SET LOCAL min_parallel_table_scan_size = 0;
+        SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;"
+check "premise: the function's index query runs in parallel workers" \
+	"$(plan_has "BEGIN; $PARIDX EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(pad) FROM %t WHERE id BETWEEN 1 AND 30000; ROLLBACK;" \
+		'Workers Launched: [1-9]')" "yes"
+check "a STABLE function's parallel index scan inside an UPDATE sees the rows as they were, as heap does" \
+	"$(same "BEGIN; $PARIDX UPDATE %t SET id = id + 1000000, pad = cnt_idx('%t') WHERE id % 1000 = 1;
+	         SELECT count(*) || '|' || min(pad) || '|' || max(pad) FROM %t WHERE id > 1000000; ROLLBACK;")" "same"
+check "a STABLE function's parallel index scan inside a DELETE in a WITH clause sees the rows as they were, as heap does" \
+	"$(same "BEGIN; $PARIDX WITH d AS (DELETE FROM %t WHERE id % 1000 = 1 AND cnt_idx('%t') > 0 RETURNING cnt_idx('%t') AS n)
+	         SELECT count(*) || '|' || min(n) || '|' || max(n) FROM d; ROLLBACK;")" "same"
+check "a STABLE function's parallel index scan in a cursor does not see a later DELETE, as heap does" \
+	"$(same "BEGIN; $PARIDX DECLARE c CURSOR FOR SELECT cnt_idx('%t'); DELETE FROM %t WHERE id <= 1000;
+	         FETCH ALL FROM c; ROLLBACK;")" "same"
+par_vs_serial() {	# par_vs_serial TABLE SETTINGS SQL -> "same" when the columnar answer is the same with and without workers
+	local a b
+	a="$(answer "$SET BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = on; $2 ${3//%t/$1} ROLLBACK;")"
+	b="$(answer "$SET BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = on; SET LOCAL max_parallel_workers_per_gather = 0; ${3//%t/$1} ROLLBACK;")"
+	[ "$a" = "$b" ] && echo same || echo "parallel=$a serial=$b"
+}
+psql_run "DROP TABLE IF EXISTS sv_big; CREATE TABLE sv_big (id int, v int) USING pgcolumnar;
+          INSERT INTO sv_big SELECT g, g FROM generate_series(1, 3000000) g;"
+psql_run "ANALYZE sv_big;"
+# The harness cluster sets no workers per Gather, so each variant asks for
+# PostgreSQL's default of 2.
+PAR0="SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0;
+      SET LOCAL min_parallel_table_scan_size = 0;"
+PARDEF="SET LOCAL max_parallel_workers_per_gather = 2;"
+for setting in "parallel costs at 0" "default parallel settings"; do
+	if [ "$setting" = "default parallel settings" ]; then T=sv_big; S="$PARDEF"; C=v; else T=sv_pgcolumnar; S="$PAR0"; C=pad; fi
+	check "premise: the function's sequential query runs in parallel workers ($setting)" \
+		"$(plan_has "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = on; $S EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM $T WHERE $C % 7 <> 3; ROLLBACK;" \
+			'Workers Launched: [1-9]')" "yes"
+	check "a STABLE function's parallel sequential scan inside an UPDATE answers as it does serially ($setting)" \
+		"$(par_vs_serial "$T" "$S" "UPDATE %t SET $C = cnt_seq('%t', '$C') WHERE id <= 3;
+		                          SELECT string_agg($C::text, ',' ORDER BY id) FROM %t WHERE id <= 3;")" "same"
+	check "a STABLE function's parallel sequential scan inside a DELETE in a WITH clause answers as it does serially ($setting)" \
+		"$(par_vs_serial "$T" "$S" "WITH d AS (DELETE FROM %t WHERE id <= 5 AND cnt_seq('%t', '$C') > 0 RETURNING cnt_seq('%t', '$C') AS n)
+		                          SELECT count(*) || '|' || min(n) || '|' || max(n) FROM d;")" "same"
+	check "a STABLE function's parallel sequential scan in a cursor answers as it does serially ($setting)" \
+		"$(par_vs_serial "$T" "$S" "DECLARE c CURSOR FOR SELECT cnt_seq('%t', '$C'); DELETE FROM %t WHERE id <= 1000; FETCH ALL FROM c;")" "same"
+done
+
 # ---- shapes that must keep working (#2247 guards) ------------------------------
 # A plan that reads the inner side once, a nested read of earlier rows, and a
 # parallel scan after this transaction's flushed writes. All match heap before the
@@ -229,10 +319,6 @@ for cs in off on; do
 		"$(plan_has "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $PARW $PAR
 		             EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*), sum(pad) FROM %t; ROLLBACK;" \
 			'Workers Launched: [1-9]')" "yes"
-	check "a parallel worker refuses a leader whose own writes it could not hide (custom scan $cs)" \
-		"$(answer "$SET BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; SET LOCAL pgcolumnar.debug_registry_cid_skew = 1;
-		           $PAR SELECT count(*) || '|' || sum(pad) FROM sv_pgcolumnar; ROLLBACK;")" \
-		"ERROR:  columnar: a parallel worker cannot hide this transaction's own writes"
 	check "a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan $cs)" \
 		"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = $cs; $PARW $PAR
 		         SELECT count(*) || '|' || sum(pad) FROM %t; ROLLBACK;")" "same"

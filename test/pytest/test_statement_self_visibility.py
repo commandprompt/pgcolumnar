@@ -158,9 +158,27 @@ def _fresh_pk(conn):
                         f"(SELECT count(*) FROM sv_{am} WHERE id > 100000) * 1000 "
                         f"+ (SELECT count(*) FROM sv_{am} WHERE id < 0)); RETURN NEW; END $$")
             cur.execute(f"VACUUM ANALYZE sv_{am}")
+            # the review of #2269: u for ON CONFLICT, r with a plain index for R4 and R5
+            cur.execute(f"DROP TABLE IF EXISTS sv_{am}_u, sv_{am}_r CASCADE")
+            cur.execute(f"CREATE TABLE sv_{am}_u (id int PRIMARY KEY) USING {am}")
+            cur.execute(f"CREATE TABLE sv_{am}_r (id int, pad int) USING {am}")
+            cur.execute(f"INSERT INTO sv_{am}_r SELECT g, g FROM generate_series(1, 3000) g")
+            cur.execute(f"CREATE INDEX ON sv_{am}_r (id)")
+            cur.execute(f"CREATE OR REPLACE FUNCTION hr_sv_{am}_r() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                        f"SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; "
+                        f"SET LOCAL pgcolumnar.enable_custom_scan = off; "
+                        f"INSERT INTO sv_{am}_r SELECT id + 3000, 0 FROM sv_{am}_r WHERE id BETWEEN 1 AND 20000; "
+                        f"RETURN NEW; END $$")
+            cur.execute(f"VACUUM ANALYZE sv_{am}_r")
         cur.execute("CREATE OR REPLACE FUNCTION sv_try(q text) RETURNS text LANGUAGE plpgsql AS $$ "
                     "BEGIN EXECUTE q; RETURN 'ok'; "
                     "EXCEPTION WHEN unique_violation THEN RETURN 'unique_violation'; END $$")
+        cur.execute("CREATE OR REPLACE FUNCTION cnt_idx(t regclass) RETURNS bigint STABLE LANGUAGE plpgsql AS $$ "
+                    "DECLARE n bigint; BEGIN EXECUTE format('SELECT count(pad) FROM %s WHERE id BETWEEN 1 AND 30000', t) "
+                    "INTO n; RETURN n; END $$")
+        cur.execute("CREATE OR REPLACE FUNCTION cnt_seq(t regclass, c text) RETURNS bigint STABLE LANGUAGE plpgsql AS $$ "
+                    "DECLARE n bigint; BEGIN EXECUTE format('SELECT count(*) FROM %s WHERE %I %% 7 <> 3', t, c) "
+                    "INTO n; RETURN n; END $$")
 
 
 def _tx(conn, am, statements, fetch="one"):
@@ -184,22 +202,6 @@ def _tx(conn, am, statements, fetch="one"):
 def _same_tx(conn, statements):
     c, h = (_tx(conn, am, statements) for am in AMS)
     return "same" if c == h else f"columnar={c} heap={h}"
-
-
-def _error_of(conn, statements):
-    """The first line of the error `statements` raise on the columnar table, run in
-    a transaction that is rolled back, or 'no error'."""
-    try:
-        with conn.cursor() as cur:
-            _session(cur)
-            cur.execute("BEGIN")
-            for sql in statements:
-                cur.execute(sql.replace("%t", "sv_pgcolumnar"))
-            out = "no error"
-    except psycopg.Error as exc:
-        out = str(exc).splitlines()[0]
-    conn.execute("ROLLBACK")
-    return out
 
 
 def _plan_has(conn, statements, pattern):
@@ -342,6 +344,187 @@ def test_a_before_row_trigger_sees_earlier_rows(pgc_conn, expect):
                 "a BEFORE ROW trigger inserting into its own table sees the statement's earlier rows and its own earlier rows, as heap does")
 
 
+# The review of #2269: each probe is the reviewer's SQL, on this module's tables: t
+# is the main table, r a table with a plain index holding 1..3000, u an empty
+# table with a primary key.
+PROBE = ["SET LOCAL enable_seqscan = off", "SET LOCAL enable_bitmapscan = off",
+         "SET LOCAL pgcolumnar.enable_custom_scan = off"]
+
+
+def _raw(conn, am, statements):
+    """Run `statements` (with %t for the table) as given, in autocommit, and return
+    the last row a statement returned, or the error's first line."""
+    out = None
+    try:
+        with conn.cursor() as cur:
+            _session(cur)
+            for sql in statements:
+                cur.execute(sql.replace("%t", f"sv_{am}"))
+                if cur.description is not None:
+                    out = cur.fetchone()
+    except psycopg.Error as exc:
+        out = query_error(str(exc).splitlines()[0])
+        conn.execute("ROLLBACK")
+    return out
+
+
+def test_a_mark_under_a_rolled_back_savepoint_is_forgotten(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PROBE + [
+        "SAVEPOINT a", "DELETE FROM %t WHERE id = 5", "ROLLBACK TO a",
+        "DECLARE c CURSOR FOR SELECT id || '|' || pad FROM %t WHERE id = 5",
+        "DELETE FROM %t WHERE id = 5", "FETCH c"]), "same",
+                "a delete mark made under a savepoint that rolled back is forgotten, as heap does")
+
+
+def test_a_mark_under_a_released_savepoint_goes_with_its_parent(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PROBE + [
+        "SAVEPOINT o", "SAVEPOINT i", "DELETE FROM %t WHERE id = 5", "RELEASE i", "ROLLBACK TO o",
+        "DECLARE c CURSOR FOR SELECT id || '|' || pad FROM %t WHERE id = 5",
+        "DELETE FROM %t WHERE id = 5", "FETCH c"]), "same",
+                "a delete mark made under a released savepoint goes with its parent's rollback, as heap does")
+
+
+@pytest.mark.parametrize("iso", ("REPEATABLE READ", "SERIALIZABLE"))
+def test_on_conflict_do_nothing_with_a_duplicate_in_one_statement(pgc_conn, expect, iso):
+    _fresh_pk(pgc_conn)
+    stmts = ["TRUNCATE %t_u", f"BEGIN ISOLATION LEVEL {iso}",
+             "INSERT INTO %t_u VALUES (1), (1) ON CONFLICT DO NOTHING",
+             "SELECT count(*) FROM %t_u", "COMMIT"]
+    c, h = (_raw(pgc_conn, am, stmts) for am in AMS)
+    expect.text("same" if c == h else f"columnar={c} heap={h}", "same",
+                f"ON CONFLICT DO NOTHING with a duplicate in one statement keeps one row at {iso}, as heap does")
+
+
+def test_the_first_row_flushed_after_an_earlier_run_is_hidden(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PROBE + [
+        "SET LOCAL pgcolumnar.stripe_row_limit = 1000",
+        "INSERT INTO %t_r SELECT -g, 0 FROM generate_series(1, 1000) g",
+        "INSERT INTO %t_r SELECT id + 3000, 0 FROM %t_r WHERE id BETWEEN -5000 AND 100000",
+        "SELECT count(*) || '|' || max(id) FROM %t_r"]), "same",
+                "the first row a statement flushes, just after an earlier statement's run, is hidden from it, as heap does")
+
+
+def test_a_trigger_does_not_read_its_own_rows_in_the_outer_buffer(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PROBE + [
+        "CREATE TRIGGER hr BEFORE INSERT ON %t_r FOR EACH ROW WHEN (NEW.id = 100002) EXECUTE FUNCTION hr_%t_r()",
+        "INSERT INTO %t_r VALUES (100001, 0), (100002, 0)",
+        "SELECT count(*) || '|' || max(id) FROM %t_r WHERE id < 100000"]), "same",
+                "a trigger's INSERT does not read rows it wrote into the outer statement's buffer, as heap does")
+
+
+# A STABLE function's query runs under the caller's snapshot and may get a
+# parallel plan, so the workers must hide the caller's writes as the leader does.
+# Through an index the answer is heap's. Through a sequential scan the answer is
+# still wrong (#2267), but it must be the same in parallel as serially, and no
+# error.
+PARIDX = CSOFF + ["SET LOCAL max_parallel_workers_per_gather = 2", "SET LOCAL parallel_setup_cost = 0",
+                  "SET LOCAL parallel_tuple_cost = 0", "SET LOCAL min_parallel_index_scan_size = 0",
+                  "SET LOCAL min_parallel_table_scan_size = 0", "SET LOCAL enable_seqscan = off",
+                  "SET LOCAL enable_bitmapscan = off", "SET LOCAL enable_indexonlyscan = off"]
+
+
+def test_premise_the_function_index_query_runs_in_parallel(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_plan_has(pgc_conn, PARIDX + [
+        "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(pad) FROM %t WHERE id BETWEEN 1 AND 30000"],
+        r"Workers Launched: [1-9]"), "yes",
+                "premise: the function's index query runs in parallel workers")
+
+
+def test_a_stable_function_parallel_index_scan_inside_an_update(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PARIDX + [
+        "UPDATE %t SET id = id + 1000000, pad = cnt_idx('%t') WHERE id % 1000 = 1",
+        "SELECT count(*) || '|' || min(pad) || '|' || max(pad) FROM %t WHERE id > 1000000"]), "same",
+                "a STABLE function's parallel index scan inside an UPDATE sees the rows as they were, as heap does")
+
+
+def test_a_stable_function_parallel_index_scan_inside_a_cte_delete(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PARIDX + [
+        "WITH d AS (DELETE FROM %t WHERE id % 1000 = 1 AND cnt_idx('%t') > 0 RETURNING cnt_idx('%t') AS n) "
+        "SELECT count(*) || '|' || min(n) || '|' || max(n) FROM d"]), "same",
+                "a STABLE function's parallel index scan inside a DELETE in a WITH clause sees the rows as they were, as heap does")
+
+
+def test_a_stable_function_parallel_index_scan_in_a_cursor(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, PARIDX + [
+        "DECLARE c CURSOR FOR SELECT cnt_idx('%t')", "DELETE FROM %t WHERE id <= 1000", "FETCH ALL FROM c"]), "same",
+                "a STABLE function's parallel index scan in a cursor does not see a later DELETE, as heap does")
+
+
+# The harness cluster sets no workers per Gather, so each variant asks for
+# PostgreSQL's default of 2.
+PAR0 = ["SET LOCAL max_parallel_workers_per_gather = 2", "SET LOCAL parallel_setup_cost = 0",
+        "SET LOCAL parallel_tuple_cost = 0", "SET LOCAL min_parallel_table_scan_size = 0"]
+PARDEF = ["SET LOCAL max_parallel_workers_per_gather = 2"]
+SEQ_SETTINGS = {"parallel costs at 0": ("sv_pgcolumnar", PAR0, "pad"),
+                "default parallel settings": ("sv_big", PARDEF, "v")}
+
+
+def _seq_setting(conn, setting):
+    table, settings, col = SEQ_SETTINGS[setting]
+    _fresh_pk(conn)
+    if table == "sv_big":
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS sv_big")
+            cur.execute("CREATE TABLE sv_big (id int, v int) USING pgcolumnar")
+            cur.execute("INSERT INTO sv_big SELECT g, g FROM generate_series(1, 3000000) g")
+            cur.execute("ANALYZE sv_big")
+    return table, settings, col
+
+
+def _par_vs_serial(conn, table, settings, statements):
+    def run(extra):
+        stmts = ["SET LOCAL pgcolumnar.enable_custom_scan = on"] + extra + [
+            x.replace("%t", table) for x in statements]
+        return _tx(conn, "pgcolumnar", stmts)
+    a = run(settings)
+    b = run(["SET LOCAL max_parallel_workers_per_gather = 0"])
+    return "same" if a == b else f"parallel={a} serial={b}"
+
+
+@pytest.mark.parametrize("setting", tuple(SEQ_SETTINGS))
+def test_premise_the_function_sequential_query_runs_in_parallel(pgc_conn, expect, setting):
+    table, settings, col = _seq_setting(pgc_conn, setting)
+    expect.text(_plan_has(pgc_conn, ["SET LOCAL pgcolumnar.enable_custom_scan = on"] + settings + [
+        f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM {table} WHERE {col} % 7 <> 3"],
+        r"Workers Launched: [1-9]"), "yes",
+                f"premise: the function's sequential query runs in parallel workers ({setting})")
+
+
+@pytest.mark.parametrize("setting", tuple(SEQ_SETTINGS))
+def test_a_stable_function_parallel_sequential_scan_inside_an_update(pgc_conn, expect, setting):
+    table, settings, col = _seq_setting(pgc_conn, setting)
+    expect.text(_par_vs_serial(pgc_conn, table, settings, [
+        f"UPDATE %t SET {col} = cnt_seq('%t', '{col}') WHERE id <= 3",
+        f"SELECT string_agg({col}::text, ',' ORDER BY id) FROM %t WHERE id <= 3"]), "same",
+                f"a STABLE function's parallel sequential scan inside an UPDATE answers as it does serially ({setting})")
+
+
+@pytest.mark.parametrize("setting", tuple(SEQ_SETTINGS))
+def test_a_stable_function_parallel_sequential_scan_inside_a_cte_delete(pgc_conn, expect, setting):
+    table, settings, col = _seq_setting(pgc_conn, setting)
+    expect.text(_par_vs_serial(pgc_conn, table, settings, [
+        f"WITH d AS (DELETE FROM %t WHERE id <= 5 AND cnt_seq('%t', '{col}') > 0 RETURNING cnt_seq('%t', '{col}') AS n) "
+        "SELECT count(*) || '|' || min(n) || '|' || max(n) FROM d"]), "same",
+                f"a STABLE function's parallel sequential scan inside a DELETE in a WITH clause answers as it does serially ({setting})")
+
+
+@pytest.mark.parametrize("setting", tuple(SEQ_SETTINGS))
+def test_a_stable_function_parallel_sequential_scan_in_a_cursor(pgc_conn, expect, setting):
+    table, settings, col = _seq_setting(pgc_conn, setting)
+    expect.text(_par_vs_serial(pgc_conn, table, settings, [
+        f"DECLARE c CURSOR FOR SELECT cnt_seq('%t', '{col}')", "DELETE FROM %t WHERE id <= 1000",
+        "FETCH ALL FROM c"]), "same",
+                f"a STABLE function's parallel sequential scan in a cursor answers as it does serially ({setting})")
+
+
 # Shapes that must keep working (#2247 guards): a plan that reads the inner side
 # once, a nested read of earlier rows, and a parallel scan after this transaction's
 # flushed writes. All match heap before the fix; the fix must not break them.
@@ -388,15 +571,6 @@ def test_guard_an_after_row_trigger_reads_old_and_new(pgc_conn, expect):
         "CREATE TRIGGER au AFTER UPDATE ON %t FOR EACH ROW EXECUTE FUNCTION pg_temp.trig_note()",
         UPD, "SELECT count(*), sum(o), sum(n) FROM trig_log"]), "same",
                 "an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW, as heap does")
-
-
-@pytest.mark.parametrize("cs", ("off", "on"))
-def test_guard_a_parallel_worker_refuses_a_leader_it_could_not_hide(pgc_conn, expect, cs):
-    _fresh_pk(pgc_conn)
-    expect.text(_error_of(pgc_conn, _cs(cs) + ["SET LOCAL pgcolumnar.debug_registry_cid_skew = 1"] + PAR + [
-        "SELECT count(*), sum(pad) FROM %t"]),
-                "columnar: a parallel worker cannot hide this transaction's own writes",
-                f"a parallel worker refuses a leader whose own writes it could not hide (custom scan {cs})")
 
 
 @pytest.mark.parametrize("cs", ("off", "on"))
