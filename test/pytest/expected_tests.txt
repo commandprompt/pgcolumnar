@@ -2734,4 +2734,14 @@ guard_tests 910
 # in test_parallel_flush_optin.py (a cycle through a worker that is still connecting, held up on pg_database, ends in
 # 40P01), by collection of that file (45 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6626
+# cluster_tests 6626 -> 6657 for #2268's thirty-one tests in test_index_only.py (test_2268_*): ten for a DELETE
+# that commits during VACUUM's first pause, read while VACUUM holds the row group (four premises, the block
+# unset, no deleted row through an index-only scan, a second DELETE timing out on VACUUM's lock, VACUUM
+# finishing, the state after it); five for a writer that holds the group's lock with its transaction open (two
+# premises, VACUUM not waiting, the block unset while open and after commit); eight for a DELETE in a block two
+# row groups share (four premises, the block unset, no deleted row, at most two locks held, the bits after
+# VACUUM); seven for a block two clean row groups share (three premises, the block set while VACUUM holds both
+# groups, the two locks, the bits after VACUUM, relallvisible after a second VACUUM); and one that the new pause
+# is superuser-only, by collection of that file (115 on main 503f05f9, 146 here) and over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6657

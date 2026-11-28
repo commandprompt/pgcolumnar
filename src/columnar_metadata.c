@@ -564,6 +564,29 @@ PgColumnarCatalogSnapshot(Snapshot base)
 
 
 /*
+ * PgColumnarGroupHasDeleteDirty
+ *		True when the row group has a delete_vector row with a deleted row that
+ *		is committed or in progress (a dirty snapshot). The test both
+ *		PgColumnarComputeAllVisibleGroups and lazy VACUUM's set apply (#2268).
+ */
+bool
+PgColumnarGroupHasDeleteDirty(uint64 storageId, uint64 groupNumber)
+{
+	SnapshotData dirty;
+	List	   *rmList;
+	ListCell   *lc;
+
+	InitDirtySnapshot(dirty);
+	rmList = PgColumnarReadDeleteVectorList(storageId, groupNumber, &dirty);
+	foreach(lc, rmList)
+	{
+		if (((DeleteVectorMetadata *) lfirst(lc))->deletedCount > 0)
+			return true;
+	}
+	return false;
+}
+
+/*
  * PgColumnarComputeAllVisibleGroups
  *		Return the chunk groups that are all-visible to every snapshot (gap 28
  *		phase 3): the covering stripe's insert xid is frozen or precedes
@@ -584,7 +607,6 @@ PgColumnarComputeAllVisibleGroups(uint64 storageId, TransactionId oldestXmin)
 	SysScanDesc gscan;
 	HeapTuple	gtuple;
 	Snapshot	snap;
-	SnapshotData dirty;
 	List	   *ranges = NIL;
 
 	/*
@@ -599,7 +621,6 @@ PgColumnarComputeAllVisibleGroups(uint64 storageId, TransactionId oldestXmin)
 	 * insert, so a set bit never covers a modified row.
 	 */
 	snap = RegisterSnapshot(GetLatestSnapshot());
-	InitDirtySnapshot(dirty);
 
 	ScanKeyInit(&gkey[0], Anum_row_group_storage_id, BTEqualStrategyNumber,
 				F_INT8EQ, Int64GetDatum((int64) storageId));
@@ -611,9 +632,6 @@ PgColumnarComputeAllVisibleGroups(uint64 storageId, TransactionId oldestXmin)
 		uint64		groupNumber,
 					firstRow,
 					rowCount;
-		List	   *rmList;
-		ListCell   *lc;
-		bool		hasDelete = false;
 		PgColumnarRowRange *r;
 
 		if (TransactionIdIsNormal(xmin) &&
@@ -629,21 +647,13 @@ PgColumnarComputeAllVisibleGroups(uint64 storageId, TransactionId oldestXmin)
 		if (rowCount == 0)
 			continue;
 
-		rmList = PgColumnarReadDeleteVectorList(storageId, groupNumber, &dirty);
-		foreach(lc, rmList)
-		{
-			if (((DeleteVectorMetadata *) lfirst(lc))->deletedCount > 0)
-			{
-				hasDelete = true;
-				break;
-			}
-		}
-		if (hasDelete)
+		if (PgColumnarGroupHasDeleteDirty(storageId, groupNumber))
 			continue;
 
 		r = palloc(sizeof(PgColumnarRowRange));
 		r->firstRowNumber = firstRow;
 		r->rowCount = rowCount;
+		r->groupNumber = groupNumber;
 		ranges = lappend(ranges, r);
 	}
 	systable_endscan(gscan);

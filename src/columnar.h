@@ -312,6 +312,7 @@ extern int	pgcolumnar_maintenance_hold_ms;	/* dev/test: hold SUEL this long in a
 extern int	pgcolumnar_rewrite_lock_timeout;	/* ms a rewrite may spend taking its locks (#2074) */
 extern int	pgcolumnar_vm_set_hold_ms;	/* dev/test: pause lazy VACUUM between VM compute and set */
 extern int	pgcolumnar_flush_hold_ms;	/* dev/test: pause a flush before its row_group row */
+extern int	pgcolumnar_vm_set_release_hold_ms;	/* dev/test: pause lazy VACUUM after a set (#2268) */
 
 /* Phase 6 GUCs (spec 8.3) */
 extern bool pgcolumnar_enable_vectorization;	/* vectorized aggregate path */
@@ -569,11 +570,13 @@ extern void PgColumnarIndexInsertEnd(PgColumnarIndexInsertState *st);
 extern bool PgColumnarRelationHasIndexes(Relation rel);
 
 
-/* a contiguous run of all-visible row numbers (gap 28 phase 3) */
+/* a contiguous run of all-visible row numbers (gap 28 phase 3), and the row
+ * group that holds it, whose chunk-group lock VACUUM takes to set it (#2268) */
 typedef struct PgColumnarRowRange
 {
 	uint64		firstRowNumber;
 	uint64		rowCount;
+	uint64		groupNumber;
 }			PgColumnarRowRange;
 
 /* row groups every one of whose rows is deleted as-of oldestXmin. Returns a

@@ -108,6 +108,7 @@ int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
 int			pgcolumnar_rewrite_lock_timeout = 10000;	/* ms; 0 waits without limit (#2074) */
 int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
 int			pgcolumnar_flush_hold_ms = 0;	/* dev/test: #2266 flush catalog order */
+int			pgcolumnar_vm_set_release_hold_ms = 0;	/* dev/test: #2268 set-to-release window */
 
 /* pgcolumnar.objstore_s3_addressing (#621, #2091) */
 static const struct config_enum_entry pgcolumnar_s3_addressing_options[] = {
@@ -5310,7 +5311,8 @@ _PG_init(void)
 	 * A developer pause for lazy VACUUM (#2059): PgColumnarVMSetVisibleForRelation
 	 * waits this long after it first computes the all-visible blocks and before
 	 * it sets them, so a test can commit a delete in that window and show the
-	 * second computation clears the bit. Superuser-only and off by default.
+	 * set judges the group again under its lock (#2268). Superuser-only and off
+	 * by default.
 	 */
 	DefineCustomIntVariable("pgcolumnar.vm_set_hold_ms",
 							"Dev/test: wait this many ms in lazy VACUUM between computing "
@@ -5333,6 +5335,24 @@ _PG_init(void)
 							"its row_group catalog row is inserted.",
 							NULL,
 							&pgcolumnar_flush_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
+							NULL, NULL, NULL);
+
+	/*
+	 * The second developer pause for lazy VACUUM (#2268): before
+	 * PgColumnarVMSetVisibleForRelation gives back each row group it locked to
+	 * set its blocks, it waits this long, reporting wait event Timeout/PgSleep
+	 * rather than vm_set_hold_ms's Extension. A test can then read the VM, run
+	 * an index-only scan and try a delete while VACUUM holds the group.
+	 * Superuser-only and off by default.
+	 */
+	DefineCustomIntVariable("pgcolumnar.vm_set_release_hold_ms",
+							"Dev/test: wait this many ms in lazy VACUUM after setting a row "
+							"group's all-visible blocks and before releasing the group.",
+							NULL,
+							&pgcolumnar_vm_set_release_hold_ms,
 							0, 0, 600000,
 							PGC_SUSET,
 							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,

@@ -48,6 +48,7 @@
 #include "storage/latch.h"
 #include "storage/procarray.h"
 #include "utils/rel.h"
+#include "utils/wait_event.h"
 
 PG_FUNCTION_INFO_V1(pgcolumnar_vm_selftest);
 PG_FUNCTION_INFO_V1(pgcolumnar_vm_is_visible);
@@ -233,44 +234,174 @@ rowrange_cmp(const void *a, const void *b)
 	return 0;
 }
 
-/* a run of synthetic blocks [start, end) */
-typedef struct VMBlockRun
-{
-	BlockNumber start;
-	BlockNumber end;
-} VMBlockRun;
-
 /*
- * vm_all_visible_runs
- *		The synthetic blocks that lie *entirely* within a run of all-visible row
- *		groups, as sorted, disjoint runs. Contiguous groups are merged first, so
- *		a block that straddles two all-visible groups counts; a boundary block
- *		that straddles a not-all-visible neighbour does not. Sets *nruns.
+ * vm_all_visible_groups
+ *		The row groups PgColumnarComputeAllVisibleGroups finds all-visible, as
+ *		an array sorted by first row number. Sets *ngroups.
  */
-static VMBlockRun *
-vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
+static PgColumnarRowRange *
+vm_all_visible_groups(uint64 storageId, TransactionId oldestXmin, int *ngroups)
 {
 	List	   *groups = PgColumnarComputeAllVisibleGroups(storageId, oldestXmin);
-	uint64		K = COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
 	int			n = list_length(groups);
 	PgColumnarRowRange *arr;
-	VMBlockRun *runs;
 	ListCell   *lc;
-	int			i;
-	int			r = 0;
+	int			i = 0;
 
-	*nruns = 0;
+	*ngroups = n;
 	if (n == 0)
 		return NULL;
 
 	arr = palloc(sizeof(PgColumnarRowRange) * n);
-	runs = palloc(sizeof(VMBlockRun) * n);
-	i = 0;
 	foreach(lc, groups)
 		arr[i++] = *(PgColumnarRowRange *) lfirst(lc);
 	qsort(arr, n, sizeof(PgColumnarRowRange), rowrange_cmp);
+	return arr;
+}
 
-	i = 0;
+/*
+ * vm_set_hold
+ *		Dev/test pause: wait `ms`, interruptibly, reporting `wait_event_info`.
+ *		Zero (the default of both GUCs that drive it) returns at once.
+ *		pgcolumnar.vm_set_hold_ms pauses between the computation and the set
+ *		(#2059) and reports Extension; pgcolumnar.vm_set_release_hold_ms
+ *		pauses before VACUUM releases each row group it locked (#2268) and
+ *		reports Timeout/PgSleep, so a test can tell the two pauses apart in
+ *		pg_stat_activity.
+ */
+static void
+vm_set_hold(int ms, uint32 wait_event_info)
+{
+	long		remaining = (long) ms;
+
+	while (remaining > 0)
+	{
+		long		slice = Min(remaining, 1000L);
+		int			rc;
+
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   slice, wait_event_info);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		remaining -= slice;
+	}
+}
+
+/*
+ * vm_take_group
+ *		Lock one row group for the set and judge it again under the lock.
+ *		True when the lock was free and the group still has no delete,
+ *		committed or in progress. *held says whether the lock is now ours.
+ *		The lock is taken without waiting: a writer that holds it has flushed
+ *		marks into the group, so the group is not all-visible anyway, and
+ *		VACUUM must not queue behind a transaction that may stay open.
+ */
+static bool
+vm_take_group(uint64 storageId, const PgColumnarRowRange *g, bool *held)
+{
+	*held = PgColumnarConditionalLockChunkGroup(storageId, g->groupNumber);
+	if (!*held)
+		return false;
+	return !PgColumnarGroupHasDeleteDirty(storageId, g->groupNumber);
+}
+
+/* give back a row group vm_take_group locked */
+static void
+vm_release_group(uint64 storageId, const PgColumnarRowRange *g, bool held)
+{
+	if (!held)
+		return;
+	vm_set_hold(pgcolumnar_vm_set_release_hold_ms, WAIT_EVENT_PG_SLEEP);
+	PgColumnarUnlockChunkGroup(storageId, g->groupNumber);
+}
+
+/*
+ * PgColumnarVMSetVisibleForRelation
+ *		Lazy vacuum step (gap 28 phase 3): mark all-visible row groups in the
+ *		VM fork. A row group is all-visible when its catalog row precedes the
+ *		oldest-xmin horizon and it has no delete, committed or in progress.
+ *		The VM bit is set for every synthetic block that lies entirely within
+ *		a run of contiguous all-visible groups, so a block that straddles two
+ *		all-visible groups counts and one that straddles a not-all-visible
+ *		neighbour does not. Runs under ShareUpdateExclusiveLock, concurrent
+ *		with readers and writers.
+ *
+ *		The rule this keeps is heap's: once a delete is visible to some
+ *		snapshot, no index-only scan under that snapshot finds its block
+ *		all-visible. Heap gets it from the buffer lock. VACUUM checks the
+ *		page's tuples and sets the bit under it, and a deleter clears the bit
+ *		under it before its delete can commit. Here the check reads the
+ *		catalog and the set writes the VM fork, so nothing made the two one
+ *		step. A delete that committed between them got its bit set anyway, and
+ *		an index-only scan counted the deleted row until a later pass cleared
+ *		it (#2268).
+ *
+ *		The chunk-group lock (class 101) is the step here. Every flush of
+ *		delete marks into a group takes it before it writes the group's
+ *		delete_vector row, holds it to commit, and clears the VM bits of its
+ *		rows after the write (delete_vector_flush_buffer). So, for each block,
+ *		VACUUM locks every group covering it, judges each group again under
+ *		the lock, and sets the bit only if all of them are still clean:
+ *
+ *		- a delete committed before VACUUM took the lock is in the catalog,
+ *		  and the judgement sees it, so the bit is not set;
+ *		- a writer that holds the lock has a flush in progress, so VACUUM
+ *		  skips the group without waiting;
+ *		- a writer that flushes later waits for VACUUM to give the lock back,
+ *		  then writes its row and clears the bit before it commits. Until
+ *		  then its delete is visible to no snapshot but its own, and its own
+ *		  index-only scans flush first (#2169).
+ *
+ *		Marks still in a writer's memory are cleared the same way, by its
+ *		flush. A row group can only leave the catalog under a lock that
+ *		conflicts with VACUUM's (expire, recluster, compaction), so the groups
+ *		of the first computation stay put. This replaces the second
+ *		computation of #2059 and #2170, which cleared a bit after the fact and
+ *		left the window open in between.
+ *
+ *		VACUUM holds only the locks of the groups covering the current block:
+ *		a group is locked when the walk reaches its first block and given
+ *		back once the walk passes its last. A group holds at least one row,
+ *		so that is at most COLUMNAR_VALID_ITEMPOINTER_OFFSETS + 1 locks.
+ *
+ *		pgcolumnar.vm_set_hold_ms pauses between the computation and the
+ *		walk, so a test can commit a delete in that window (#2059).
+ *		pgcolumnar.vm_set_release_hold_ms pauses before each group is given
+ *		back, so a test can read the VM, and try a delete, while VACUUM holds
+ *		a group whose bits it has just set (#2268).
+ *
+ *		Returns how many ROWS the blocks found all-visible under the lock
+ *		cover, set now or already set, which is what the caller needs to
+ *		record the result in pg_class (#507). Rows and not blocks on purpose:
+ *		these are *synthetic* blocks, rowNumber / K, and relpages counts
+ *		stored pages -- on a 20,000,000-row table that is 68,730 against
+ *		45,994. Handing a synthetic block count to a field core divides by
+ *		relpages produces an all-visible fraction above 1 from arithmetic
+ *		alone.
+ */
+uint64
+PgColumnarVMSetVisibleForRelation(Relation rel)
+{
+	uint64		visibleRows = 0;
+	uint64		storageId = PgColumnarStorageId(rel);
+	TransactionId oldestXmin = PgColumnarOldestXmin(rel);
+	uint64		K = COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
+	PgColumnarRowRange *arr;
+	bool	   *held;
+	bool	   *clean;
+	int			n;
+	int			i = 0;
+
+	arr = vm_all_visible_groups(storageId, oldestXmin, &n);
+	if (n == 0)
+		return 0;
+
+	held = palloc0(sizeof(bool) * n);
+	clean = palloc0(sizeof(bool) * n);
+
+	vm_set_hold(pgcolumnar_vm_set_hold_ms, PG_WAIT_EXTENSION);
+
 	while (i < n)
 	{
 		uint64		lo = arr[i].firstRowNumber;
@@ -278,8 +409,11 @@ vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
 		BlockNumber b,
 					bend;
 		int			m = i + 1;
+		int			taken;
+		int			released;
+		int			unclean = 0;
 
-		/* merge contiguous (adjacent or overlapping) all-visible runs */
+		/* merge contiguous (adjacent or overlapping) all-visible groups */
 		while (m < n && arr[m].firstRowNumber <= hi)
 		{
 			uint64		mhi = arr[m].firstRowNumber + arr[m].rowCount;
@@ -289,150 +423,57 @@ vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
 			m++;
 		}
 
-		/* blocks entirely within [lo, hi): ceil(lo/K) .. floor(hi/K) - 1 */
+		/*
+		 * Blocks entirely within [lo, hi): ceil(lo/K) .. floor(hi/K) - 1. The
+		 * window of groups this walk holds is [released, taken), and unclean
+		 * counts the groups in it whose lock was busy or that hold a delete.
+		 */
 		b = (BlockNumber) ((lo + K - 1) / K);
 		bend = (BlockNumber) (hi / K);
-		if (bend > b)
+		taken = released = i;
+		for (; b < bend; b++)
 		{
-			runs[r].start = b;
-			runs[r].end = bend;
-			r++;
+			uint64		bstart = (uint64) b * K;
+			uint64		bnext = bstart + K;
+
+			/* take every group of the run that starts before the block ends */
+			while (taken < m && arr[taken].firstRowNumber < bnext)
+			{
+				clean[taken] = vm_take_group(storageId, &arr[taken], &held[taken]);
+				if (!clean[taken])
+					unclean++;
+				taken++;
+			}
+
+			/* give back every group that ends before the block starts */
+			while (released < taken &&
+				   arr[released].firstRowNumber + arr[released].rowCount <= bstart)
+			{
+				if (!clean[released])
+					unclean--;
+				vm_release_group(storageId, &arr[released], held[released]);
+				released++;
+			}
+
+			if (unclean == 0)
+			{
+				PgColumnarVMSetVisible(rel, b);
+				visibleRows += K;
+			}
+		}
+
+		while (released < taken)
+		{
+			vm_release_group(storageId, &arr[released], held[released]);
+			released++;
 		}
 
 		i = m;
 	}
 
+	pfree(held);
+	pfree(clean);
 	pfree(arr);
-	*nruns = r;
-	return runs;
-}
-
-/*
- * PgColumnarVMSetVisibleForRelation
- *		Lazy vacuum step (gap 28 phase 3): mark all-visible chunk groups in the
- *		VM fork. Computes the all-visible groups (stripe committed past the
- *		oldest-xmin horizon, no committed-or-in-progress deletes) and sets the
- *		VM bit for every synthetic block that lies entirely within a merged
- *		all-visible run. Runs under whatever lock the caller holds; the table-AM
- *		relation_vacuum path holds only ShareUpdateExclusiveLock, so this is
- *		concurrent with readers and writers.
- *
- *		Then it computes the groups again and clears every bit it set for a
- *		block that is no longer all-visible (#2059). A writer clears the bits for
- *		its rows after it writes their delete_vector row, and that row is what
- *		the computation sees. A writer that wrote its row before the second
- *		computation is caught by it; one that wrote it after clears the bit
- *		itself, after this set it. Without the second pass, a writer whose row
- *		landed between the first computation and the set lost its clear.
- *		pgcolumnar.vm_set_hold_ms pauses between the first computation and
- *		the set, so a test can commit a delete in that window.
- *
- *		"Every bit it set" means the bits this VACUUM flipped from 0 to 1, not
- *		every block of its first list (#2170). The second computation works by
- *		row group, so a delete anywhere in a group takes every block of the
- *		group out of the list, including blocks the delete did not touch. A bit
- *		that was already 1 when this VACUUM reached it was not set by it, and
- *		clearing it threw away an earlier VACUUM's index-only coverage of a
- *		clean block until the next VACUUM. Leaving it is safe: only lazy VACUUM
- *		sets bits, and two lazy VACUUMs of one table do not run at once
- *		(ShareUpdateExclusiveLock). Every writer clears its rows' bits after it
- *		writes them. A writer whose clear ran before this set left the bit 0,
- *		so the set flips it and the second pass judges it. A bit still 1 at the
- *		set means the writer's clear has not run yet, and it runs after the set.
- *
- *		Returns how many ROWS the blocks still all-visible at the second
- *		computation cover (a kept bit of a block outside that list is not
- *		counted: its group holds a change), which is what the caller
- *		needs to record the result in pg_class (#507). Rows and not blocks on
- *		purpose: these are *synthetic* blocks, rowNumber / K, and relpages counts
- *		stored pages -- on a 20,000,000-row table that is 68,730 against 45,994.
- *		Handing a synthetic block count to a field core divides by relpages
- *		produces an all-visible fraction above 1 from arithmetic alone.
- */
-/*
- * vm_set_hold
- *		Dev/test pause (#2059): wait pgcolumnar.vm_set_hold_ms, interruptibly,
- *		between the first computation and the set, so a test can commit a
- *		delete in that window. Zero (the default) returns at once.
- */
-static void
-vm_set_hold(void)
-{
-	long		remaining = (long) pgcolumnar_vm_set_hold_ms;
-
-	while (remaining > 0)
-	{
-		long		slice = Min(remaining, 1000L);
-		int			rc;
-
-		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   slice, PG_WAIT_EXTENSION);
-		if (rc & WL_LATCH_SET)
-			ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
-		remaining -= slice;
-	}
-}
-
-uint64
-PgColumnarVMSetVisibleForRelation(Relation rel)
-{
-	uint64		visibleRows = 0;
-	uint64		storageId = PgColumnarStorageId(rel);
-	TransactionId oldestXmin = PgColumnarOldestXmin(rel);
-	uint64		K = COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
-	VMBlockRun *runs;
-	VMBlockRun *again;
-	bool	   *flipped;
-	uint64		nblocks = 0;
-	uint64		pos;
-	int			n;
-	int			nagain;
-	int			i;
-	int			j = 0;
-
-	runs = vm_all_visible_runs(storageId, oldestXmin, &n);
-	if (n == 0)
-		return 0;
-
-	for (i = 0; i < n; i++)
-		nblocks += runs[i].end - runs[i].start;
-	/* one flag per block of the first list, in walk order (#2170) */
-	flipped = palloc_extended(nblocks * sizeof(bool), MCXT_ALLOC_HUGE);
-
-	vm_set_hold();
-
-	pos = 0;
-	for (i = 0; i < n; i++)
-	{
-		BlockNumber b;
-
-		for (b = runs[i].start; b < runs[i].end; b++)
-			flipped[pos++] = PgColumnarVMSetVisible(rel, b);
-	}
-
-	/* both lists are sorted and disjoint, so one forward walk compares them */
-	again = vm_all_visible_runs(storageId, oldestXmin, &nagain);
-	pos = 0;
-	for (i = 0; i < n; i++)
-	{
-		BlockNumber b;
-
-		for (b = runs[i].start; b < runs[i].end; b++, pos++)
-		{
-			while (j < nagain && again[j].end <= b)
-				j++;
-			if (j < nagain && again[j].start <= b)
-				visibleRows += K;
-			else if (flipped[pos])
-				PgColumnarVMClearVisible(rel, b);
-		}
-	}
-
-	pfree(flipped);
-	pfree(runs);
-	if (again != NULL)
-		pfree(again);
 	return visibleRows;
 }
 

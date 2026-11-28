@@ -47,6 +47,7 @@ extern void PgColumnarReconcileFreeList(Relation dataRel);
 
 extern List *PgColumnarComputeAllVisibleGroups(uint64 storageId,
 											 TransactionId oldestXmin);
+extern bool PgColumnarGroupHasDeleteDirty(uint64 storageId, uint64 groupNumber);
 
 extern void PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s);
 

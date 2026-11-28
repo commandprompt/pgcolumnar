@@ -622,6 +622,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- An index-only scan no longer counts rows a DELETE or UPDATE already
+  committed, while a lazy VACUUM of the table runs (#2268). VACUUM judged the
+  row groups from the catalog and set their blocks' visibility-map bits after,
+  in a separate step. A delete that committed between the two had cleared its
+  bits already, so VACUUM set them again, and until VACUUM's second pass
+  cleared them an index-only scan returned the deleted rows. It was transient,
+  and it showed under concurrent writers about once in four 180 s stress runs.
+  VACUUM now takes each row group's chunk-group lock, the one every flush of
+  delete marks takes and holds to commit, judges the group again under it,
+  and sets a block only while it holds every group covering the block. That
+  makes the judgement and the set one step for writers, as heap's buffer lock
+  does, and the second pass of #2059 and #2170 is gone. VACUUM does not wait
+  for a busy lock: it leaves that group's blocks unset. A DELETE whose flush
+  needs a group VACUUM holds waits for it, for as long as VACUUM takes to set
+  that block's bits. `pgcolumnar.vm_set_release_hold_ms`, a new superuser-only
+  test setting, pauses VACUUM before it gives back each group.
+  docs/administration.md and docs/configuration.md. `test/index_only.sh` and
+  `test_index_only.py`.
+
 - The maintenance daemon runs `compact_rewrite` and `recluster` each in its own
   transaction (#2194). It ran both in one transaction when both were due. The
   recluster then waited for a busy row group while it held the storage-row lock
