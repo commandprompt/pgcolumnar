@@ -2692,8 +2692,9 @@ pflush_auto_workers(void)
  * covers one another session holds.
  *
  * So each worker takes an exclusive lock of class PGCOLUMNAR_LOCKCLASS_PFLUSH_RUN
- * on (flush, its index) as soon as it has connected, before it asks for any
- * lock on a relation, and says so in shared memory. The backend waits for each
+ * on (flush, its index) as soon as it has attached the shared segment, before
+ * it connects and so before it asks for any other lock, and says so in shared
+ * memory. The backend waits for each
  * of those in SHARE mode in turn, until the worker has reported and released
  * it. The wait-for graph then has an edge from the backend to the worker it
  * waits for, the cycle above is closed, and the deadlock detector ends it with
@@ -2708,8 +2709,9 @@ pflush_auto_workers(void)
  * dies. The backend's waits on it are waits for the flush, not lock contention,
  * so lock_timeout does not apply to them and log_lock_waits does not report
  * them; both are restored once the waits end. A wait for a worker that has not
- * taken its lock yet is a latch wait, but a worker takes it before it asks for
- * anything a lock cycle could hold up.
+ * taken its lock yet is a latch wait, but a worker takes it before it connects,
+ * so before it asks for any lock at all: connecting reads pg_database with
+ * ACCESS SHARE, which a cycle can hold up too (#2270 review).
  *
  * parallel_copy (#2229) and parallel_export_parquet (#2245) do the same with
  * classes of their own; a separate class keeps the lock tags apart.
@@ -2719,6 +2721,19 @@ pflush_run_locktag(LOCKTAG *tag, const PflushHeader *hdr, int idx)
 {
 	SET_LOCKTAG_ADVISORY(*tag, hdr->dbid, hdr->runLockKey, (uint32) idx,
 						 PGCOLUMNAR_LOCKCLASS_PFLUSH_RUN);
+}
+
+/*
+ * pflush_release_run_lock_at_exit
+ *		before_shmem_exit callback of a flush worker: release its run lock, and
+ *		any other session lock of the user lock method, which it holds none of.
+ *		Registered before the worker connects, so it also runs when the worker
+ *		exits while connecting. A no-op once the lock is released.
+ */
+static void
+pflush_release_run_lock_at_exit(int code, Datum arg)
+{
+	LockReleaseSession(USER_LOCKMETHOD);
 }
 
 /*
@@ -2822,6 +2837,28 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	attrs = (FormData_pg_attribute *) shm_toc_lookup(toc, PFLUSH_KEY_ATTRS, false);
 	me = &slots[widx];
 
+	/*
+	 * The run lock, before the worker connects (#2256, #2270 review); see "The
+	 * backend waits for its flush workers in the lock manager". Connecting reads
+	 * pg_database with ACCESS SHARE, so a session holding ACCESS EXCLUSIVE on it
+	 * could hold the worker up there, and a backend waiting on a latch until the
+	 * lock is taken would not see that cycle. The tag names the caller's
+	 * database and this flush's segment, not MyDatabaseId, and a session lock
+	 * needs only this process's PGPROC and the local lock table, which
+	 * BackgroundWorkerMain has set up (InitProcess, BaseInit). It is held until
+	 * this worker has reported. The exit callback releases it if the worker
+	 * dies first, including while it connects, before InitPostgres has
+	 * registered the callback that releases session locks.
+	 */
+	before_shmem_exit(pflush_release_run_lock_at_exit, (Datum) 0);
+	{
+		LOCKTAG		tag;
+
+		pflush_run_locktag(&tag, hdr, widx);
+		(void) LockAcquire(&tag, ExclusiveLock, true, false);
+		pg_atomic_write_u32(&me->running, 1);
+	}
+
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
@@ -2840,7 +2877,8 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	 *
 	 * Everything from here on reports its error to the backend, which logs it
 	 * with its SQLSTATE, detail and hint (#2256). A deadlock in which this worker
-	 * is the victim then reaches the backend as 40P01.
+	 * is the victim then reaches the backend as 40P01. An error while connecting
+	 * ends the worker without a report; its columns are encoded serially.
 	 */
 	PG_TRY();
 	{
@@ -2848,19 +2886,6 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		uint32		count = 0;
 		dsm_segment *outseg;
 		char	   *obase;
-
-		/*
-		 * The run lock, before any lock on a relation (#2256); see "The backend
-		 * waits for its flush workers in the lock manager". Held until this
-		 * worker has reported.
-		 */
-		{
-			LOCKTAG		tag;
-
-			pflush_run_locktag(&tag, hdr, widx);
-			(void) LockAcquire(&tag, ExclusiveLock, true, false);
-			pg_atomic_write_u32(&me->running, 1);
-		}
 
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());

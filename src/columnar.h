@@ -1132,7 +1132,7 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
 #define PGCOLUMNAR_LOCKCLASS_PEXPORT_RUN	108
 
 /*
- * Each parallel_flush worker holds this from just after it connects, so the
+ * Each parallel_flush worker holds this from just before it connects, so the
  * inserting backend waits for it in the lock manager rather than on a latch,
  * and the deadlock detector sees that wait (#2256). 109 is kept for the rewrite
  * turnstile (#2253).

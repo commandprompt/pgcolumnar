@@ -661,8 +661,10 @@ true until the next version shipped.
   `LOCK TABLE ... IN SHARE MODE` on the columnar table, the worker waited for
   that session and that session waited for the backend. The backend waited
   for the worker on a latch, which the deadlock detector does not see. Each
-  worker now holds an advisory lock of a new class (110) from the moment it
-  connects, and the backend waits on those locks. The deadlock detector then
+  worker now holds an advisory lock of a new class (110) from just before it
+  connects, and the backend waits on those locks. Connecting reads
+  `pg_database`, so a cycle through a worker that is still connecting, for
+  example one through a superuser's `LOCK TABLE pg_database`, is found too. The deadlock detector then
   ends the cycle with `deadlock detected` (40P01) after `deadlock_timeout`.
   If it picks the worker, the backend logs the worker's error as a WARNING
   with its SQLSTATE, detail and hint, encodes that worker's columns itself,

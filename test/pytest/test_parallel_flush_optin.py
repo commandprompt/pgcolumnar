@@ -791,7 +791,7 @@ def _cy_note(n):
             n.message_detail or "")
 
 
-def _cycle(db, table, a_dt, b_dt, mpw=2, select="g, row(g, g)::cy_c"):
+def _cycle(db, table, a_dt, b_dt, mpw=2, select="g, row(g, g)::cy_c", locked="cy_c"):
     """-> ("A: .. | B: .. | <rows> rows | <run lock named?> | <time>", A's details), as the
     shell's cycle. max_parallel_workers 2 gives the flush one worker."""
     out = {}
@@ -806,7 +806,7 @@ def _cycle(db, table, a_dt, b_dt, mpw=2, select="g, row(g, g)::cy_c"):
                 c.execute(f"SET deadlock_timeout = '{a_dt}'")
                 c.execute(f"SET max_parallel_workers = {mpw}")
                 c.execute("SELECT (row(1, 1)::cy_c).x")
-                c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'cy_c'::regclass "
+                c.execute(_cy_until(f"EXISTS (SELECT 1 FROM pg_locks WHERE relation = '{locked}'::regclass "
                                     "AND mode = 'AccessExclusiveLock' AND granted)"))
                 c.execute("SET pgcolumnar.parallel_flush = on")
                 c.execute("SET client_min_messages = debug1")
@@ -826,8 +826,8 @@ def _cycle(db, table, a_dt, b_dt, mpw=2, select="g, row(g, g)::cy_c"):
             c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'pf_cy_a' "
                                 "AND query LIKE 'DO%')"))
             with c.transaction():
-                c.execute("LOCK TABLE cy_c IN ACCESS EXCLUSIVE MODE")
-                c.execute(_cy_until("EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'cy_c'::regclass "
+                c.execute(f"LOCK TABLE {locked} IN ACCESS EXCLUSIVE MODE")
+                c.execute(_cy_until(f"EXISTS (SELECT 1 FROM pg_locks WHERE relation = '{locked}'::regclass "
                                     "AND NOT granted)"))
                 c.execute(f"LOCK TABLE {table} IN SHARE MODE")
                 b = "got both"
@@ -878,6 +878,11 @@ def cy(pgc_cluster):
         # a report A received names worker 1's run lock.
         d.run("CREATE TABLE cy_w2 (r cy_c, s cy_c) USING pgcolumnar")
         r["two"] = _cycle(d, "cy_w2", "2s", "30s", 4, "row(g, g)::cy_c, row(g, g)::cy_c")
+        # The connect phase (#2270 review): a worker reads pg_database with ACCESS
+        # SHARE while it connects, so B holds ACCESS EXCLUSIVE on pg_database, and
+        # A's columns are plain ints. B at 100 ms is the victim.
+        d.run("CREATE TABLE cy_wc (a int, b int) USING pgcolumnar")
+        r["connect"] = _cycle(d, "cy_wc", "30s", "100ms", 2, "g, g", "pg_database")[0]
 
         # A 1 ms lock_timeout does not end an uncontended parallel flush, and with
         # deadlock_timeout 1 ms and log_lock_waits on, no wait for a worker is
@@ -965,6 +970,13 @@ def test_cycle_the_backend_waits_for_the_second_worker_too(cy, expect):
     expect.text(reading, "worker 1's run lock named, under 6 s",
                 "with two parallel flush workers waiting on the cycle, the backend waits for the second worker's "
                 "run lock too, and one side gives way within 6 s (#2256)")
+
+
+def test_cycle_a_cycle_while_a_worker_connects_ends_in_40p01(cy, expect):
+    expect.text(cy["connect"], CY_OTHER_VICTIM + "the deadlock names the run lock | under 6 s",
+                "a cycle that closes while a parallel flush worker connects (another session's ACCESS EXCLUSIVE on "
+                "pg_database) ends with the other session's 40P01 naming the run lock, and the INSERT finishes in "
+                "its worker within 6 s (#2256)")
 
 
 def test_cycle_the_worker_waits_ignore_lock_timeout(cy, expect):

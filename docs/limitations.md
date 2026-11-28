@@ -861,7 +861,8 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   a transaction of its own. For a column whose type is or contains a composite,
   that takes ACCESS SHARE on the composite's table. The inserting backend waits
   for its workers in the lock manager, on advisory locks of class 110 that show
-  in `pg_locks` (#2256). Another session may hold a conflicting lock on that table
+  in `pg_locks` (#2256). Each worker takes its lock before it connects, because
+  connecting reads `pg_database`. Another session may hold a conflicting lock on that table
   and then wait for a lock the inserting transaction holds. The deadlock detector
   then ends the cycle after `deadlock_timeout`. If it picks a worker, the backend
   logs a WARNING with the worker's SQLSTATE `40P01` and its detail. It then

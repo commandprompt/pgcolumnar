@@ -513,9 +513,10 @@ q "CREATE TABLE cy_c (x int, y int);
    CREATE TABLE cy_wb (a int, r cy_c) USING pgcolumnar;
    CREATE TABLE cy_wd (a int, r cy_c) USING pgcolumnar;
    CREATE TABLE cy_w2 (r cy_c, s cy_c) USING pgcolumnar;
+   CREATE TABLE cy_wc (a int, b int) USING pgcolumnar;
    CREATE TABLE cy_lt (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar;" >/dev/null
 CY_CRASHES_AT_START="$(cy_crashes)"
-# cycle TABLE A-DEADLOCK-TIMEOUT B-DEADLOCK-TIMEOUT [MAX-PARALLEL-WORKERS [SELECT-LIST]]
+# cycle TABLE A-DEADLOCK-TIMEOUT B-DEADLOCK-TIMEOUT [MAX-PARALLEL-WORKERS [SELECT-LIST [B'S TABLE]]]
 # -> "A: <what A's INSERT did> | B: <what B did> | <rows in TABLE> | <does the deadlock
 # report name a run lock> | <time>". max_parallel_workers 2 gives the flush one worker.
 cycle() {
@@ -523,14 +524,14 @@ cycle() {
 	t0=$(date +%s%N)
 	cy_sess pf_cy_a -c "SET deadlock_timeout = '$2'" -c "SET max_parallel_workers = ${4:-2}" \
 		-c "SELECT (row(1, 1)::cy_c).x" \
-		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'cy_c'::regclass AND mode = 'AccessExclusiveLock' AND granted)")" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = '${6:-cy_c}'::regclass AND mode = 'AccessExclusiveLock' AND granted)")" \
 		-c "SET pgcolumnar.parallel_flush = on" -c "SET client_min_messages = debug1" -c "SET statement_timeout = '10s'" \
 		-c "INSERT INTO $1 SELECT ${5:-g, row(g, g)::cy_c} FROM generate_series(1, 20000) g" >"$PGC_WORKDIR/cy_a.out" &
 	ap=$!
 	cy_sess pf_cy_b -c "SET deadlock_timeout = '$3'" -c "SET statement_timeout = '20s'" \
 		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'pf_cy_a' AND query LIKE 'DO%')")" \
-		-c "BEGIN" -c "LOCK TABLE cy_c IN ACCESS EXCLUSIVE MODE" \
-		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'cy_c'::regclass AND NOT granted)")" \
+		-c "BEGIN" -c "LOCK TABLE ${6:-cy_c} IN ACCESS EXCLUSIVE MODE" \
+		-c "$(cy_until "EXISTS (SELECT 1 FROM pg_locks WHERE relation = '${6:-cy_c}'::regclass AND NOT granted)")" \
 		-c "LOCK TABLE $1 IN SHARE MODE" -c "SELECT 'got both'" -c "COMMIT" >"$PGC_WORKDIR/cy_b.out"
 	wait "$ap"
 	ms=$(( ($(date +%s%N) - t0) / 1000000 ))
@@ -581,6 +582,15 @@ case "$cy_two" in
 esac
 check_text "with two parallel flush workers waiting on the cycle, the backend waits for the second worker's run lock too, and one side gives way within 6 s (#2256)" \
 	"$cy_two" "worker 1's run lock named, under 6 s"
+# The connect phase (#2270 review). A worker reads pg_database with ACCESS SHARE
+# while it connects, so B holds ACCESS EXCLUSIVE on pg_database instead (a
+# superuser can), and A's columns are plain ints. The worker takes its run lock
+# before it connects, so the backend already waits for it in the lock manager.
+# B at 100 ms is the victim; before, the backend waited on a latch until the
+# worker had connected, and A waited until statement_timeout.
+check_text "a cycle that closes while a parallel flush worker connects (another session's ACCESS EXCLUSIVE on pg_database) ends with the other session's 40P01 naming the run lock, and the INSERT finishes in its worker within 6 s (#2256)" \
+	"$(cycle cy_wc 30s 100ms 2 "g, g" pg_database)" \
+	"A: committed, every column in workers | B: 40P01 deadlock detected | 20000 rows | the deadlock names the run lock | under 6 s"
 
 # The waits on the workers are waits for the flush, not lock contention: a 1 ms
 # lock_timeout does not end an uncontended parallel flush, and with deadlock_timeout
