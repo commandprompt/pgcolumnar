@@ -23,6 +23,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "storage/procarray.h"
+#include "catalog/pg_authid.h"	/* BOOTSTRAP_SUPERUSERID (#2275 review) */
 #include "catalog/pg_type.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
@@ -2875,12 +2876,20 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	 * Set as a session value before InitPostgres, so a database or role setting
 	 * of lock_timeout, which InitPostgres applies at a lower priority, does not
 	 * replace it. A caller's 0 is passed too: no limit, as for the caller.
+	 *
+	 * The role is named here (#2275 review). There is no user before
+	 * InitPostgres, and SetConfigOption takes an interactive source's role
+	 * from GetUserId(), which asserts that one exists: on an assert-enabled
+	 * build every flush worker aborted. set_config_option_ext has the same
+	 * arguments on every supported major (15 and later).
 	 */
 	{
 		char		buf[32];
 
 		snprintf(buf, sizeof(buf), "%d", hdr->lockTimeout);
-		SetConfigOption("lock_timeout", buf, PGC_SUSET, PGC_S_SESSION);
+		(void) set_config_option_ext("lock_timeout", buf, PGC_SUSET, PGC_S_SESSION,
+									 BOOTSTRAP_SUPERUSERID, GUC_ACTION_SET, true,
+									 ERROR, false);
 	}
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
