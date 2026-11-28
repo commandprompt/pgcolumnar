@@ -652,6 +652,16 @@ true until the next version shipped.
   `\.` with 22P04, and the load now gives that error too. PostgreSQL 18 refuses
   `\.` anywhere but alone on its line and is unchanged. docs/limitations.md.
   `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- The `parallel_export_parquet` examples in docs/how-to.md, docs/user-guide.md
+  and docs/sql-reference.md ask for 4 workers, not 8 (#2191). On a table of 7 or
+  more row groups, 8 workers failed at the default `max_worker_processes` of 8
+  with `could not register pgcolumnar parallel_export worker 7 of 8`, because
+  the server's own background workers hold two slots. docs/sql-reference.md now
+  gives the slot rule and says the default fits six workers, and the user guide
+  repeats that figure. `test/parallel_export_parquet.sh` and
+  `test_parallel_export_parquet.py` run at the default `max_worker_processes`
+  now, not 16. They export with every documented count from a table of 16 row
+  groups, and check that six workers fit and seven fail with `53000`.
 - A column dropped by `ALTER TYPE ... DROP ATTRIBUTE ... CASCADE` or `DROP
   DOMAIN ... CASCADE` now takes the projections that store it with it (#2240).
   Only `ALTER TABLE ... DROP COLUMN` was checked, and it refuses with `2BP01`.
@@ -742,6 +752,21 @@ true until the next version shipped.
   `lock_timeout` and are not reported by `log_lock_waits`.
   docs/configuration.md and docs/limitations.md. `parallel_flush_optin.sh`
   arm 9 and `test_parallel_flush_optin.py`.
+- A flush worker of `pgcolumnar.parallel_flush` now waits for a lock no longer
+  than the inserting session's `lock_timeout` (#2271). A worker is a session of
+  its own, so it took the server's or its role's setting, usually none. For a
+  composite column it opens the composite's table with ACCESS SHARE, a lock the
+  serial flush does not need. While another session held ACCESS EXCLUSIVE on
+  that table, an INSERT with `lock_timeout = '1s'` waited for it, 5 s in a
+  measured case, where the same INSERT with `parallel_flush` off took 0.1 s.
+  The same held for `pg_database`, which a worker reads while it connects. Each
+  worker now sets the caller's `lock_timeout` before it connects. A worker that
+  gives up reaches the backend as a WARNING with SQLSTATE `55P03`, or ends with
+  no report while it connects. Either way the backend encodes that worker's
+  columns itself and the INSERT commits. A `lock_timeout` set for the role or
+  the database does not replace the caller's, and the caller's 0 means no
+  limit for the worker too. docs/configuration.md and docs/limitations.md.
+  `parallel_flush_optin.sh` arm 10 and `test_parallel_flush_optin.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   until `statement_timeout` when a column's type is or contains a composite
   whose table the same transaction holds in ACCESS EXCLUSIVE mode, as after
