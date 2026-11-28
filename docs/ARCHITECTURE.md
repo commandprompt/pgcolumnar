@@ -207,10 +207,13 @@ writer's command id as runs, and register them here when they flush. A fetch
 under an MVCC snapshot hides a row or a mark that this transaction wrote under a
 command id at or above the snapshot's curcid, as heap does. Non-MVCC snapshots
 see every write. A mark is stored as the rows it marked, not as its row group's
-bitmap. A parallel worker filters as the leader does: before workers can start,
-the leader copies the registry into a DSM segment and publishes its handle in a
-shared-memory slot of its own, and each worker loads its lock-group leader's
-copy before it first consults the registry. The slots exist only under
+bitmap. A parallel worker filters as the leader does. At the start of a plan
+that may run in parallel, the leader writes the plan's tables' buffers, copies
+the registry into one DSM segment, and publishes its handle in a shared-memory
+slot of its own. Each worker loads its lock-group leader's copy before it first
+consults the registry. A parallel query writes nothing, so the one copy serves
+all its Gathers and rescans, and the leader detaches it at the end of the query,
+after its workers have finished. The slots exist only under
 `shared_preload_libraries`; without them the leader refuses a parallel plan that
 would need the copy, with SQLSTATE 0A000.
 

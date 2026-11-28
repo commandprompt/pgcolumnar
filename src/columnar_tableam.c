@@ -1166,9 +1166,6 @@ pgcolumnar_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	bpscan->phs_startblock = InvalidBlockNumber;
 	pg_atomic_init_u64(&bpscan->phs_nallocated, 0);
 
-	/* the workers' copy of this backend's own-write registry (#2247) */
-	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
-
 	return sizeof(ParallelBlockTableScanDescData);
 }
 
@@ -1178,9 +1175,6 @@ pgcolumnar_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 	ParallelBlockTableScanDesc bpscan = (ParallelBlockTableScanDesc) pscan;
 
 	pg_atomic_write_u64(&bpscan->phs_nallocated, 0);
-
-	/* a rescan launches workers again: give them the registry as it is now (#2247) */
-	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 /* -------------------------------------------------------------------------
@@ -3101,20 +3095,33 @@ pgcolumnar_executor_start(QueryDesc *queryDesc, int eflags)
 	foreach(lc, queryDesc->plannedstmt->rtable)
 		PgColumnarFlushDeleteVectorForRelid(((RangeTblEntry *) lfirst(lc))->relid);
 
+	/*
+	 * A plan that may run in parallel workers (#2247, review of #2269):
+	 * write every buffer of its tables first, so the registry is complete
+	 * and nothing the workers could need stays in this backend's memory,
+	 * then publish one copy of the registry for the workers of this query.
+	 * Both happen before standard_ExecutorStart enters parallel mode, which
+	 * forbids the catalog writes of a flush. A parallel query writes
+	 * nothing, so the registry does not change until it ends, and this one
+	 * copy serves all of its Gathers, rescans included. pgcolumnar_executor_end
+	 * detaches it.
+	 */
+	if (queryDesc->plannedstmt->parallelModeNeeded)
+	{
+		foreach(lc, queryDesc->plannedstmt->rtable)
+		{
+			RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+			if (rte->rtekind == RTE_RELATION && OidIsValid(rte->relid))
+				PgColumnarFlushWriteStateForRelation(rte->relid);
+		}
+		PgColumnarCidRegistryPublish(queryDesc, queryDesc->snapshot);
+	}
+
 	if (prev_executor_start_hook)
 		prev_executor_start_hook(queryDesc, eflags);
 	else
 		standard_ExecutorStart(queryDesc, eflags);
-
-	/*
-	 * A plan that may run in parallel workers: publish this backend's
-	 * own-write registry for them (#2247), after the plan's scans have
-	 * flushed what they flush at start. A parallel index scan reaches no
-	 * table-AM or custom-scan callback in the leader, so this is its only
-	 * publication.
-	 */
-	if (queryDesc->plannedstmt->parallelModeNeeded)
-		PgColumnarCidRegistryPublish(queryDesc->snapshot);
 }
 
 /* -------------------------------------------------------------------------
@@ -3185,6 +3192,9 @@ pgcolumnar_executor_end(QueryDesc *queryDesc)
 		prev_executor_end_hook(queryDesc);
 	else
 		standard_ExecutorEnd(queryDesc);
+
+	/* its workers have finished: detach this query's registry copy (#2247) */
+	PgColumnarCidRegistryUnpublish(queryDesc);
 
 	/* A top-level statement ended: its object-store pins end with it. */
 	if (pgcolumnar_exec_depth == 0)

@@ -49,12 +49,14 @@
 #include "access/parallel.h"
 #include "access/twophase.h"
 #include "access/xact.h"
+#include "executor/execdesc.h"
 #include "miscadmin.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "utils/memutils.h"
+#include "utils/resowner.h"
 #include "utils/snapmgr.h"
 
 /* rows [firstRow, firstRow + nrows) of a storage, written by command `cid` */
@@ -91,6 +93,7 @@ static List *CidMarkSets = NIL;
 static bool CidAny = false;
 static CommandId CidMax = FirstCommandId;
 static bool CidWorkerLoaded = false;
+static uint64 CidVersion = 0;	/* bumped whenever the registry changes */
 
 /* one slot per PGPROC: the DSM handle of that backend's published registry */
 typedef struct CidSlot
@@ -110,6 +113,9 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 static void cid_worker_load(void);
+static void cid_published_discard_subxact(SubTransactionId subid);
+static void cid_published_detach_all(void);
+static void cid_published_promote_subxact(SubTransactionId subid, SubTransactionId parent);
 
 static MemoryContext
 cid_registry_context(void)
@@ -176,6 +182,7 @@ PgColumnarCidRegisterRows(uint64 storageId, uint64 firstRow, uint64 nrows,
 	CidRowRuns = lappend(CidRowRuns, r);
 	MemoryContextSwitchTo(old);
 	cid_note_max(cid);
+	CidVersion++;
 }
 
 /* build a mark set from n sorted row numbers; in the current memory context */
@@ -233,6 +240,7 @@ PgColumnarCidRegisterMarkRows(uint64 storageId, const uint64 *rows, uint32 n,
 											GetCurrentSubTransactionId()));
 	MemoryContextSwitchTo(old);
 	cid_note_max(cid);
+	CidVersion++;
 }
 
 static bool
@@ -316,8 +324,10 @@ PgColumnarCidRegistryDiscardSubXact(SubTransactionId subid)
 	ListCell   *lc;
 	MemoryContext old;
 
+	cid_published_discard_subxact(subid);
 	if (CidRegistryContext == NULL)
 		return;
+	CidVersion++;
 	old = MemoryContextSwitchTo(CidRegistryContext);
 	CidAny = false;
 	CidMax = FirstCommandId;
@@ -362,6 +372,7 @@ PgColumnarCidRegistryPromoteSubXact(SubTransactionId subid, SubTransactionId par
 {
 	ListCell   *lc;
 
+	cid_published_promote_subxact(subid, parent);
 	foreach(lc, CidRowRuns)
 	{
 		CidRowRun  *r = (CidRowRun *) lfirst(lc);
@@ -382,6 +393,7 @@ PgColumnarCidRegistryPromoteSubXact(SubTransactionId subid, SubTransactionId par
 void
 PgColumnarCidRegistryReset(void)
 {
+	cid_published_detach_all();
 	CidRegistryContext = NULL;
 	CidRowRuns = NIL;
 	CidMarkSets = NIL;
@@ -481,12 +493,90 @@ cid_mark_payload(const CidMarkSet *m)
 }
 
 /*
+ * ONE COPY PER LEADER QUERY (review of #2269). A plan that may run in parallel
+ * publishes once, at ExecutorStart, and pgcolumnar_executor_end detaches its
+ * copy after its workers have finished. A parallel query writes nothing, so
+ * the registry cannot change while it runs, and the one copy serves all of
+ * its Gathers and rescans. A copy is never detached while a worker of its
+ * query may still attach it, because ExecutorEnd runs after the query's
+ * Gathers have shut their workers down.
+ *
+ * The copies form a stack, one entry per running query that published, so a
+ * nested query restores its caller's handle when it ends. A nested query whose
+ * registry is the same as its caller's reuses the caller's segment instead of
+ * making another.
+ *
+ * Each segment is created under TopTransactionResourceOwner, not the query's
+ * own resource owner, so its lifetime is this stack's to manage. A
+ * subtransaction abort detaches the entries its queries left, and pre-commit
+ * detaches anything left, so nothing reaches the resource owner's leak check.
+ * A transaction abort lets the resource owner release the rest, quietly.
+ */
+typedef struct CidPublished
+{
+	QueryDesc  *query;
+	dsm_segment *seg;			/* NULL when the caller's segment is reused */
+	dsm_handle	handle;			/* what the slot holds for this query */
+	uint64		version;
+	SubTransactionId subid;
+} CidPublished;
+
+static List *CidPublishedStack = NIL;	/* in TopMemoryContext; innermost last */
+
+static void
+cid_slot_set(dsm_handle h, uint32 len)
+{
+	int			slot = cid_slot_of(MyProc);
+
+	if (slot < 0)
+		return;
+	CidSharedState->slots[slot].len = len;
+	pg_write_barrier();
+	CidSharedState->slots[slot].handle = h;
+}
+
+/* the slot as the innermost remaining entry left it, or empty */
+static void
+cid_slot_restore(void)
+{
+	CidPublished *top = CidPublishedStack != NIL
+		? (CidPublished *) llast(CidPublishedStack) : NULL;
+	dsm_handle	h = top ? top->handle : DSM_HANDLE_INVALID;
+	uint32		len = 0;
+
+	if (top != NULL)
+	{
+		ListCell   *lc;
+
+		/* the length stored with the segment that owns the handle */
+		foreach(lc, CidPublishedStack)
+		{
+			CidPublished *e = (CidPublished *) lfirst(lc);
+
+			if (e->seg != NULL && e->handle == h)
+				len = (uint32) dsm_segment_map_length(e->seg);
+		}
+	}
+	cid_slot_set(h, len);
+}
+
+static void
+cid_published_pop(CidPublished *e)
+{
+	if (e->seg != NULL)
+		dsm_detach(e->seg);
+	CidPublishedStack = list_delete_ptr(CidPublishedStack, e);
+	pfree(e);
+}
+
+/*
  * PgColumnarCidRegistryPublish
- *		In a parallel leader: put a copy of the registry where this backend's
- *		workers will find it. An empty registry publishes no segment.
+ *		At ExecutorStart of a plan that may run in parallel: put a copy of the
+ *		registry where this backend's workers will find it. An empty registry
+ *		publishes no segment.
  */
 void
-PgColumnarCidRegistryPublish(Snapshot snapshot)
+PgColumnarCidRegistryPublish(QueryDesc *query, Snapshot snapshot)
 {
 	int			slot = cid_slot_of(MyProc);
 	Size		len;
@@ -495,6 +585,10 @@ PgColumnarCidRegistryPublish(Snapshot snapshot)
 	char	   *p;
 	uint32		nr = (uint32) list_length(CidRowRuns);
 	uint32		nm = (uint32) list_length(CidMarkSets);
+	CidPublished *e;
+	CidPublished *top;
+	MemoryContext old;
+	ResourceOwner oldOwner;
 
 	if (IsParallelWorker())
 		return;
@@ -521,56 +615,156 @@ PgColumnarCidRegistryPublish(Snapshot snapshot)
 					 errhint("Add pgcolumnar to shared_preload_libraries and restart the server, or set max_parallel_workers_per_gather to 0.")));
 		return;
 	}
+
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	e = palloc0(sizeof(CidPublished));
+	MemoryContextSwitchTo(old);
+	e->query = query;
+	e->version = CidVersion;
+	e->subid = GetCurrentSubTransactionId();
+	e->handle = DSM_HANDLE_INVALID;
+
+	top = CidPublishedStack != NIL ? (CidPublished *) llast(CidPublishedStack) : NULL;
 	if (nr == 0 && nm == 0)
+		e->seg = NULL;			/* nothing to copy: the slot says so */
+	else if (top != NULL && top->version == CidVersion)
 	{
-		CidSharedState->slots[slot].handle = DSM_HANDLE_INVALID;
-		pg_write_barrier();
+		e->seg = NULL;			/* the caller's copy is this registry */
+		e->handle = top->handle;
+	}
+	else
+	{
+		len = 2 * sizeof(uint32);
+		len += (Size) nr * (3 * sizeof(uint64) + sizeof(CommandId));
+		foreach(lc, CidMarkSets)
+		{
+			CidMarkSet *m = (CidMarkSet *) lfirst(lc);
+
+			len += 2 * sizeof(uint64) + sizeof(CommandId) + 2 * sizeof(uint32) + 1 +
+				cid_mark_payload(m);
+		}
+
+		oldOwner = CurrentResourceOwner;
+		CurrentResourceOwner = TopTransactionResourceOwner;
+		PG_TRY();
+		{
+			seg = dsm_create(len, 0);
+		}
+		PG_FINALLY();
+		{
+			CurrentResourceOwner = oldOwner;
+		}
+		PG_END_TRY();
+
+		p = dsm_segment_address(seg);
+		p = cid_put(p, &nr, sizeof(nr));
+		p = cid_put(p, &nm, sizeof(nm));
+		foreach(lc, CidRowRuns)
+		{
+			CidRowRun  *r = (CidRowRun *) lfirst(lc);
+
+			p = cid_put(p, &r->storageId, sizeof(uint64));
+			p = cid_put(p, &r->firstRow, sizeof(uint64));
+			p = cid_put(p, &r->nrows, sizeof(uint64));
+			p = cid_put(p, &r->cid, sizeof(CommandId));
+		}
+		foreach(lc, CidMarkSets)
+		{
+			CidMarkSet *m = (CidMarkSet *) lfirst(lc);
+			char		dense = m->dense ? 1 : 0;
+
+			p = cid_put(p, &m->storageId, sizeof(uint64));
+			p = cid_put(p, &m->base, sizeof(uint64));
+			p = cid_put(p, &m->cid, sizeof(CommandId));
+			p = cid_put(p, &m->span, sizeof(uint32));
+			p = cid_put(p, &m->n, sizeof(uint32));
+			p = cid_put(p, &dense, 1);
+			p = cid_put(p, m->dense ? (void *) m->bits : (void *) m->offsets,
+						cid_mark_payload(m));
+		}
+		Assert(p == (char *) dsm_segment_address(seg) + len);
+		e->seg = seg;
+		e->handle = dsm_segment_handle(seg);
+	}
+
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	CidPublishedStack = lappend(CidPublishedStack, e);
+	MemoryContextSwitchTo(old);
+	cid_slot_restore();
+}
+
+/*
+ * PgColumnarCidRegistryUnpublish
+ *		At ExecutorEnd, after the query's workers have finished: detach its
+ *		copy and give the slot back to its caller's.
+ */
+void
+PgColumnarCidRegistryUnpublish(QueryDesc *query)
+{
+	ListCell   *lc;
+
+	foreach(lc, CidPublishedStack)
+	{
+		CidPublished *e = (CidPublished *) lfirst(lc);
+
+		if (e->query == query)
+		{
+			cid_published_pop(e);
+			cid_slot_restore();
+			return;
+		}
+	}
+}
+
+/* a subtransaction aborted: its queries never reached ExecutorEnd */
+static void
+cid_published_discard_subxact(SubTransactionId subid)
+{
+	bool		changed = false;
+
+	while (CidPublishedStack != NIL)
+	{
+		CidPublished *e = (CidPublished *) llast(CidPublishedStack);
+
+		if (e->subid != subid)
+			break;
+		cid_published_pop(e);
+		changed = true;
+	}
+	if (changed)
+		cid_slot_restore();
+}
+
+/* a subtransaction committed: its running queries now belong to the parent */
+static void
+cid_published_promote_subxact(SubTransactionId subid, SubTransactionId parent)
+{
+	ListCell   *lc;
+
+	foreach(lc, CidPublishedStack)
+	{
+		CidPublished *e = (CidPublished *) lfirst(lc);
+
+		if (e->subid == subid)
+			e->subid = parent;
+	}
+}
+
+/*
+ * The transaction is ending: detach anything left, and empty the slot. Called
+ * at the COMMIT, ABORT and PREPARE callbacks, which run before the resource
+ * owners release, so a segment left by a query that never reached ExecutorEnd
+ * is detached here rather than reported as a leak.
+ */
+static void
+cid_published_detach_all(void)
+{
+	if (IsParallelWorker())
 		return;
-	}
-
-	len = 2 * sizeof(uint32);
-	len += (Size) nr * (3 * sizeof(uint64) + sizeof(CommandId));
-	foreach(lc, CidMarkSets)
-	{
-		CidMarkSet *m = (CidMarkSet *) lfirst(lc);
-
-		len += 2 * sizeof(uint64) + sizeof(CommandId) + 2 * sizeof(uint32) + 1 +
-			cid_mark_payload(m);
-	}
-
-	/* lives to the end of this query, which the workers do not outlive */
-	seg = dsm_create(len, 0);
-	p = dsm_segment_address(seg);
-	p = cid_put(p, &nr, sizeof(nr));
-	p = cid_put(p, &nm, sizeof(nm));
-	foreach(lc, CidRowRuns)
-	{
-		CidRowRun  *r = (CidRowRun *) lfirst(lc);
-
-		p = cid_put(p, &r->storageId, sizeof(uint64));
-		p = cid_put(p, &r->firstRow, sizeof(uint64));
-		p = cid_put(p, &r->nrows, sizeof(uint64));
-		p = cid_put(p, &r->cid, sizeof(CommandId));
-	}
-	foreach(lc, CidMarkSets)
-	{
-		CidMarkSet *m = (CidMarkSet *) lfirst(lc);
-		char		dense = m->dense ? 1 : 0;
-
-		p = cid_put(p, &m->storageId, sizeof(uint64));
-		p = cid_put(p, &m->base, sizeof(uint64));
-		p = cid_put(p, &m->cid, sizeof(CommandId));
-		p = cid_put(p, &m->span, sizeof(uint32));
-		p = cid_put(p, &m->n, sizeof(uint32));
-		p = cid_put(p, &dense, 1);
-		p = cid_put(p, m->dense ? (void *) m->bits : (void *) m->offsets,
-					cid_mark_payload(m));
-	}
-	Assert(p == (char *) dsm_segment_address(seg) + len);
-
-	CidSharedState->slots[slot].len = (uint32) len;
-	pg_write_barrier();
-	CidSharedState->slots[slot].handle = dsm_segment_handle(seg);
+	while (CidPublishedStack != NIL)
+		cid_published_pop((CidPublished *) llast(CidPublishedStack));
+	if (CidSharedState != NULL)
+		cid_slot_set(DSM_HANDLE_INVALID, 0);
 }
 
 /* in a parallel worker: load the leader's copy, once */

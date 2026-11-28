@@ -327,6 +327,39 @@ for cs in off on; do
 		         SELECT count(*) || '|' || sum(pad) FROM %t; ROLLBACK;")" "same"
 done
 
+# ---- one registry copy per parallel query (second review of #2269) --------------
+# After a write, every parallel query publishes a copy of the registry for its
+# workers. A copy that is never detached piles up until the server's shared
+# memory segments run out, and is reported as a leak. These run many parallel
+# queries after a write, and read the server's warnings, which the comparisons
+# above do not see.
+psql_run "CREATE OR REPLACE FUNCTION loop_cnt(t regclass, n int) RETURNS bigint LANGUAGE plpgsql AS \$\$
+          DECLARE c bigint; total bigint := 0;
+          BEGIN FOR i IN 1..n LOOP
+            EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; total := total + c;
+          END LOOP; RETURN total; END \$\$;"
+check "a loop of 1,000 parallel queries after a write in the same transaction completes, with heap's count" \
+	"$(same "BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = on; $PAR0 INSERT INTO %t VALUES (-1, -1);
+	         SELECT loop_cnt('%t', 1000); ROLLBACK;")" "same"
+RESCAN="SELECT sum((SELECT count(*) FROM %t WHERE pad % 7 <> 3 HAVING count(*) > g)) FROM generate_series(1, 1000) g;"
+check "premise: the rescanned subquery runs a Gather" \
+	"$(plan_has "BEGIN; $CSOFF $PAR0 EXPLAIN (COSTS OFF) $RESCAN ROLLBACK;" 'Gather')" "yes"
+check "a Gather rescanned 1,000 times after a write in the same transaction completes, with heap's sum" \
+	"$(same "BEGIN; $CSOFF $PAR0 INSERT INTO %t VALUES (-1, -1); $RESCAN ROLLBACK;")" "same"
+# The warnings of a committed transaction: a copy never detached is reported at
+# the latest when the transaction's resource owner is released. PostgreSQL 17
+# and later word it "resource was not closed", 15 and 16 "dynamic shared memory
+# leak".
+leak_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qAt \
+	-c "$SET BEGIN; SET LOCAL pgcolumnar.enable_custom_scan = on; $PAR0 INSERT INTO sv_pgcolumnar VALUES (-2, -2);
+	    SELECT count(*) FROM sv_pgcolumnar WHERE pad % 7 <> 3; SELECT count(*) FROM sv_pgcolumnar WHERE pad % 5 <> 3;
+	    COMMIT;" 2>&1)"
+psql_run "DELETE FROM sv_pgcolumnar WHERE id = -2;"
+check "premise: the write and the parallel queries ran and committed" \
+	"$(grep -c '^[0-9][0-9]*$' <<<"$leak_out")" "2"
+check "a write followed by a parallel query in the same transaction prints no resource-leak warning" \
+	"$(grep -cE 'resource was not closed|dynamic shared memory leak' <<<"$leak_out") warnings" "0 warnings"
+
 # ---- without shared_preload_libraries (review of #2269) --------------------------
 # The workers' copy of the registry lives in shared memory that exists only when
 # pgcolumnar is preloaded. Without the library preloaded, no session can load it:

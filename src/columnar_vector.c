@@ -35,7 +35,6 @@
  *-------------------------------------------------------------------------
  */
 #include "columnar.h"
-#include "columnar_cid_registry.h"
 
 #include "columnar_customscan.h"
 #include "columnar_metadata.h"
@@ -5673,9 +5672,6 @@ PgColumnarInitializeDSMAggScan(CustomScanState *node, ParallelContext *pcxt,
 		PgColumnarFlushDeleteVectorForRelation(frel);
 		table_close(frel, AccessShareLock);
 	}
-
-	/* after the flush, which may register more own writes (#2247) */
-	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 static void
@@ -5686,9 +5682,6 @@ PgColumnarReInitializeDSMAggScan(CustomScanState *node, ParallelContext *pcxt,
 
 	/* a rescan restarts group claiming from zero for every participant */
 	pg_atomic_write_u32(counter, 0);
-
-	/* and launches workers again: give them the registry as it is now (#2247) */
-	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 static void
@@ -7676,9 +7669,6 @@ PgColumnarInitializeDSMGroupAggScan(CustomScanState *node, ParallelContext *pcxt
 		PgColumnarFlushDeleteVectorForRelation(frel);
 		table_close(frel, AccessShareLock);
 	}
-
-	/* after the flush, which may register more own writes (#2247) */
-	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 static void
@@ -7689,9 +7679,6 @@ PgColumnarReInitializeDSMGroupAggScan(CustomScanState *node, ParallelContext *pc
 
 	/* a rescan restarts group claiming from zero for every participant */
 	pg_atomic_write_u32(counter, 0);
-
-	/* and launches workers again: give them the registry as it is now (#2247) */
-	PgColumnarCidRegistryPublish(ActiveSnapshotSet() ? GetActiveSnapshot() : NULL);
 }
 
 static void

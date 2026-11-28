@@ -589,6 +589,70 @@ def test_guard_a_parallel_scan_after_flushed_writes(pgc_conn, expect, cs):
                 f"a parallel scan after this transaction's flushed writes sees them, as heap does (custom scan {cs})")
 
 
+# One registry copy per parallel query (second review of #2269). After a write,
+# every parallel query publishes a copy of the registry for its workers. A copy
+# that is never detached piles up until the server's shared memory segments run
+# out, and is reported as a leak. These run many parallel queries after a write,
+# and read the server's warnings, which the comparisons above do not see.
+LOOP_CNT = ("CREATE OR REPLACE FUNCTION loop_cnt(t regclass, n int) RETURNS bigint LANGUAGE plpgsql AS $$ "
+            "DECLARE c bigint; total bigint := 0; "
+            "BEGIN FOR i IN 1..n LOOP "
+            "EXECUTE format('SELECT count(*) FROM %s WHERE pad %% 7 <> 3', t) INTO c; total := total + c; "
+            "END LOOP; RETURN total; END $$")
+RESCAN = "SELECT sum((SELECT count(*) FROM %t WHERE pad % 7 <> 3 HAVING count(*) > g)) FROM generate_series(1, 1000) g"
+
+
+def test_a_loop_of_parallel_queries_after_a_write_completes(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    pgc_conn.execute(LOOP_CNT)
+    expect.text(_same_tx(pgc_conn, ["SET LOCAL pgcolumnar.enable_custom_scan = on"] + PAR0 + [
+        "INSERT INTO %t VALUES (-1, -1)", "SELECT loop_cnt('%t', 1000)"]), "same",
+                "a loop of 1,000 parallel queries after a write in the same transaction completes, with heap's count")
+
+
+def test_premise_the_rescanned_subquery_runs_a_gather(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_plan_has(pgc_conn, CSOFF + PAR0 + ["EXPLAIN (COSTS OFF) " + RESCAN], "Gather"), "yes",
+                "premise: the rescanned subquery runs a Gather")
+
+
+def test_a_rescanned_gather_after_a_write_completes(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, CSOFF + PAR0 + ["INSERT INTO %t VALUES (-1, -1)", RESCAN]), "same",
+                "a Gather rescanned 1,000 times after a write in the same transaction completes, with heap's sum")
+
+
+def test_a_write_then_a_parallel_query_leaks_no_segment(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    notices = []
+    pgc_conn.add_notice_handler(lambda d: notices.append(d.message_primary or ""))
+    rows = []
+    try:
+        with pgc_conn.cursor() as cur:
+            _session(cur)
+            cur.execute("BEGIN")
+            for sql in ["SET LOCAL pgcolumnar.enable_custom_scan = on"] + PAR0 + [
+                    "INSERT INTO sv_pgcolumnar VALUES (-2, -2)"]:
+                cur.execute(sql)
+            for q in ("SELECT count(*) FROM sv_pgcolumnar WHERE pad % 7 <> 3",
+                      "SELECT count(*) FROM sv_pgcolumnar WHERE pad % 5 <> 3"):
+                cur.execute(q)
+                rows.append(cur.fetchone()[0])
+            cur.execute("COMMIT")
+    except psycopg.Error as exc:
+        rows.append(str(exc).splitlines()[0])
+        pgc_conn.execute("ROLLBACK")
+    pgc_conn.execute("DELETE FROM sv_pgcolumnar WHERE id = -2")
+    expect.text(str(sum(1 for r in rows if isinstance(r, int))), "2",
+                "premise: the write and the parallel queries ran and committed")
+    # PostgreSQL 17 and later word it "resource was not closed", 15 and 16
+    # "dynamic shared memory leak"
+    leaks = sum(1 for n in notices
+                if "resource was not closed" in n or "dynamic shared memory leak" in n)
+    expect.text(f"{leaks} warnings", "0 warnings",
+                "a write followed by a parallel query in the same transaction prints no resource-leak warning")
+
+
 # Without shared_preload_libraries (review of #2269). The workers' copy of the
 # registry lives in shared memory that exists only when pgcolumnar is preloaded.
 # Without the library preloaded, no session can load it: it defines settings fixed
