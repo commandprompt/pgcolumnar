@@ -1082,7 +1082,8 @@ os_send_all(PgColumnarObjHandle *h, const char *buf, size_t len)
  * Pull more bytes into the staging buffer. Returns false on orderly EOF.
  *
  * With staleOk, a reset (ECONNRESET) returns false too. os_read_head passes
- * it only while nothing of a response head has arrived: a server that closed
+ * it only while nothing of the response has arrived, an interim head
+ * included (#2258): a server that closed
  * a kept-alive connection answers the next request on it with a reset, and
  * that is the stale keep-alive race as much as a clean EOF is (#2198). After
  * any byte of an answer, a reset raises, so a body that ends at connection
@@ -1212,9 +1213,15 @@ os_line_has_token(const char *line, const char *eol, const char *token)
  * Read and parse one response head. Returns false when the connection died
  * before a single status byte arrived (the stale keep-alive case); raises on
  * everything else.
+ *
+ * afterInterim says an interim (1xx) head of this response was read already.
+ * The server has then begun to answer, so the connection was not stale, and
+ * an EOF or reset before the next head raises like one in the middle of a
+ * head (#2258). Retrying there sent the request again after the server had
+ * started on it.
  */
 static bool
-os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
+os_read_head(PgColumnarObjHandle *h, OsResponse *resp, bool afterInterim)
 {
 	int			headEnd = -1;
 	bool		keepAlive = false;
@@ -1242,9 +1249,9 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("columnar: oversized HTTP response header from \"%s\"",
 							h->url)));
-		if (!os_fill(h, avail == 0))
+		if (!os_fill(h, avail == 0 && !afterInterim))
 		{
-			if (h->rb_len - h->rb_off == 0)
+			if (h->rb_len - h->rb_off == 0 && !afterInterim)
 				return false;	/* EOF or reset before any byte: stale */
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
@@ -1373,18 +1380,23 @@ os_refuse_switch(PgColumnarObjHandle *h, const OsResponse *resp)
  * Early Hints. An interim answer has no body, so only its head is read. Every
  * request reads its final answer here (#2090); only an export's early answer
  * during its Expect wait is read with os_read_head, and it refuses 101 too.
- * Returns false on the same stale-connection condition as os_read_head.
+ * Returns false on the same stale-connection condition as os_read_head, and
+ * only before the first head: once an interim head has come, the connection
+ * was live, and an EOF after it raises (#2258).
  *
  * 101 Switching Protocols is refused, not passed over (os_refuse_switch).
  */
 static bool
 os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
 {
+	bool		afterInterim = false;
+
 	do
 	{
-		if (!os_read_head(h, resp))
+		if (!os_read_head(h, resp, afterInterim))
 			return false;
 		os_refuse_switch(h, resp);
+		afterInterim = true;
 	} while (resp->status >= 100 && resp->status < 200);
 	return true;
 }
@@ -2914,7 +2926,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 			if (os_await_answer(h, OS_EXPECT_WAIT_MS, &timedOut))
 			{
 				/* bytes are staged, so this reads a head or raises */
-				(void) os_read_head(h, resp);
+				(void) os_read_head(h, resp, false);
 				os_refuse_switch(h, resp);
 				if (resp->status == 417)
 				{

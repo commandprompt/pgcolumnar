@@ -613,7 +613,28 @@ lock_rewrite_groups(Relation rel, uint64 storageId, const uint64 *groups, int nG
 		uint64		busy;
 
 		CHECK_FOR_INTERRUPTS();
-		wait_rewrite_lock(rel, storageId, true, 0, deadline, false);
+
+		/*
+		 * This transaction wrote to the table, so it holds the storage-row lock
+		 * in ShareLock, as every other open writer does (#2184). Waiting for
+		 * ExclusiveLock here, holding that and the relation's
+		 * ShareUpdateExclusiveLock, deadlocks with another such transaction that
+		 * runs a rewrite too: each waits for the other's ShareLock, and the other
+		 * for its relation lock. So it does not wait. While another writer is
+		 * open, it refuses; it has changed nothing.
+		 */
+		if (PgColumnarStorageRowShareHeldByMe(storageId))
+		{
+			if (!PgColumnarConditionalLockStorageRow(storageId))
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("cannot rewrite table \"%s\" while another open transaction has written to it",
+								RelationGetRelationName(rel)),
+						 errdetail("This transaction has written to the table too, and a rewrite that waited for the other writer could deadlock with it."),
+						 errhint("Commit this transaction's writes, then run the rewrite in a transaction of its own. The table is unchanged.")));
+		}
+		else
+			wait_rewrite_lock(rel, storageId, true, 0, deadline, false);
 		for (i = 0; i < nGroups; i++)
 			if (!PgColumnarConditionalLockChunkGroup(storageId, groups[i]))
 				break;

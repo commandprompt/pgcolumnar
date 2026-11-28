@@ -646,6 +646,49 @@ true until the next version shipped.
   a row group before the rewrite retired it still fails with 40001, as before. docs/limitations.md,
   docs/configuration.md and docs/administration.md. `test/native_rewrite_conc.sh`
   and `test_native_rewrite_conc.py`.
+- Two writers to one table no longer deadlock on the chunk-group and
+  storage-row locks (#2184). A writer holds the chunk-group lock of each row
+  group it deletes from and the storage-row lock, which every flush of new
+  rows took exclusively, both to commit, in whatever order its statements run.
+  A transaction that inserted and then deleted in a group, and one that deleted
+  in that group and then inserted, each waited for the other, and one failed
+  with `deadlock detected` (40P01). A writer whose table's storage row is
+  current now holds the storage-row lock in share mode, so writers do not wait
+  for each other on it. The first write to a table and a write that raises an
+  earlier build's format stamp still take it exclusively, and so do
+  `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite`, which still wait for
+  every open writer. A `DELETE` that finds an earlier build's stamp raises it
+  before it takes a chunk-group lock. As a result, a second `INSERT` into a
+  table no longer waits for an open transaction that inserted into it.
+  Writers that run at once also no longer deadlock on the row-identity locks
+  of unrelated rows. Those locks are bucketed, so unrelated rows share them,
+  and a transaction that ran a `DELETE` and then an `UPDATE` waited at its
+  second flush for a bucket another such transaction held from its first.
+  This had been possible all along for transactions without an `INSERT`, and
+  `concurrent_diff` met it once inserting writers stopped waiting for each
+  other. A flush now takes a row-identity lock only if it is free. It takes the
+  chunk-group lock of every row group it marks before it checks for a
+  committed conflict, and that wait is what serializes two writers of one row.
+  This fixes #2251. A `pgcolumnar.recluster` or `pgcolumnar.compact_rewrite`
+  in a transaction that has written to the table now stops with `55P03` while
+  another transaction that wrote to it is open, rather than wait for it and
+  risk a deadlock; before, that writer waited. A table that 1.0-alpha4 wrote
+  and this build only deleted from is now refused by 1.0-alpha4 (`0A000`),
+  as after any other write. docs/limitations.md. `test/concurrency.sh` and
+  `test_concurrency.py`, scenarios D to M.
+- A remote read no longer sends a request again when the connection closes
+  after a whole interim answer such as `103 Early Hints` (#2258). The reader
+  retries once, on a new connection, when a kept-alive connection ends before
+  any byte of an answer: that is a server dropping an idle connection. But it
+  read each response head on its own, so a close after a complete `1xx` head
+  counted as before any byte too, though the server had begun to answer. Over
+  plain TCP, and over TLS since #2248, the request went again. Now a close is
+  taken for a stale connection only before the first head. A close after an
+  interim head fails
+  with 08006: `connection to ... closed mid-response` over plain TCP, and `TLS
+  read from ... failed` over TLS. A close before any answer is still retried.
+  `test/objstore_http_read.sh`, `test/objstore_tls_read.sh` and their twins.
+
 - `pgcolumnar.parallel_copy` into a partitioned target now refuses a row that
   `COPY FROM` refuses before it reads a value with `COPY`'s SQLSTATE and
   message (#2222). The splitter reads every row's key before any loader runs,

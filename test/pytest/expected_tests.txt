@@ -2638,7 +2638,20 @@ guard_tests 910
 # test_parallel_copy_malformed_then_unsorted_premise and test_parallel_copy_sort_check_goes_on_after_a_row_left_for_core,
 # by collection of test_parallel_copy.py (388 at 2fc9283d, 390 here) and over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it).
-# cluster_tests 6386 -> 6417, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
+# cluster_tests 6386 -> 6394, #2258: four tests in test_objstore_http_read.py and four in test_objstore_tls_read.py
+# (a close after a whole 103 interim head on a kept-alive connection is refused, after one GET; after reads answered
+# 103 first, a kept-alive connection closed unanswered is still retried, and the server closed one on each read), by
+# collection of those two files (112 and 41 on main b888a5ae, 116 and 45 here) and over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6394 -> 6432 for #2184's thirty-eight tests in test_concurrency.py (8 -> 46 by collection of that file:
+# scenarios D to K, two writers' chunk-group and storage-row locks form no cycle, writers of unrelated rows sharing
+# row-identity buckets, the same row on the chunk-group locks, two first writers at REPEATABLE READ, six writers of
+# their own rows over five rounds (#2251), and a rewrite after a write), restated on main dd4e2f6e, by collection over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6432 -> 6439 for #2184's scenarios L and M in test_concurrency.py (jdatcmd's review of 7b8cb54a): the
+# group locks held from before the same-row check to commit, and taken in group order, by collection of that file
+# (46 -> 53) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6439 -> 6470, #2194 and #2185: fourteen tests in the new test_autovacuum_verb_txn.py (the
 # daemon's launcher and due premise; a writer beside both verbs of one daemon pass commits, its writes show, the
 # verbs log in order from one worker, no deadlock; with a 1.5 s limit the writer commits and the recluster
 # finishes; a cancelled compact_rewrite ends the pass) and seventeen in test_native_rewrite_conc.py (steady deletes
@@ -2647,9 +2660,9 @@ guard_tests 910
 # holds its group lock, gives the turnstile back, and commits), by collection of those two files (102 for
 # test_native_rewrite_conc.py on main, 119 here, and 14) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-# cluster_tests 6417 -> 6431, the review of #2253 at 815dce06: fourteen tests in test_native_rewrite_conc.py (an
+# cluster_tests 6470 -> 6484, the review of #2253 at 815dce06: fourteen tests in test_native_rewrite_conc.py (an
 # INSERT does not wait at the turnstile, per verb; a delete held at the turnstile commits, its row is gone and
 # the verb finishes, per verb; a verb stopped with 55P03 holds no turnstile lock and the next delete does not
 # wait, per verb), one test renamed (the turnstile is kept to commit), by collection of that file (133 here)
 # and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6431
+cluster_tests 6484

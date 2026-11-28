@@ -17,7 +17,10 @@
 #      connection the server hangs up on is not; a reset before any byte of an
 #      answer on a kept-alive connection is retried once too, a reset after
 #      part of an answer is refused, and a server that resets every GET is
-#      refused after one retry (#2198); an object overwritten
+#      refused after one retry (#2198); a close after a whole 103 interim
+#      head on a kept-alive connection is refused and not retried, while
+#      after reads answered 103 first a close before any answer still is
+#      retried (#2258); an object overwritten
 #      mid-read is refused, a weak ETag or one longer than 79 characters is not
 #      used as a pin, and a server whose ETag changes per request is refused
 #      (#1805). With pgcolumnar.objstore_pin_reads off, that server is read
@@ -446,6 +449,25 @@ check "C: a server that resets every GET is refused after one retry" \
 	"08006: failed before a response"
 check_num "C: and that GET was sent twice" \
 	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "2"
+# An EOF after a whole interim head (#2258). /fin103/ answers the HEAD, then
+# answers the GET on the kept-alive connection with a complete 103 Early Hints
+# head and closes with a FIN. The server had begun to answer, so the close is
+# not the keep-alive race: the read fails, and the GET is not sent again.
+: > "$HTTP_LOG"
+check "C: an EOF after a 103 interim head on a kept-alive connection is refused" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/fin103/fixture.parquet') AS t($COLDEFS)" "@@")" \
+	"08006: columnar: connection to \"$BASE/fin103/fixture.parquet\" closed mid-response"
+check_num "C: and that GET after a 103 interim head was sent once" \
+	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "1"
+# Control: one response's interim head does not carry over to the next. After
+# reads whose every answer follows a 103 head (/hint103/), a kept-alive
+# connection closed with no answer (/finka/) is still the race, retried once.
+: > "$HTTP_LOG"
+check "C: after reads answered 103 Early Hints first, reads from a server that closes each kept-alive connection unanswered all succeed" \
+	"$(refusal_of "SET statement_timeout = '60s'; SELECT pgc_reads('$BASE/hint103/fixture.parquet', 3) || ' then ' || pgc_reads('$BASE/finka/fixture.parquet', 3)" "@@")" \
+	"no error: ok=3 failed=0 then ok=3 failed=0"
+check "C: the server closed a kept-alive connection unanswered on each of those 3 reads" \
+	"$(n="$(grep -c '^FINKA' "$HTTP_LOG")"; [ "$n" -ge 3 ] 2>/dev/null && echo yes || echo "no ($n closes)")" "yes"
 
 # An object overwritten between two ranged GETs of one read (#1805). Without a
 # pin the footer comes from the old object and later chunks from the new one,

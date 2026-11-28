@@ -136,7 +136,8 @@ check "the held rewrite itself completed" "$(tail -1 "$PGC_WORKDIR/holder.out")"
 #
 # Issue #2074. Two advisory locks meet here. The chunk-group lock (class 101)
 # guards a group's delete vector. The storage-row lock (class 102) is taken by
-# every row-group flush and held to commit, so it serializes writers to a table.
+# every row-group flush and held to commit (in ShareLock since #2184, so writers
+# share it; a rewrite takes it exclusively and so waits for every open writer).
 # A writer can take the two in either order, and holds both to commit:
 #
 #   - update shape: an UPDATE flushes its new row (102), then its delete
