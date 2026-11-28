@@ -282,6 +282,16 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/index_only.sh` and `test_index_only.py` read each race arm's count three
+  ways (#2171). #2059 asks that an index-only scan, a plain index scan and a seq
+  scan give the same count after the race, and the arms read only the
+  index-only one. Each of the ten arms of the two VACUUM races (#2059, #2170)
+  now also reads the count through a plain index scan and a seq scan, each
+  forced by planner settings, checks the scan node of each plan, and checks that
+  the three counts are 0. The #2170 arm that deletes two ranges now counts them
+  as a sum of two range counts, since a plain index scan cannot serve an OR of
+  two ranges. Before, a seq scan that returned deleted rows passed every race arm.
+  Test-only.
 - `test/parallel_copy.sh` and `test_parallel_copy.py` pin that the trigger
   refusal for 2 or more workers (#2187) comes before the file is opened, as
   #2209 pinned for the unique-index refusal (#2252). A missing file on a table
