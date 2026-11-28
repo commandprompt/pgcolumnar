@@ -898,6 +898,14 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `log_lock_waits` does not report them. The backend waits for its workers one
   at a time. A cycle that closes only when it moves on to a later worker is
   found after the backend's own `deadlock_timeout`.
+- A flush worker waits for a lock no longer than the inserting session's
+  `lock_timeout` (#2271). When it gives up, on a composite's table or on
+  `pg_database` while it connects, the backend encodes its columns itself and
+  the statement goes on. After connecting, the worker's error shows as a WARNING
+  with SQLSTATE `55P03`. So with `lock_timeout` set, a parallel flush can take a
+  little longer than that timeout. With `lock_timeout` at 0, a worker waits as
+  long as the other session holds the lock, and so does the statement. A serial
+  flush would not wait at all.
 
 ## Row locking
 

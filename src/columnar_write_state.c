@@ -37,6 +37,7 @@
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
+#include "storage/proc.h"		/* LockTimeout (#2271) */
 #include "storage/shm_toc.h"
 #include "tcop/tcopprot.h"
 #if PG_VERSION_NUM >= 160000
@@ -147,6 +148,7 @@ typedef struct PflushHeader
 	int			nworkers;
 	bool		bloomEnabled;
 	uint32		runLockKey;		/* names this flush's run locks (#2256) */
+	int			lockTimeout;	/* the caller's lock_timeout in ms, applied by each worker (#2271) */
 
 	/*
 	 * Byte-identity: these encoding GUCs are read live inside flush_one_column
@@ -2859,6 +2861,28 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		pg_atomic_write_u32(&me->running, 1);
 	}
 
+	/*
+	 * The caller's lock_timeout, before the worker connects (#2271). A worker is
+	 * a session of its own, so it would wait as long as the server's or its
+	 * role's setting allows. Its waits are the caller's waits: for a composite
+	 * column it opens the composite's table with ACCESS SHARE, a lock the
+	 * caller's own serial flush does not need, and connecting reads pg_database
+	 * with ACCESS SHARE. A session holding ACCESS EXCLUSIVE on either held the
+	 * INSERT up past its lock_timeout. Now the worker gives up after the same
+	 * time with 55P03. After connecting, that reaches the backend, which logs it
+	 * as a WARNING and encodes the worker's columns itself; while connecting the
+	 * worker ends without a report, and its columns are encoded serially too.
+	 * Set as a session value before InitPostgres, so a database or role setting
+	 * of lock_timeout, which InitPostgres applies at a lower priority, does not
+	 * replace it. A caller's 0 is passed too: no limit, as for the caller.
+	 */
+	{
+		char		buf[32];
+
+		snprintf(buf, sizeof(buf), "%d", hdr->lockTimeout);
+		SetConfigOption("lock_timeout", buf, PGC_SUSET, PGC_S_SESSION);
+	}
+
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
@@ -3240,6 +3264,7 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	hdr->fsstVerdictReuse = pgcolumnar_fsst_verdict_reuse;
 	hdr->fsstMinGainPercent = pgcolumnar_fsst_min_gain_percent;
 	hdr->encodingSampleRows = pgcolumnar_encoding_sample_rows;
+	hdr->lockTimeout = LockTimeout;	/* before the waits below set it to 0 */
 
 	for (i = 0; i < nworkers; i++)
 	{
