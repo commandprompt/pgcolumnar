@@ -887,7 +887,8 @@ hex_digit_value(char c)
  *		Read one field of a COPY text-format line at p, as core COPY's text
  *		attribute reader does with the delimiter and NULL marker the loaders use
  *		(TAB and \N, the defaults) (#2202). The field ends at an unescaped TAB, at
- *		a CR or LF, or at a NUL byte: the end of the buffer. A raw NUL in the
+ *		a CR or LF, or at a NUL byte: the end of the buffer; on PG 15 to 17 also
+ *		at an unescaped \., where core ends the line (#2260). A raw NUL in the
  *		line never gets here: core refuses it before it reads any field
  *		(22021), and so pcopy_copy_refuses_record leaves such a row for the
  *		loader (#2222). A backslash escapes the byte after
@@ -932,6 +933,24 @@ pcopy_text_field(const PcopyScan *scan, char *p, StringInfo out, bool *isnull)
 		{
 			if (*p == '\0')
 				break;			/* a lone backslash at the end: core drops it */
+#if PG_VERSION_NUM < 180000
+
+			/*
+			 * PG 15 to 17 end the line at an unescaped \. that a CR or LF
+			 * follows, and keep only what came before it (#2260). Any other
+			 * \. is refused, and pcopy_copy_refuses_record has left such a
+			 * record for its loader, so a CR or LF follows this one. The
+			 * field ends before the backslash, so a key of 1200\. is 1200
+			 * and one of \N\. is the NULL marker. PG 18 refuses \. anywhere
+			 * but alone on its line, and such a record never gets here.
+			 */
+			if (*p == '.')
+			{
+				Assert(p[1] == '\n' || p[1] == '\r');
+				p--;
+				break;
+			}
+#endif
 			c = *p++;
 			switch (c)
 			{
@@ -1022,7 +1041,8 @@ pcopy_text_field(const PcopyScan *scan, char *p, StringInfo out, bool *isnull)
  *		- no unescaped \. that core refuses. PG 18 refuses \. anywhere but alone
  *		  on its line. PG 15 to 17 refuse it unless a CR or LF follows; with one,
  *		  they end the line there, and with the wrong one for the file they refuse
- *		  it too, which this leaves to the key (22P04).
+ *		  it too, which this leaves to the loader (22P04). The key reader ends a
+ *		  field at such a \., as they do (#2260).
  *		- the line has as many fields as the default column list has columns
  *		  (22P04: extra data, or missing data). A record's one unescaped LF is its
  *		  last byte, so every unescaped TAB in it ends a field of this line. On PG

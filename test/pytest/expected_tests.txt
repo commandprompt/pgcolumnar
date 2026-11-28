@@ -2750,6 +2750,14 @@ guard_tests 910
 # test_parallel_copy_storage_row_gone_during_the_load_premise and
 # test_parallel_copy_storage_row_gone_during_the_load_fails_cleanly, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6639 -> 6640 for #2240: one test in test_projection_drop_column.py, a column dropped by ALTER
+# TYPE ... DROP ATTRIBUTE ... CASCADE or DROP DOMAIN ... CASCADE takes its projections with it, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6640 -> 6647 for #2260's seven tests in test_parallel_copy.py:
+# test_parallel_copy_eod_marker_after_key_premise, test_parallel_copy_eod_marker_after_key_reads_the_key_as_copy_does
+# (4 parametrized), test_parallel_copy_eod_marker_after_null_key_is_a_null_key and
+# test_parallel_copy_eod_marker_after_key_out_of_order_is_refused, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
 # cluster_tests 6626 -> 6679 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
 # (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
 # guard shapes (10: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key, an
@@ -2760,5 +2768,5 @@ guard_tests 910
 # rescanned Gather with its premise, and no leak warning: 4), one test per check,
 # by collection of that file (1 on main 503f05f9, 54 here),
 # restated after the merges of origin/main 1a126cdb, 02d7c185, 503f05f9 and 1fa34ea1 (6538 -> 6586 before them;
-# 6639 + 53 = 6692 after #2161).
-cluster_tests 6692
+# 6639 + 53 = 6692 after #2161; 6647 + 53 = 6700 after main f321a612).
+cluster_tests 6700
