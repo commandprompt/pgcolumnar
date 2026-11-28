@@ -318,6 +318,17 @@ def test_a_cursor_through_an_index_scan(pgc_conn, expect):
                 'a cursor fetched after a later UPDATE reads the old values through an index scan, as heap does')
 
 
+# A function that reads the table runs a statement of its own, and that statement
+# writes the outer statement's buffered rows and delete marks to the catalog. The
+# outer statement's index fetches must still not see them.
+def test_a_self_join_calling_a_function_that_reads_the_table(pgc_conn, expect):
+    _fresh_pk(pgc_conn)
+    expect.text(_same_tx(pgc_conn, CSOFF + NL + IDX + [
+        "UPDATE %t SET pad = t2.pad + 1000000 + 0 * seen_%t() FROM %t t2 WHERE t2.id = %t.id - 1 AND %t.id <= 10",
+        SHOW]), "same",
+                "a self-join UPDATE that calls a function reading the table still reads each row's old value, as heap does")
+
+
 # A BEFORE ROW trigger that inserts into its own table writes under a new command
 # for each outer row, so the write buffer holds runs of rows from different
 # commands. Each trigger call must see the outer rows and its own earlier rows,

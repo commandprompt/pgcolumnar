@@ -120,7 +120,7 @@ PgColumnarRowWriteConflict(Relation rel, ItemPointer otid, CommandId cid,
 	 * a second new version. cmax == the current command id makes core treat it as
 	 * already handled by this command. This runs even when the row-lock GUC is off.
 	 */
-	if (PgColumnarDeleteVectorBufferedDeleted(rel, rowNumber))
+	if (PgColumnarDeleteVectorBufferedDeleted(rel, rowNumber, NULL))
 	{
 		ItemPointerCopy(otid, &tmfd->ctid);
 		tmfd->xmax = GetCurrentTransactionId();

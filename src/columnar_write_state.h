@@ -30,7 +30,7 @@ extern uint64 *PgColumnarWriteStateProjStripeIds(PgColumnarWriteState *ws, int *
 extern void PgColumnarBackfillProjection(Relation rel,
 									   const PgColumnarProjection *proj);
 
-extern bool PgColumnarBufferedRowByNumber(Relation rel, uint64 rowNumber,
+extern bool PgColumnarBufferedRowByNumber(Relation rel, uint64 rowNumber, Snapshot snapshot,
 										Datum *values, bool *nulls);
 
 extern void PgColumnarForgetWriteStateForRelation(Oid relid);

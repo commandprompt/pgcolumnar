@@ -180,6 +180,13 @@ check "a cursor fetched after a later UPDATE reads the old values through an ind
 	"$(same "BEGIN; $CSOFF $IDX DECLARE c CURSOR FOR SELECT sum(pad) FROM %t WHERE id <= 10;
 	         UPDATE %t SET pad = 0 WHERE id <= 10; FETCH ALL FROM c; ROLLBACK;")" "same"
 
+# A function that reads the table runs a statement of its own, and that statement
+# writes the outer statement's buffered rows and delete marks to the catalog. The
+# outer statement's index fetches must still not see them.
+check "a self-join UPDATE that calls a function reading the table still reads each row's old value, as heap does" \
+	"$(same "BEGIN; $CSOFF $NL $IDX UPDATE %t SET pad = t2.pad + 1000000 + 0 * seen_%t() FROM %t t2 WHERE t2.id = %t.id - 1 AND %t.id <= 10;
+	         $SHOW ROLLBACK;")" "same"
+
 # A BEFORE ROW trigger that inserts into its own table writes under a new command
 # for each outer row, so the write buffer holds runs of rows from different
 # commands. Each trigger call must see the outer rows and its own earlier rows,

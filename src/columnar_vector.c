@@ -35,6 +35,7 @@
  *-------------------------------------------------------------------------
  */
 #include "columnar.h"
+#include "columnar_cid_registry.h"
 
 #include "columnar_customscan.h"
 #include "columnar_metadata.h"
@@ -5645,7 +5646,8 @@ static const CustomExecMethods pgcolumnar_agg_exec_methods = {
 static Size
 PgColumnarEstimateDSMAggScan(CustomScanState *node, ParallelContext *pcxt)
 {
-	return sizeof(pg_atomic_uint32);
+	/* the group counter, then what the worker check reads (#2247) */
+	return PGC_PARALLEL_CID_OFFSET + PgColumnarParallelCidSize();
 }
 
 static void
@@ -5672,6 +5674,9 @@ PgColumnarInitializeDSMAggScan(CustomScanState *node, ParallelContext *pcxt,
 		PgColumnarFlushDeleteVectorForRelation(frel);
 		table_close(frel, AccessShareLock);
 	}
+
+	/* after the flush, which may register more own writes (#2247) */
+	PgColumnarParallelCidStore((char *) coordinate + PGC_PARALLEL_CID_OFFSET);
 }
 
 static void
@@ -5691,6 +5696,8 @@ PgColumnarInitializeWorkerAggScan(CustomScanState *node, shm_toc *toc,
 	PgColumnarAggScanState *state = (PgColumnarAggScanState *) node;
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
+	PgColumnarParallelCidCheck((char *) coordinate + PGC_PARALLEL_CID_OFFSET,
+							   GetActiveSnapshot());
 	state->parallelCounter = counter;
 }
 
@@ -7634,7 +7641,8 @@ static const CustomExecMethods pgcolumnar_groupagg_exec_methods = {
 static Size
 PgColumnarEstimateDSMGroupAggScan(CustomScanState *node, ParallelContext *pcxt)
 {
-	return sizeof(pg_atomic_uint32);
+	/* the group counter, then what the worker check reads (#2247) */
+	return PGC_PARALLEL_CID_OFFSET + PgColumnarParallelCidSize();
 }
 
 static void
@@ -7669,6 +7677,9 @@ PgColumnarInitializeDSMGroupAggScan(CustomScanState *node, ParallelContext *pcxt
 		PgColumnarFlushDeleteVectorForRelation(frel);
 		table_close(frel, AccessShareLock);
 	}
+
+	/* after the flush, which may register more own writes (#2247) */
+	PgColumnarParallelCidStore((char *) coordinate + PGC_PARALLEL_CID_OFFSET);
 }
 
 static void
@@ -7688,6 +7699,8 @@ PgColumnarInitializeWorkerGroupAggScan(CustomScanState *node, shm_toc *toc,
 	PgColumnarGroupAggScanState *state = (PgColumnarGroupAggScanState *) node;
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
+	PgColumnarParallelCidCheck((char *) coordinate + PGC_PARALLEL_CID_OFFSET,
+							   GetActiveSnapshot());
 	state->parallelCounter = counter;
 }
 

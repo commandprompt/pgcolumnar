@@ -25,6 +25,7 @@
  *-------------------------------------------------------------------------
  */
 #include "columnar.h"
+#include "columnar_cid_registry.h"
 
 #include "columnar_metadata.h"
 #include "columnar_customscan.h"
@@ -4388,7 +4389,8 @@ PgColumnarExplainGroupStats(const PgColumnarGroupStats *stats, ExplainState *es)
 static Size
 PgColumnarEstimateDSMCustomScan(CustomScanState *node, ParallelContext *pcxt)
 {
-	return sizeof(pg_atomic_uint32);
+	/* the group counter, then what the worker check reads (#2247) */
+	return PGC_PARALLEL_CID_OFFSET + PgColumnarParallelCidSize();
 }
 
 static void
@@ -4399,6 +4401,7 @@ PgColumnarInitializeDSMCustomScan(CustomScanState *node, ParallelContext *pcxt,
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
 	pg_atomic_init_u32(counter, 0);
+	PgColumnarParallelCidStore((char *) coordinate + PGC_PARALLEL_CID_OFFSET);
 	cstate->parallelCounter = counter;
 	if (cstate->readState != NULL)
 		PgColumnarReadSetParallelCounter(cstate->readState, counter);
@@ -4420,6 +4423,8 @@ PgColumnarInitializeWorkerCustomScan(CustomScanState *node, shm_toc *toc,
 	PgColumnarCustomScanState *cstate = (PgColumnarCustomScanState *) node;
 	pg_atomic_uint32 *counter = (pg_atomic_uint32 *) coordinate;
 
+	PgColumnarParallelCidCheck((char *) coordinate + PGC_PARALLEL_CID_OFFSET,
+							   GetActiveSnapshot());
 	cstate->parallelCounter = counter;
 	if (cstate->readState != NULL)
 		PgColumnarReadSetParallelCounter(cstate->readState, counter);

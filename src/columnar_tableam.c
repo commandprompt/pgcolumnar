@@ -16,10 +16,12 @@
 #include "columnar_customscan.h"
 #include "columnar_sink.h"
 #include "columnar_delete_vector.h"
+#include "columnar_cid_registry.h"
 #include "columnar_metadata.h"
 #include "columnar_reader.h"
 #include "columnar_storage.h"
 #include "columnar_write_state.h"
+#include "access/parallel.h"
 #include "access/multixact.h"
 #include "access/genam.h"
 #include "access/table.h"
@@ -481,6 +483,7 @@ pgcolumnar_slot_decode_upto(TupleTableSlot *slot, int natts)
 									 cslot->rowNumber, slot->tts_values,
 									 slot->tts_isnull, needed))
 		(void) PgColumnarBufferedRowByNumber(cslot->rel, cslot->rowNumber,
+										   cslot->snapshot,
 										   slot->tts_values, slot->tts_isnull);
 
 	MemoryContextDelete(scratch);
@@ -657,6 +660,12 @@ pgcolumnar_slot_callbacks(Relation relation)
 	return &PgColumnarSlotOps;
 }
 
+/*
+ * The shared descriptor is the block-scan one, then what the worker check
+ * reads (#2247), at PGC_PSCAN_CID_OFFSET.
+ */
+#define PGC_PSCAN_CID_OFFSET MAXALIGN(sizeof(ParallelBlockTableScanDescData))
+
 static TableScanDesc
 pgcolumnar_scan_begin(Relation rel, Snapshot snapshot, int nkeys,
 					ScanKey key, ParallelTableScanDesc pscan, uint32 flags)
@@ -664,6 +673,10 @@ pgcolumnar_scan_begin(Relation rel, Snapshot snapshot, int nkeys,
 	PgColumnarScanDesc scan;
 
 	RelationIncrementReferenceCount(rel);
+
+	/* a worker of a parallel scan: see PgColumnarCidCheckWorker (#2247) */
+	if (pscan != NULL && IsParallelWorker())
+		PgColumnarParallelCidCheck((char *) pscan + PGC_PSCAN_CID_OFFSET, snapshot);
 
 	/*
 	 * Persist any data and delete marks written earlier in this transaction so
@@ -1147,7 +1160,7 @@ pgcolumnar_planner(PGC_PLANNER_PARAMS)
 static Size
 pgcolumnar_parallelscan_estimate(Relation rel)
 {
-	return sizeof(ParallelBlockTableScanDescData);
+	return PGC_PSCAN_CID_OFFSET + PgColumnarParallelCidSize();
 }
 
 static Size
@@ -1161,8 +1174,9 @@ pgcolumnar_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	SpinLockInit(&bpscan->phs_mutex);
 	bpscan->phs_startblock = InvalidBlockNumber;
 	pg_atomic_init_u64(&bpscan->phs_nallocated, 0);
+	PgColumnarParallelCidStore((char *) pscan + PGC_PSCAN_CID_OFFSET);
 
-	return sizeof(ParallelBlockTableScanDescData);
+	return PGC_PSCAN_CID_OFFSET + PgColumnarParallelCidSize();
 }
 
 static void
@@ -1194,8 +1208,8 @@ pgcolumnar_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid,
 	 */
 	PgColumnarLockUniqueKeys(rel, slot);
 
-	rowNumber = PgColumnarWriteRow(writeState, rel, slot->tts_values,
-								 slot->tts_isnull);
+	rowNumber = PgColumnarWriteRowCid(writeState, rel, slot->tts_values,
+									slot->tts_isnull, cid);
 
 	/* fan the row out to every additional projection of this table (gap 26) */
 	PgColumnarProjectionFanoutRow(rel, writeState, rowNumber, slot->tts_values,
@@ -1232,8 +1246,8 @@ pgcolumnar_multi_insert(Relation rel, TupleTableSlot **slots, int nslots,
 
 		slot_getallattrs(slots[i]);
 		PgColumnarLockUniqueKeys(rel, slots[i]);	/* issue #5 */
-		rowNumber = PgColumnarWriteRow(writeState, rel, slots[i]->tts_values,
-									 slots[i]->tts_isnull);
+		rowNumber = PgColumnarWriteRowCid(writeState, rel, slots[i]->tts_values,
+										slots[i]->tts_isnull, cid);
 		PgColumnarProjectionFanoutRow(rel, writeState, rowNumber,
 									slots[i]->tts_values, slots[i]->tts_isnull);
 		PgColumnarWriteStateAfterAppend(writeState);	/* #1403 review */
@@ -2048,7 +2062,7 @@ pgcolumnar_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid,
 	 */
 	if (PgColumnarRowIsLive(rel, snapshot, rowNumber))
 		PgColumnarSlotStoreDeferred(slot, rel, snapshot, rowNumber);
-	else if (PgColumnarBufferedRowByNumber(rel, rowNumber,
+	else if (PgColumnarBufferedRowByNumber(rel, rowNumber, snapshot,
 										 slot->tts_values, slot->tts_isnull))
 		ExecStoreVirtualTuple(slot);
 	else if (snapshot != NULL && snapshot->snapshot_type == SNAPSHOT_DIRTY &&
@@ -2123,7 +2137,7 @@ pgcolumnar_tuple_fetch_row_version(Relation rel, ItemPointer tid,
 	 */
 	if (!PgColumnarReadRowByNumber(rel, snapshot, rowNumber,
 								 slot->tts_values, slot->tts_isnull) &&
-		!PgColumnarBufferedRowByNumber(rel, rowNumber,
+		!PgColumnarBufferedRowByNumber(rel, rowNumber, snapshot,
 									 slot->tts_values, slot->tts_isnull))
 		return false;
 
@@ -2187,11 +2201,30 @@ pgcolumnar_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 
 	values = palloc(sizeof(Datum) * Max(natts, 1));
 	nulls = palloc(sizeof(bool) * Max(natts, 1));
-	buffered = PgColumnarBufferedRowByNumber(rel, rowNumber, values, nulls);
+	buffered = PgColumnarBufferedRowByNumber(rel, rowNumber, snapshot, values, nulls);
+	if (buffered)
+	{
+		pfree(values);
+		pfree(nulls);
+		return true;
+	}
+
+	/*
+	 * Buffered, but written by this snapshot's own command or a later one
+	 * (#2247): not visible, and this transaction's, which is what core reads
+	 * xmin next to learn. Heap answers the same for its own row of the
+	 * current command.
+	 */
+	if (PgColumnarBufferedRowByNumber(rel, rowNumber, SnapshotAny, values, nulls))
+	{
+		pfree(values);
+		pfree(nulls);
+		if (slot->tts_ops == &PgColumnarSlotOps)
+			((PgColumnarSlot *) slot)->xmin = GetCurrentTransactionId();
+		return false;
+	}
 	pfree(values);
 	pfree(nulls);
-	if (buffered)
-		return true;
 
 	if (slot->tts_ops == &PgColumnarSlotOps)
 		((PgColumnarSlot *) slot)->xmin =
@@ -2321,7 +2354,8 @@ pgcolumnar_tuple_complete_speculative(Relation rel, TupleTableSlot *slot,
 	 * reads this transaction's rows.
 	 */
 	PgColumnarFlushWriteStateForRelation(RelationGetRelid(rel));
-	PgColumnarMarkRowDeleted(rel, PgColumnarItemPointerToRowNumber(&slot->tts_tid));
+	PgColumnarMarkRowDeleted(rel, PgColumnarItemPointerToRowNumber(&slot->tts_tid),
+							 GetCurrentCommandId(false));
 }
 
 /*
@@ -2353,7 +2387,7 @@ pgcolumnar_tuple_delete(COLUMNAR_TUPLE_DELETE_ARGS)
 #endif
 		PgColumnarSerializeRowNow(rel, rowNumber);
 
-	PgColumnarMarkRowDeleted(rel, rowNumber);
+	PgColumnarMarkRowDeleted(rel, rowNumber, cid);
 	return TM_Ok;
 }
 
@@ -2395,7 +2429,7 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 	if (PgColumnarHasUniqueIndex(rel))
 		PgColumnarSerializeRowNow(rel, oldRowNumber);
 
-	PgColumnarMarkRowDeleted(rel, oldRowNumber);
+	PgColumnarMarkRowDeleted(rel, oldRowNumber, cid);
 
 	writeState = PgColumnarGetWriteState(rel);
 	slot_getallattrs(slot);
@@ -2403,8 +2437,8 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 	/* the new row version is a fresh insert: serialize its unique keys too */
 	PgColumnarLockUniqueKeys(rel, slot);		/* issue #5 */
 
-	rowNumber = PgColumnarWriteRow(writeState, rel, slot->tts_values,
-								 slot->tts_isnull);
+	rowNumber = PgColumnarWriteRowCid(writeState, rel, slot->tts_values,
+									slot->tts_isnull, cid);
 
 	/*
 	 * The new version is a new row number. Projections store that number as
@@ -2928,6 +2962,7 @@ pgcolumnar_xact_callback(XactEvent event, void *arg)
 			{
 				PgColumnarDiscardAllPendingWrites();
 				PgColumnarDiscardAllDeleteVectors();
+				PgColumnarCidRegistryReset();
 			}
 
 			/*
@@ -2946,6 +2981,7 @@ pgcolumnar_xact_callback(XactEvent event, void *arg)
 		case XACT_EVENT_PARALLEL_ABORT:
 			PgColumnarDiscardAllPendingWrites();
 			PgColumnarDiscardAllDeleteVectors();
+			PgColumnarCidRegistryReset();
 			PgColumnarDiscardFetchCache();
 			PgColumnarExtentAtXactEnd();
 			/*
@@ -2973,6 +3009,7 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 		case SUBXACT_EVENT_ABORT_SUB:
 			PgColumnarWriteStateDiscardSubXact(mySubid);
 			PgColumnarDeleteVectorDiscardSubXact(mySubid);
+			PgColumnarCidRegistryDiscardSubXact(mySubid);
 
 			/*
 			 * The abort flips the xmin verdict on any group the savepoint
@@ -2987,6 +3024,7 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 		case SUBXACT_EVENT_COMMIT_SUB:
 			PgColumnarWriteStatePromoteSubXact(mySubid, parentSubid);
 			PgColumnarDeleteVectorPromoteSubXact(mySubid, parentSubid);
+			PgColumnarCidRegistryPromoteSubXact(mySubid, parentSubid);
 			break;
 		default:
 			break;
@@ -5069,6 +5107,17 @@ _PG_init(void)
 							1024, PGC_EXPORT_GROUP_BYTES_MAX,
 							PGC_USERSET,
 							0,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("pgcolumnar.debug_registry_cid_skew",
+							"Report a parallel leader's own-write command ids this far ahead (dev fault injection).",
+							"0 disables. Above 0, a parallel worker sees a leader whose own writes it "
+							"could not hide, and refuses to run (#2247).",
+							&pgcolumnar_debug_registry_cid_skew,
+							0,
+							0, 1000000,
+							PGC_SUSET,
+							GUC_NOT_IN_SAMPLE,
 							NULL, NULL, NULL);
 
 	DefineCustomIntVariable("pgcolumnar.sink_fail_after",

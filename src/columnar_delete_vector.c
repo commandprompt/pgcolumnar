@@ -22,6 +22,7 @@
 #include "columnar.h"
 
 #include "columnar_delete_vector.h"
+#include "columnar_cid_registry.h"
 #include "columnar_metadata.h"
 #include "access/relation.h"
 #include "access/xact.h"
@@ -39,7 +40,21 @@ typedef struct DeleteVectorChunkBuffer
 	uint64		rowCount;
 	char	   *mask;			/* maskLen bytes */
 	uint32		maskLen;
+
+	/*
+	 * The same marks split by the command that made them (#2247): one
+	 * DeleteVectorCidLayer per command id, each with its own maskLen-byte
+	 * bitmap, in the order the commands marked. A row is marked once, so
+	 * exactly one layer holds each bit of `mask`.
+	 */
+	List	   *layers;
 } DeleteVectorChunkBuffer;
+
+typedef struct DeleteVectorCidLayer
+{
+	CommandId	cid;
+	char	   *mask;
+} DeleteVectorCidLayer;
 
 /* pending delete marks for one storage id under one subtransaction */
 typedef struct DeleteVectorBuffer
@@ -242,7 +257,7 @@ delete_vector_get_chunk(DeleteVectorBuffer *buf, uint64 stripeId, int chunkId,
  *		delete_vector_find_row_group using its firstRowNumber and rowCount.
  */
 void
-PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber)
+PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber, CommandId cid)
 {
 	uint64		storageId = PgColumnarStorageId(rel);
 	DeleteVectorBuffer *buf = delete_vector_get_buffer(rel, storageId);
@@ -269,6 +284,24 @@ PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber)
 	bitIndex = rowNumber - startRowNumber;
 	chunk->mask[bitIndex >> 3] |= (char) (1 << (bitIndex & 7));
 
+	/* and in the layer of the command that made the mark (#2247) */
+	{
+		DeleteVectorCidLayer *layer = chunk->layers != NIL
+			? (DeleteVectorCidLayer *) llast(chunk->layers) : NULL;
+
+		if (layer == NULL || layer->cid != cid)
+		{
+			MemoryContext oldContext = MemoryContextSwitchTo(PgColumnarDeleteVectorContext);
+
+			layer = palloc(sizeof(DeleteVectorCidLayer));
+			layer->cid = cid;
+			layer->mask = palloc0(chunk->maskLen);
+			chunk->layers = lappend(chunk->layers, layer);
+			MemoryContextSwitchTo(oldContext);
+		}
+		layer->mask[bitIndex >> 3] |= (char) (1 << (bitIndex & 7));
+	}
+
 	/*
 	 * The deleted row makes its block not all-visible; clear any VM bit so an
 	 * index-only scan never skips the fetch for a block with a dead row (gap 28).
@@ -288,7 +321,7 @@ PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber)
  *		across subtransactions.
  */
 bool
-PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber)
+PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber, Snapshot snapshot)
 {
 	Oid			relid = RelationGetRelid(rel);
 	ListCell   *lc;
@@ -311,7 +344,29 @@ PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber)
 				continue;
 			bitIndex = rowNumber - chunk->startRowNumber;
 			if (dv_row_deleted(chunk->mask, chunk->maskLen, bitIndex))
-				return true;
+			{
+				ListCell   *yc;
+
+				/*
+				 * A mark made by this snapshot's own command, or a later one,
+				 * does not delete the row for it (#2247). Only an MVCC snapshot
+				 * filters; the unique check and the self-modified check see
+				 * every mark.
+				 */
+				foreach(yc, chunk->layers)
+				{
+					DeleteVectorCidLayer *layer = (DeleteVectorCidLayer *) lfirst(yc);
+
+					if (dv_row_deleted(layer->mask, chunk->maskLen, bitIndex))
+					{
+						if (PgColumnarCidVisible(snapshot, layer->cid))
+							return true;
+						break;
+					}
+				}
+				if (yc == NULL)
+					return true;	/* no layer: a mark with no recorded command */
+			}
 		}
 	}
 
@@ -450,6 +505,19 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 		}
 
 		PgColumnarUpsertDeleteVector(buf->storageId, &rm);
+
+		/* which command made which of these marks (#2247) */
+		{
+			ListCell   *yc;
+
+			foreach(yc, chunk->layers)
+			{
+				DeleteVectorCidLayer *layer = (DeleteVectorCidLayer *) lfirst(yc);
+
+				PgColumnarCidRegisterMarks(buf->storageId, chunk->startRowNumber,
+										   layer->mask, chunk->maskLen, layer->cid);
+			}
+		}
 	}
 
 	/*

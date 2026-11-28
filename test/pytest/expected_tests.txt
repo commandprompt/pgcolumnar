@@ -2619,9 +2619,9 @@ guard_tests 910
 # cluster_tests 6373 -> 6380 for #2184's scenarios L and M in test_concurrency.py (jdatcmd's review of 7b8cb54a): the
 # group locks held from before the same-row check to commit, and taken in group order, by collection of that file
 # (46 -> 53) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6380 -> 6411 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
-# (18), a BEFORE ROW trigger writing its own table (1), and guard shapes (12: a nested read, a hash join, a
-# materialized inner scan, an INSERT SELECT, a duplicate key, an AFTER ROW trigger, and parallel premises,
-# scans and refusals by the custom scan off and on), one test per check, by collection of that file (1 on main
-# 13c763ae with #2239's head a628642c merged, 32 here).
-cluster_tests 6411
+# cluster_tests 6380 -> 6412 for #2247 in test_statement_self_visibility.py: the self-read shapes and premises
+# (18), a self-join calling a function that reads the table (1), a BEFORE ROW trigger writing its own table (1),
+# and guard shapes (12: a nested read, a hash join, a materialized inner scan, an INSERT SELECT, a duplicate key,
+# an AFTER ROW trigger, and parallel premises, scans and refusals by the custom scan off and on), one test per
+# check, by collection of that file (1 on main 13c763ae with #2239's head a628642c merged, 33 here).
+cluster_tests 6412

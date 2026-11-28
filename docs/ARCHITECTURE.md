@@ -198,6 +198,18 @@ accumulate in a per-subtransaction in-memory buffer and are applied to the
 catalog in one upsert per row group at flush time. The reader loads a row group's
 delete vector and skips marked rows.
 
+### columnar_cid_registry.c
+Which command of this transaction wrote each row and delete mark that this
+backend flushed (#2247). A columnar row has no cmin of its own: its row group is
+a catalog row written when the buffer is flushed, under whatever command is
+current then. The write buffer and the delete-mark buffer therefore record the
+writer's command id as runs, and register them here when they flush. A fetch
+under an MVCC snapshot hides a row or a mark that this transaction wrote under a
+command id at or above the snapshot's curcid, as heap does. Non-MVCC snapshots
+see every write. A parallel worker has no copy of the registry, so the leader
+passes its highest registered command id, and a worker refuses to run if its
+snapshot could not hide that command.
+
 ### columnar_row_lock.c
 Serializes concurrent writers of the same row (issue #5). A columnar update is a
 delete plus an insert, and the table AM takes no row lock, so core never runs

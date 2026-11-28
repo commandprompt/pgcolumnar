@@ -7703,6 +7703,7 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 | `test_a_self_join_after_an_earlier_update` | #2247: after an earlier UPDATE in the transaction, a self-join UPDATE sees it but not its own rows |
 | `test_a_target_row_joined_twice` | #2247: an UPDATE that joins the same target row twice through an index changes it once |
 | `test_a_cursor_through_an_index_scan` | #2247: a cursor fetched after a later UPDATE reads the old values through an index scan |
+| `test_a_self_join_calling_a_function_that_reads_the_table` | #2247: a self-join UPDATE that calls a function reading the table, so the function's statement writes the outer statement's rows and delete marks to the catalog part-way, still reads each row's old value |
 | `test_a_before_row_trigger_sees_earlier_rows` | #2247: a BEFORE ROW trigger that inserts into its own table, so the write buffer holds runs from several commands, sees the statement's earlier rows and its own earlier rows |
 | `test_guard_a_duplicate_key_in_one_statement` | #2247 guard: a duplicate key inserted twice in one statement is still refused (the unique check's dirty snapshot sees every buffered row) |
 | `test_guard_an_after_row_trigger_reads_old_and_new` | #2247 guard: an AFTER ROW trigger of a self-join UPDATE still reads OLD and NEW (the re-fetch under SnapshotAny sees every row) |
