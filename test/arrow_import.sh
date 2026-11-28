@@ -1459,4 +1459,149 @@ else
 	done
 fi
 
+# --- #2186: a field with a type tag but no type table -------------------------
+# The schema walk ran its type checks only when a field had a `type` table. A
+# field whose tag said FloatingPoint but whose table was absent passed no check,
+# so float64 1.5 and -2.25 imported into a bigint column as 4609434218613702656
+# and -4611123068473966592, with no error, at the top level and as a list
+# element. pyarrow never writes such a file (its reader refuses one with
+# "Unexpected null field Field.type"), so test/arrow_strip_type.py builds each
+# fixture from a pyarrow file: it removes one field's type table and keeps its
+# tag, and reports both, so a patch that missed fails the check. Now a tag the
+# column cannot hold is refused with 42804, table or not. A tag whose table
+# carries parameters the reader needs (bit width, unit, scale) is refused as
+# malformed with XX001, because without them the reader would guess. The
+# controls are tags whose table is empty in Schema.fbs: a string, a binary, a
+# boolean, a list and a struct still import with their values. Every file also
+# carries an int column `n` that keeps its table, so a patch that stripped a
+# shared vtable would break the controls too.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- #2186: a type tag with no type table"
+	python3 - "$PGC_WORKDIR" "$PGC_SRCDIR/test/arrow_strip_type.py" <<'PY' >"$PGC_WORKDIR/st_report.txt"
+import datetime, decimal, importlib.util, os, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+spec = importlib.util.spec_from_file_location("arrow_strip_type", sys.argv[2])
+st = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(st)
+def write(name, arr, path=(0,), slots=(3,)):
+    t = pa.table({'v': arr, 'n': pa.array(range(len(arr)), pa.int32())})
+    sink = pa.BufferOutputStream()
+    with ipc.new_stream(sink, t.schema) as w:
+        w.write_table(t)
+    data = st.strip(sink.getvalue().to_pybytes(), list(path), slots)
+    open(os.path.join(out, name + '.arrows'), 'wb').write(data)
+    print(name, st.describe(data, list(path), 5 in slots))
+write('st_f64', pa.array([1.5, -2.25], pa.float64()))
+write('st_i64', pa.array([5, 6], pa.int64()))
+write('st_ts', pa.array([0, 1000000], pa.timestamp('us')))
+write('st_dec', pa.array([decimal.Decimal('1.25'), decimal.Decimal('-3.75')], pa.decimal128(10, 2)))
+write('st_d32', pa.array([datetime.date(2000, 1, 1)], pa.date32()))
+write('st_t64', pa.array([datetime.time(1, 2, 3)], pa.time64('us')))
+write('st_fsb', pa.array([b'0123456789abcdef'], pa.binary(16)))
+write('st_dur', pa.array([5, 6], pa.duration('us')))
+write('st_map', pa.array([[('k', 1)]], pa.map_(pa.string(), pa.int64())))
+write('st_lf64', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0, 0))
+write('st_li64', pa.array([[1, 2], [3]], pa.list_(pa.int64())), (0, 0))
+write('st_utf8', pa.array(['hi', 'there'], pa.string()))
+write('st_bin', pa.array([b'x', b'yz'], pa.binary()))
+write('st_bool', pa.array([True, False], pa.bool_()))
+write('st_list', pa.array([[1, 2], [3]], pa.list_(pa.int64())))
+write('st_struct', pa.array([{'a': 1}, {'a': 2}], pa.struct([('a', pa.int64())])))
+write('st_null', pa.array([None, None], pa.null()))
+# the review of #2224: a field with no tag either, a struct child, a map value,
+# a column other than the first, and a list with no children vector
+write('st_notag', pa.array([1.5, -2.25], pa.float64()), (0,), (2, 3))
+write('st_skid', pa.array([{'a': 1.5}, {'a': -2.25}], pa.struct([('a', pa.float64())])), (0, 0))
+write('st_mval', pa.array([[('k', 1.5)]], pa.map_(pa.string(), pa.float64())), (0, 0, 1))
+write('st_ncol', pa.array([5, 6], pa.int64()), (1,))
+write('st_nokids', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (5,))
+write('st_nokids_nt', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (3, 5))
+write('st_snokids', pa.array([{'a': 1.5}, {'a': -2.25}], pa.struct([('a', pa.float64())])), (0,), (5,))
+write('st_mnokids', pa.array([[('k', 1.5)], [('j', 2.5)]], pa.map_(pa.string(), pa.float64())), (0,), (5,))
+PY
+	chmod 644 "$PGC_WORKDIR"/st_*.arrows
+	psql_run "CREATE TYPE st_kv AS (k text, v bigint); CREATE TYPE st_s AS (a bigint);"
+	st_import() {	# st_import FIXTURE PGTYPE [TABLE] -> "<patch report>|<import result or SQLSTATE message>|<rows stored>"
+		local t="${3:-st_t_$1}"
+		psql_run "CREATE TABLE $t (v $2, n int) USING pgcolumnar;"
+		printf '%s|%s|%s\n' "$(sed -n "s/^$1 //p" "$PGC_WORKDIR/st_report.txt")" \
+			"$(ai_outcome "SELECT pgcolumnar.import_arrow('$t', '$PGC_WORKDIR/$1.arrows')")" \
+			"$(q "SELECT count(*) FROM $t;")"
+	}
+	st_vals() {	# st_vals FIXTURE PGTYPE -> st_import's result, then "|<values in n order>"
+		printf '%s|%s\n' "$(st_import "$1" "$2")" "$(q "SELECT string_agg(v::text, ';' ORDER BY n) FROM st_t_$1;")"
+	}
+	st_corrupt() {	# st_corrupt TAG DESC -> the XX001 outcome for a field of tag TAG with no table
+		printf 'tag=%s type=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds %s with no type table|0' "$1" "$2"
+	}
+	check "import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored as bit patterns (#2186)" \
+		"$(st_import st_f64 bigint)" \
+		'tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a float64 field with no type table for a float8 column as malformed with XX001 (#2186)" \
+		"$(st_import st_f64 float8 st_t_st_f64_f8)" "$(st_corrupt 3 'a float')"
+	check "import_arrow refuses an int64 field with no type table as malformed with XX001 (#2186)" \
+		"$(st_import st_i64 bigint)" "$(st_corrupt 2 'an integer')"
+	check "import_arrow refuses a timestamp field with no type table as malformed with XX001 (#2186)" \
+		"$(st_import st_ts timestamp)" "$(st_corrupt 10 'a timestamp')"
+	check "import_arrow refuses a decimal field with no type table as malformed with XX001 (#2186)" \
+		"$(st_import st_dec 'numeric(10,2)')" "$(st_corrupt 7 'a decimal')"
+	check "import_arrow refuses a date, time, fixed-size binary, duration or map field with no type table as malformed with XX001 (#2186)" \
+		"$(st_import st_d32 date) / $(st_import st_t64 time) / $(st_import st_fsb uuid) / $(st_import st_dur bigint) / $(st_import st_map 'st_kv[]')" \
+		"$(st_corrupt 8 'a date') / $(st_corrupt 9 'a time') / $(st_corrupt 15 'a fixed-size binary') / $(st_corrupt 18 'a duration') / $(st_corrupt 17 'a map')"
+	check "import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one with XX001 (#2186)" \
+		"$(st_import st_lf64 'bigint[]') / $(st_import st_li64 'bigint[]')" \
+		"tag=3 type=absent|42804 Arrow column \"v\" holds a float, which pgcolumnar.import_arrow cannot read into type bigint|0 / $(st_corrupt 2 'an integer')"
+	check "control: a string, binary, boolean, list or struct field with no type table still imports, with its values (#2186)" \
+		"$(st_vals st_utf8 text) / $(st_vals st_bin bytea) / $(st_vals st_bool bool) / $(st_vals st_list 'bigint[]') / $(st_vals st_struct st_s)" \
+		'tag=5 type=absent|2|2|hi;there / tag=4 type=absent|2|2|\x78;\x797a / tag=6 type=absent|2|2|true;false / tag=12 type=absent|2|2|{1,2};{3} / tag=13 type=absent|2|2|(1);(2)'
+	check "import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)" \
+		"$(st_import st_null text)" \
+		'tag=1 type=absent|42804 Arrow column "v" holds a null, which pgcolumnar.import_arrow cannot read into type text|0'
+	# The review of #2224 found three rewrites of the fix that the checks above
+	# all pass, each storing the bit patterns again: tag NONE read as nothing to
+	# check, the checks skipped under a struct (which holds a map's value too),
+	# and only the first column checked. And a list field with no children
+	# vector never had its element checked at all, with or without a type table:
+	# list<float64> imported into bigint[] as bit patterns. pyarrow refuses that
+	# file ("List must have exactly 1 child field"); so does import_arrow now.
+	check "import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)" \
+		"$(st_import st_notag bigint)" \
+		'tag=0 type=absent|42804 Arrow column "v" holds an unknown Arrow type, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)" \
+		"$(st_import st_skid st_s) / $(st_import st_mval 'st_kv[]')" \
+		'tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read into type bigint|0 / tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)" \
+		"$(st_import st_ncol bigint)" \
+		'tag=2 type=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "n" holds an integer with no type table|0'
+	check "import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)" \
+		"$(st_import st_nokids 'bigint[]') / $(st_import st_nokids_nt 'bigint[]')" \
+		'tag=12 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0 / tag=12 type=absent children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0'
+	# The review of #2224 at b9747c41: the refusal above held for lists only in
+	# the checks, so a rewrite that returned for a struct or a map passed them
+	# all, and struct<a float64> imported into (a bigint) as bit patterns again.
+	check "import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored as bit patterns (#2186)" \
+		"$(st_import st_snokids st_s) / $(st_import st_mnokids 'st_kv[]')" \
+		'tag=13 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a struct with no child fields|0 / tag=17 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a map with no child fields|0'
+else
+	for _ai_st in \
+			"import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored as bit patterns (#2186)" \
+			"import_arrow refuses a float64 field with no type table for a float8 column as malformed with XX001 (#2186)" \
+			"import_arrow refuses an int64 field with no type table as malformed with XX001 (#2186)" \
+			"import_arrow refuses a timestamp field with no type table as malformed with XX001 (#2186)" \
+			"import_arrow refuses a decimal field with no type table as malformed with XX001 (#2186)" \
+			"import_arrow refuses a date, time, fixed-size binary, duration or map field with no type table as malformed with XX001 (#2186)" \
+			"import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one with XX001 (#2186)" \
+			"control: a string, binary, boolean, list or struct field with no type table still imports, with its values (#2186)" \
+			"import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)" \
+			"import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)" \
+			"import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)" \
+			"import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)" \
+			"import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)" \
+			"import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored as bit patterns (#2186)"; do
+		check_skip "$_ai_st" \
+			"SKIP  $_ai_st (pyarrow not available)" \
+			"pyarrow not available"
+	done
+fi
+
 pgc_summary
