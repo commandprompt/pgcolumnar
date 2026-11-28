@@ -2591,7 +2591,21 @@ guard_tests 910
 # primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
 # call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6277 -> 6290, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
+# cluster_tests 6277 -> 6285, #2246: eight tests in test_objstore_tls_read.py (30 reads from a server that closes
+# each kept-alive TLS connection without close_notify; the server closed one on each read; and, for an EOF after
+# half a body, an EOF on a fresh connection and a TLS record error on a kept-alive connection, the refusal and the
+# GET count), by collection of that file (31 on main 0072cd88, 39 here) and over the cluster files (the complement
+# of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6285 -> 6287, #2248 review: two more tests in test_objstore_tls_read.py (a bad record MAC on a
+# kept-alive connection is refused, after one GET), by collection of that file (39 -> 41) and over the cluster files.
+# cluster_tests 6287 -> 6317 for #2169's thirty tests in test_index_only.py: an AFTER STATEMENT trigger
+# of a DELETE (test_trigger_of_delete_during_vacuum_*), of an UPDATE (test_trigger_of_update_during_vacuum_*)
+# and of a DELETE that reads inside an EXCEPTION block that rolls back (test_trigger_in_exception_block_*),
+# seven each; then, for jdatcmd's review of #2241, four for a DELETE that fails after a nested read
+# (test_delete_that_fails_after_nested_read_*) and five for a second deleter of the same rows
+# (test_second_deleter_during_nested_read_*), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6269 tests collected after the merge of origin/main 728d4217.
+# cluster_tests 6317 -> 6330, #2215 (6085 -> 6098 on 9c00d23e, restated on main 8d6ff7cd by merge):
 # test_parallel_copy_projection_ddl_premise,
 # test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
 # test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
@@ -2603,7 +2617,7 @@ guard_tests 910
 # test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
 # test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6290 -> 6291, still #2215, for the review of #2226 at d49f08e1:
+# cluster_tests 6330 -> 6331, still #2215, for the review of #2226 at d49f08e1:
 # test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6291
+cluster_tests 6331

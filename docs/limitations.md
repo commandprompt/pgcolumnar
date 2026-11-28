@@ -713,6 +713,13 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   reason, two multi-statement transactions can rarely deadlock, even on disjoint
   rows. This happens when their bucketed locks collide in opposite statement order.
   Retry resolves it, as with any serialization failure.
+- A writer keeps its delete marks in memory until it writes them to the catalog.
+  It writes them at the end of each statement. It also writes them when a nested
+  statement that names the table starts, such as a trigger that reads it (#2169).
+  From then on, a second writer of the same rows waits for the first, as on a
+  heap. It then gets the `serialization_failure` described above.
+  Before that fix, a second writer that ran while the nested statement was still
+  running did not wait. It committed, and the first writer failed instead.
 - `SERIALIZABLE` works on columnar tables: a write skew between two serializable
   transactions fails one of them with `serialization_failure` (40001), as on a
   heap. The access method takes no predicate locks of its own. The protection comes
