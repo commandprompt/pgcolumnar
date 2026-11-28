@@ -2339,6 +2339,22 @@ PgColumnarDeleteMetadata(uint64 storageId)
 bool		pgcolumnar_bulk_parallel_writer = false;
 
 /*
+ * The target of a single-table pgcolumnar.parallel_copy load, set only by its
+ * loaders and never by the GUC above (#2161); InvalidOid everywhere else. The
+ * coordinator has created and committed the storage row of the target and of
+ * each of its projections before the loaders started, so a row of the target's
+ * that is absent (or not yet at this build's stamp) can only mean DDL that
+ * committed during the load, such as add_projection. Creating it would take the
+ * transaction-scoped storage-row lock, which the loader's PREPARE TRANSACTION
+ * keeps, and the next loader would wait on it until the statement is
+ * cancelled. Such a loader fails instead, and the coordinator rolls every range
+ * back. Only the target's storages are refused: a trigger may write another
+ * columnar table, whose row nobody pre-created. A session that sets
+ * bulk_parallel_writer by hand keeps the locked path.
+ */
+Oid			pgcolumnar_parallel_copy_target = InvalidOid;
+
+/*
  * PgColumnarInsertNativeStorageRow, PgColumnarInsertRowGroupRow,
  * PgColumnarInsertColumnChunkRow
  *		Record the native-format catalog rows (PGCN v1, native spec 11). Called
@@ -2586,7 +2602,11 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 		 * lock. An older one has to be raised, and raising is an UPDATE that two
 		 * unserialized loaders would race on, so it falls through to the locked
 		 * path below. The coordinator's PgColumnarEnsureStorageRow takes that
-		 * path first, so in practice the loaders find it raised.
+		 * path first, so in practice the loaders find it raised. A parallel_copy
+		 * loader that finds a row of its target absent or older fails below
+		 * instead (#2161): its coordinator wrote every row of the target it knew
+		 * of, so such a row is DDL that committed during the load, and taking the
+		 * lock would hang the load.
 		 */
 		exists = storage_row_probe(rel, scan, s->formatVersion, false) ==
 			STORAGE_ROW_CURRENT;
@@ -2597,6 +2617,13 @@ PgColumnarInsertNativeStorageRow(const NativeStorageMetadata *s)
 			table_close(rel, RowExclusiveLock);
 			return;
 		}
+		if (OidIsValid(pgcolumnar_parallel_copy_target) &&
+			s->relationOid == pgcolumnar_parallel_copy_target)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("storage %llu of \"%s\" has no storage row that was committed before the load started; a projection added during the load cannot be loaded in parallel, so run the load again",
+							(unsigned long long) s->storageId,
+							get_rel_name(s->relationOid))));
 	}
 
 	/*
